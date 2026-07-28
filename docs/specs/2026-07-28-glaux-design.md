@@ -68,8 +68,10 @@ abstraction UX (paymasters), commissioned audits.
   authorization tuple with `chain_id = 0` and nonce 0. The tuple (public) is
   retained; the birth private key is **destroyed**.
 - The account never transacts as a plain EOA, so its EOA nonce stays 0 on
-  every chain: the single tuple remains valid on all present and future
-  chains ("replay on first touch").
+  every chain **until first touch there**: applying the tuple consumes it on
+  that chain (EIP-7702 increments the authority nonce), and the same tuple
+  remains valid on every chain not yet touched, present or future ("replay
+  on first touch").
 - Consequences, declared openly:
   - the delegation pointer is fixed forever; upgrades happen *inside* the
     delegate through an implementation slot governed by the 2-of-3;
