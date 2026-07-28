@@ -1,4 +1,7 @@
-# MINA
+# Glaux
+
+*Glaux (γλαύξ) — the little owl of Minerva, stamped on Athenian tetradrachms
+to guard the coin.*
 
 Minimal, crypto-agile EIP-7702 smart account — self-custodial key management
 with threshold security on the operational path and a post-quantum-ready
