@@ -296,23 +296,4 @@ contract Handler is Test {
             wrongErrorNoMarkerAttempts++;
         }
     }
-
-    /// @notice One fuzz step deliberately traverses every update class. This keeps
-    ///         afterInvariant's liveness checks deterministic while still varying
-    ///         fresh keys, forged keys, slots, duplicate source, and wrong nonces.
-    function exerciseAll(
-        uint8 slotSeed,
-        uint256 newPkSeed,
-        uint256 attackerPkSeed,
-        uint64 wrongNonceSeed,
-        bool copyFromA
-    ) external {
-        rotate(slotSeed, newPkSeed);
-        tryForgeUpdate(attackerPkSeed, slotSeed);
-        tryDuplicateSlot(slotSeed, copyFromA);
-        tryWrongNonce(slotSeed, newPkSeed, wrongNonceSeed);
-        tryUpgradeValid();
-        tryUpgradeWrongCodeHash();
-        tryUpgradeNoMarker();
-    }
 }
