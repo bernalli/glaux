@@ -10,6 +10,7 @@ import {
     NotInitialized,
     BadUpdateNonce,
     InvalidAction,
+    InvalidImplementation,
     InvalidSignature,
     InvalidSlot,
     InvalidVerifierType,
@@ -88,7 +89,12 @@ contract GlauxAccount {
             _validateSlot(s);
             l.slots[index] = s;
         } else if (u.action == GlauxStorage.ACTION_SET_IMPLEMENTATION) {
-            revert InvalidAction(); // enabled in Task 7
+            address newImplementation = abi.decode(u.payload, (address));
+            if (newImplementation.code.length == 0) revert InvalidImplementation();
+            bytes32 slot = GlauxStorage.ERC1967_IMPL_SLOT;
+            assembly {
+                sstore(slot, newImplementation)
+            }
         } else {
             revert InvalidAction();
         }

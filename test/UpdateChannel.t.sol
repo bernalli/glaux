@@ -19,17 +19,6 @@ contract UpdateChannelTest is GlauxFixture {
         _birthAccount();
     }
 
-    function _updateDigest(Update memory u) internal view returns (bytes32) {
-        return keccak256(
-            abi.encode(GlauxStorage.UPDATE_DOMAIN, account, u.nonce, u.action, keccak256(u.payload))
-        );
-    }
-
-    function _twoSigs(bytes32 digest) internal view returns (SlotSig[2] memory sigs) {
-        sigs[0] = SlotSig(0, _sig65(paperPk, digest)); // F2 paper
-        sigs[1] = SlotSig(2, _sig65(cloudPk, digest)); // F3 cloud
-    }
-
     function test_rotateCloudKey() public {
         Update memory u =
             Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(NEW_CLOUD_PK))));
@@ -136,13 +125,6 @@ contract UpdateChannelTest is GlauxFixture {
         vm.prank(address(0x4E1A7));
         vm.expectRevert(InvalidSignature.selector);
         GlauxAccount(payable(account)).applyUpdate(u, sigs);
-    }
-
-    function test_setImplementationActionReverts() public {
-        Update memory u = Update(1, 1, abi.encode(address(0xBEEF)));
-
-        vm.expectRevert(InvalidAction.selector);
-        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
     }
 
     function test_unknownActionReverts() public {
