@@ -33,6 +33,7 @@ library GlauxStorage {
     bytes32 internal constant INIT_DOMAIN = keccak256("GLAUX_INIT_V1");
     bytes32 internal constant UPDATE_DOMAIN = keccak256("GLAUX_UPDATE_V1");
     bytes32 internal constant EXEC_DOMAIN = keccak256("GLAUX_EXEC_V1");
+    bytes32 internal constant COMPAT_ID = keccak256("GLAUX_ACCOUNT_V1");
 
     uint8 internal constant VERIFIER_SECP256K1 = 1;
     uint8 internal constant VERIFIER_P256 = 2;
@@ -65,6 +66,7 @@ error InvalidSlot();
 error InvalidVerifierType();
 error InvalidAction();
 error NotEntryPoint();
+error ReentrantCall();
 error CallFailed(uint256 index, bytes revertData);
 
 event Initialized(address implementation);

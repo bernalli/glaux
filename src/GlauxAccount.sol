@@ -17,6 +17,7 @@ import {
     InvalidSlot,
     InvalidVerifierType,
     DuplicateSlot,
+    ReentrantCall,
     UpdateApplied,
     Executed
 } from "./GlauxStorage.sol";
@@ -25,6 +26,7 @@ import {SignatureVerify} from "./lib/SignatureVerify.sol";
 /// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
 contract GlauxAccount {
     address public immutable ENTRYPOINT;
+    bool private transient executing;
 
     constructor(address entryPoint) {
         ENTRYPOINT = entryPoint;
@@ -87,6 +89,10 @@ contract GlauxAccount {
         return GlauxStorage.layout().execNonce;
     }
 
+    function glauxCompatibilityId() external pure returns (bytes32) {
+        return GlauxStorage.COMPAT_ID;
+    }
+
     function applyUpdate(Update calldata u, SlotSig[2] calldata sigs) external {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) revert NotInitialized();
@@ -110,8 +116,17 @@ contract GlauxAccount {
             }
             l.slots[index] = s;
         } else if (u.action == GlauxStorage.ACTION_SET_IMPLEMENTATION) {
-            address newImplementation = abi.decode(u.payload, (address));
-            if (newImplementation.code.length == 0) revert InvalidImplementation();
+            (address newImplementation, bytes32 expectedCodeHash) =
+                abi.decode(u.payload, (address, bytes32));
+            if (
+                newImplementation.code.length == 0 || newImplementation.codehash != expectedCodeHash
+            ) revert InvalidImplementation();
+            (bool ok, bytes memory ret) = newImplementation.staticcall(
+                abi.encodeWithSelector(this.glauxCompatibilityId.selector)
+            );
+            if (!ok || ret.length != 32 || abi.decode(ret, (bytes32)) != GlauxStorage.COMPAT_ID) {
+                revert InvalidImplementation();
+            }
             bytes32 slot = GlauxStorage.ERC1967_IMPL_SLOT;
             assembly {
                 sstore(slot, newImplementation)
@@ -135,16 +150,20 @@ contract GlauxAccount {
             )
         );
         _requireTwoSigs(digest, [sigs[0], sigs[1]]);
-        l.execNonce += 1;
+        uint64 nonce = l.execNonce + 1;
+        l.execNonce = nonce;
         _execute(calls);
-        emit Executed(l.execNonce, calls.length);
+        emit Executed(nonce, calls.length);
     }
 
     function _execute(Call[] memory calls) internal {
+        if (executing) revert ReentrantCall();
+        executing = true;
         for (uint256 i = 0; i < calls.length; i++) {
             (bool ok, bytes memory ret) = calls[i].to.call{value: calls[i].value}(calls[i].data);
             if (!ok) revert CallFailed(i, ret);
         }
+        executing = false;
     }
 
     function _requireTwoSigs(bytes32 digest, SlotSig[2] memory sigs) internal view {

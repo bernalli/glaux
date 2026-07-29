@@ -66,13 +66,21 @@ abstract contract GlauxFixture is Test {
         sigs[1] = SlotSig(2, _sig65(cloudPk, digest)); // F3 cloud
     }
 
+    function _implementationPayload(address implementation) internal view returns (bytes memory) {
+        return abi.encode(implementation, implementation.codehash);
+    }
+
     function _execDigest(Call[] memory calls) internal view returns (bytes32) {
+        return _execDigestAtNonce(calls, GlauxAccount(payable(account)).execNonce());
+    }
+
+    function _execDigestAtNonce(Call[] memory calls, uint64 nonce) internal view returns (bytes32) {
         return keccak256(
             abi.encode(
                 GlauxStorage.EXEC_DOMAIN,
                 block.chainid,
                 account,
-                GlauxAccount(payable(account)).execNonce(),
+                nonce,
                 keccak256(abi.encode(calls))
             )
         );

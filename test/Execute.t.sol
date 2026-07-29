@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {GlauxFixture} from "./GlauxFixture.sol";
 import {GlauxAccount} from "../src/GlauxAccount.sol";
 import {GlauxStorage, SlotSig, Update, Call} from "../src/GlauxStorage.sol";
-import {InvalidSignature, CallFailed} from "../src/GlauxStorage.sol";
+import {InvalidSignature, ReentrantCall, CallFailed, Executed} from "../src/GlauxStorage.sol";
 
 contract Counter {
     uint256 public n;
@@ -66,7 +66,11 @@ contract ExecuteTest is GlauxFixture {
         Call[] memory calls = new Call[](1);
         calls[0] = Call(address(counter), 0, abi.encodeCall(Counter.boom, ()));
         SlotSig[2] memory sigs = _twoSigs(_execDigest(calls));
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CallFailed.selector, uint256(0), abi.encodeWithSignature("Error(string)", "boom")
+            )
+        );
         GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
         assertEq(GlauxAccount(payable(account)).execNonce(), 0); // whole tx reverted
     }
@@ -117,7 +121,11 @@ contract ExecuteTest is GlauxFixture {
         calls[0] = Call(address(counter), 0, abi.encodeCall(Counter.bump, ())); // would succeed alone
         calls[1] = Call(address(counter), 0, abi.encodeCall(Counter.boom, ())); // reverts
         SlotSig[2] memory sigs = _twoSigs(_execDigest(calls));
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CallFailed.selector, uint256(1), abi.encodeWithSignature("Error(string)", "boom")
+            )
+        );
         GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
 
         // First call's effect must be rolled back with the rest of the tx.
@@ -149,17 +157,36 @@ contract ExecuteTest is GlauxFixture {
 
     function test_executeReentrancyCannotReplay() public {
         Reenterer reenterer = new Reenterer();
+        Call[] memory nestedCalls = new Call[](1);
+        nestedCalls[0] = Call(address(counter), 0, abi.encodeCall(Counter.bump, ()));
+        SlotSig[2] memory nestedSigs = _twoSigs(_execDigestAtNonce(nestedCalls, 1));
+        reenterer.arm(account, nestedCalls, nestedSigs);
+
         Call[] memory calls = new Call[](1);
         calls[0] = Call(address(reenterer), 0, abi.encodeCall(Reenterer.reenter, ()));
         SlotSig[2] memory sigs = _twoSigs(_execDigest(calls));
-        reenterer.arm(account, calls, sigs);
 
-        // The re-entrant call replays the exact same signed batch, but execNonce has
-        // already advanced by the time the reentrant call runs, so its digest no longer
-        // matches the signatures: it must fail, and that failure must not be swallowed.
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CallFailed.selector, uint256(0), abi.encodeWithSelector(ReentrantCall.selector)
+            )
+        );
         GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
         assertEq(GlauxAccount(payable(account)).execNonce(), 0);
+        assertEq(counter.n(), 0);
+    }
+
+    function test_executeSequentialBatchesEmitDistinctIncreasingNonces() public {
+        Call[] memory calls = new Call[](1);
+        calls[0] = Call(address(counter), 0, abi.encodeCall(Counter.bump, ()));
+
+        vm.expectEmit(true, true, true, true, account);
+        emit Executed(1, 1);
+        GlauxAccount(payable(account)).executeWithSigs(calls, _twoSigs(_execDigest(calls)));
+
+        vm.expectEmit(true, true, true, true, account);
+        emit Executed(2, 1);
+        GlauxAccount(payable(account)).executeWithSigs(calls, _twoSigs(_execDigest(calls)));
     }
 
     function test_relayerWithNoKeysCanSubmitValidBatch() public {

@@ -7,6 +7,8 @@ import {GlauxAccount} from "../src/GlauxAccount.sol";
 import {GlauxStorage, SlotSig, Update} from "../src/GlauxStorage.sol";
 import {InvalidImplementation, InvalidSignature} from "../src/GlauxStorage.sol";
 
+contract IncompatibleImplementation {}
+
 contract UpgradeTest is GlauxFixture {
     function setUp() public override {
         super.setUp();
@@ -15,12 +17,12 @@ contract UpgradeTest is GlauxFixture {
 
     function test_upgradePreservesState() public {
         GlauxAccountV2Mock v2 = new GlauxAccountV2Mock(address(0xE47));
-        Update memory u = Update(1, 1, abi.encode(address(v2)));
+        Update memory u = Update(1, 1, _implementationPayload(address(v2)));
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
 
         assertEq(GlauxAccountV2Mock(payable(account)).version(), "glaux-v2-mock");
 
-        // pre-upgrade state intact: all three factor slots and both nonces unchanged.
+        // Pre-upgrade slots and execNonce are intact; updateNonce advances from 0 to 1.
         (uint8 vType0, bytes memory data0) = GlauxAccount(payable(account)).getSlot(0);
         (uint8 vType1, bytes memory data1) = GlauxAccount(payable(account)).getSlot(1);
         (uint8 vType2, bytes memory data2) = GlauxAccount(payable(account)).getSlot(2);
@@ -38,20 +40,20 @@ contract UpgradeTest is GlauxFixture {
     }
 
     function test_upgradeToEOARejected() public {
-        Update memory u = Update(1, 1, abi.encode(address(0xDEAD)));
+        Update memory u = Update(1, 1, abi.encode(address(0xDEAD), bytes32(0)));
         vm.expectRevert(InvalidImplementation.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
     }
 
     function test_upgradeToZeroAddressRejected() public {
-        Update memory u = Update(1, 1, abi.encode(address(0)));
+        Update memory u = Update(1, 1, abi.encode(address(0), bytes32(0)));
         vm.expectRevert(InvalidImplementation.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
     }
 
     function test_upgradeNeedsTwoSigs() public {
         GlauxAccountV2Mock v2 = new GlauxAccountV2Mock(address(0xE47));
-        Update memory u = Update(1, 1, abi.encode(address(v2)));
+        Update memory u = Update(1, 1, _implementationPayload(address(v2)));
         bytes32 d = _updateDigest(u);
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(paperPk, d));
@@ -62,7 +64,7 @@ contract UpgradeTest is GlauxFixture {
 
     function test_upgradeNeedsTwoDistinctSlots() public {
         GlauxAccountV2Mock v2 = new GlauxAccountV2Mock(address(0xE47));
-        Update memory u = Update(1, 1, abi.encode(address(v2)));
+        Update memory u = Update(1, 1, _implementationPayload(address(v2)));
         bytes32 d = _updateDigest(u);
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(paperPk, d));
@@ -73,7 +75,7 @@ contract UpgradeTest is GlauxFixture {
 
     function test_updateChannelSurvivesItsOwnUpgrade() public {
         GlauxAccountV2Mock v2 = new GlauxAccountV2Mock(address(0xE47));
-        Update memory u1 = Update(1, 1, abi.encode(address(v2)));
+        Update memory u1 = Update(1, 1, _implementationPayload(address(v2)));
         GlauxAccount(payable(account)).applyUpdate(u1, _twoSigs(_updateDigest(u1)));
         assertEq(GlauxAccount(payable(account)).updateNonce(), 1);
 
@@ -87,5 +89,28 @@ contract UpgradeTest is GlauxFixture {
         assertEq(abi.decode(data, (address)), vm.addr(0xC10D2));
         assertEq(GlauxAccount(payable(account)).updateNonce(), 2);
         assertEq(GlauxAccountV2Mock(payable(account)).version(), "glaux-v2-mock");
+    }
+
+    function test_upgradeRejectsMismatchedCodeHashForCompatibleImplementation() public {
+        GlauxAccountV2Mock v2 = new GlauxAccountV2Mock(address(0xE47));
+        Update memory u = Update(1, 1, abi.encode(address(v2), address(impl).codehash));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
+    }
+
+    function test_upgradeToRouterRejected() public {
+        Update memory u = Update(1, 1, _implementationPayload(address(router)));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
+    }
+
+    function test_upgradeToIncompatibleContractRejected() public {
+        IncompatibleImplementation incompatible = new IncompatibleImplementation();
+        Update memory u = Update(1, 1, _implementationPayload(address(incompatible)));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
     }
 }
