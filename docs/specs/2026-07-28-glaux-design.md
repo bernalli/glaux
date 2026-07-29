@@ -260,15 +260,22 @@ into the core.
 - Testnet deployments: Sepolia + one L2 testnet with RIP-7212.
 - Threat model document and client reference guidance.
 
-### Open adoption question (not a Phase 1 blocker)
+### Bundler compatibility of the P-256 factor (resolved 2026-07-29)
 
-ERC-4337 bundlers restrict what an account may do during validation. A P-256
-factor makes validation staticcall the RIP-7212 / EIP-7951 precompile, and
-bundler policy toward that address during validation is **not yet verified**
-here. If some bundlers reject it, P-256-only accounts keep the direct
-`executeWithSigs` path — which is permissionless to relay and needs no
-bundler — but lose the sponsored 4337 path with those bundlers. To verify
-before promoting 4337 as a supported route.
+ERC-4337 bundlers restrict what an account may do during validation, and a
+P-256 factor makes validation staticcall the P256VERIFY precompile — so this
+had to be checked rather than assumed. It is explicitly permitted:
+**ERC-7562 rule OP-062** allows "the core precompiles `0x1`–`0x11`" and "the
+`P256VERIFY` secp256r1 precompile defined in EIP-7951". EIP-7951 is Final and
+assigns address `0x100`, taking 160 bytes `h ‖ r ‖ s ‖ qx ‖ qy` and returning
+one word equal to 1 on success and empty on failure — which is exactly what
+`SignatureVerify._verifyP256` sends and how it interprets the answer.
+
+Two caveats remain, and they are the ordinary kind: OP-062 permits the
+precompile *on networks that have it*, so a chain without it is out regardless
+(residual 8 in the threat model), and any given bundler may lag the
+specification. Neither is a design question. The direct `executeWithSigs` path
+needs no bundler at all.
 
 ## 11. Revision history
 

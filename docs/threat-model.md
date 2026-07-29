@@ -301,10 +301,10 @@ factor is impossible on such a chain. An account whose F1 is P-256 silently
 operates as 2-of-2 there. Clients must maintain a supported-chain matrix and
 probe the precompile before relying on a chain.
 
-The same uncertainty extends to ERC-4337: bundler policy toward a precompile
-call during the validation phase is not established, which is recorded as an
-open adoption question in the specification. The direct `executeWithSigs` path
-needs no bundler.
+This is a chain-availability limit, not an ERC-4337 limit: **ERC-7562 rule
+OP-062** explicitly permits the `P256VERIFY` precompile of EIP-7951 during the
+validation phase, so a P-256 factor is compatible with bundlers on networks that
+have it. The direct `executeWithSigs` path needs no bundler in any case.
 
 ### 9. P-256 signature malleability is deliberately not normalised on-chain
 

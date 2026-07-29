@@ -390,9 +390,12 @@ asserting the paymaster's own deposit was debited by exactly the
 `actualGasCost` reported in the `UserOperationEvent`. Signatures authorize;
 the relayer or paymaster pays.
 
-Note that bundler policy toward the P-256 precompile during the validation
-phase is not yet established (see the spec's open adoption question). The
-direct `executeWithSigs` path needs no bundler and is unaffected.
+A P-256 factor is compatible with the 4337 path: **ERC-7562 rule OP-062**
+explicitly permits the `P256VERIFY` precompile of EIP-7951 during validation,
+alongside the core precompiles. That holds only on networks that actually have
+the precompile, and an individual bundler may still lag the specification, so
+test against the bundlers you intend to use. The direct `executeWithSigs` path
+needs no bundler at all and is unaffected either way.
 
 ## WebAuthn as a future verifier type
 
