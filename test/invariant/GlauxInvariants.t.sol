@@ -104,9 +104,16 @@ contract GlauxInvariants is Test {
         }
     }
 
-    /// The three slots are always pairwise distinct. This is the single most
-    /// important invariant in the system: its violation collapses the 2-of-3
-    /// threshold to a 1-of-1, since one key would then satisfy two slot signatures.
+    /// The three slots are always pairwise distinct as `(verifierType, data)` pairs,
+    /// so the same credential can never be installed twice and satisfy two slot
+    /// signatures with one key.
+    ///
+    /// Be precise about what this does NOT prove: distinct slot DATA is not distinct
+    /// CREDENTIALS. One ECDSA signature `(r, s)` verifies against more than one
+    /// public key for a fixed digest, so two slots holding different addresses can
+    /// still be covered by a single keypair. That gap is closed in the contract by
+    /// the `(r, s)` distinctness check in `_checkTwoSigs`, and proved by
+    /// `test_threshold_rejectsOneKeypairSplitAcrossTwoSlotsByVFlip` — not here.
     function invariant_slotsAlwaysPairwiseDistinct() public view {
         (uint8 t0, bytes memory d0) = GlauxAccount(payable(account)).getSlot(0);
         (uint8 t1, bytes memory d1) = GlauxAccount(payable(account)).getSlot(1);
@@ -116,12 +123,13 @@ contract GlauxInvariants is Test {
         assertFalse(t1 == t2 && keccak256(d1) == keccak256(d2));
     }
 
-    /// The account is always initialized and its ERC-1967 implementation pointer is
-    /// never zero once born: this is the property whose violation means permanently
-    /// frozen funds (the fallback reverts InvalidImplementation on a zero pointer,
-    /// and every state-mutating entry point requires `initialized`).
+    /// The account is always initialized and its authoritative implementation
+    /// pointer is never zero once born: this is the property whose violation means
+    /// permanently frozen funds (the fallback reverts NotInitialized on a zero
+    /// pointer, and every state-mutating entry point requires `initialized`).
+    /// Reads `IMPL_SLOT`, the slot Glaux owns — never the ERC-1967 mirror.
     function invariant_accountAlwaysInitializedWithImplementationSet() public view {
-        assertTrue(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT) != bytes32(0));
+        assertTrue(vm.load(account, GlauxStorage.IMPL_SLOT) != bytes32(0));
         bytes32 layoutWord = vm.load(account, keccak256("glaux.account.v1.storage"));
         assertEq(uint8(uint256(layoutWord)), 1);
     }
@@ -130,7 +138,7 @@ contract GlauxInvariants is Test {
     /// implementation ghost maintained by the handler after successful upgrades.
     function invariant_implementationMatchesGhost() public view {
         assertEq(
-            address(uint160(uint256(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT)))),
+            address(uint160(uint256(vm.load(account, GlauxStorage.IMPL_SLOT)))),
             handler.ghostImplementation()
         );
     }
@@ -207,7 +215,7 @@ contract GlauxInvariants is Test {
         assertEq(handler.failedValidUpgrades(), 0);
         assertEq(handler.ghostImplementation(), address(compatibleImpl));
         assertEq(
-            address(uint160(uint256(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT)))),
+            address(uint160(uint256(vm.load(account, GlauxStorage.IMPL_SLOT)))),
             address(compatibleImpl)
         );
 

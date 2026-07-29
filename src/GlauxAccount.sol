@@ -48,7 +48,7 @@ contract GlauxAccount {
     function initializeAccount(bytes calldata initData) external {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (l.initialized) revert AlreadyInitialized();
-        bytes32 implementationSlot = GlauxStorage.ERC1967_IMPL_SLOT;
+        bytes32 implementationSlot = GlauxStorage.IMPL_SLOT;
         address implementation;
         assembly {
             implementation := sload(implementationSlot)
@@ -133,9 +133,12 @@ contract GlauxAccount {
             if (!ImplementationCheck.isInstallable(newImplementation, expectedCodeHash)) {
                 revert InvalidImplementation();
             }
-            bytes32 slot = GlauxStorage.ERC1967_IMPL_SLOT;
+            bytes32 slot = GlauxStorage.IMPL_SLOT;
+            bytes32 mirror = GlauxStorage.ERC1967_IMPL_SLOT;
             assembly {
                 sstore(slot, newImplementation)
+                // Mirror for explorer tooling. Never read back: see IMPL_SLOT.
+                sstore(mirror, newImplementation)
             }
         } else {
             revert InvalidAction();
@@ -230,6 +233,27 @@ contract GlauxAccount {
         executing = false;
     }
 
+    /// @dev True when both signatures carry the same `(r, s)`. Both supported
+    ///      encodings put `r || s` in the leading 64 bytes — secp256k1 is
+    ///      `r || s || v` (65) and P-256 is `r || s` (64) — so comparing that
+    ///      prefix catches the shared-signature case for either verifier, and
+    ///      across them. Anything shorter than 64 bytes is malformed and will be
+    ///      rejected by the verifier anyway.
+    function _sameRS(bytes memory a, bytes memory b) internal pure returns (bool) {
+        if (a.length < 64 || b.length < 64) return false;
+        bytes32 ar;
+        bytes32 as_;
+        bytes32 br;
+        bytes32 bs;
+        assembly {
+            ar := mload(add(a, 0x20))
+            as_ := mload(add(a, 0x40))
+            br := mload(add(b, 0x20))
+            bs := mload(add(b, 0x40))
+        }
+        return ar == br && as_ == bs;
+    }
+
     function _requireTwoSigs(bytes32 digest, SlotSig[2] memory sigs) internal view {
         if (!_checkTwoSigs(digest, sigs)) revert InvalidSignature();
     }
@@ -237,6 +261,14 @@ contract GlauxAccount {
     function _checkTwoSigs(bytes32 digest, SlotSig[2] memory sigs) internal view returns (bool) {
         if (sigs[0].slotIndex > 2 || sigs[1].slotIndex > 2) return false;
         if (sigs[0].slotIndex == sigs[1].slotIndex) return false;
+        // Distinct slots are not yet distinct CREDENTIALS. For a fixed digest,
+        // one ECDSA signature (r, s) verifies against more than one public key --
+        // for secp256k1, flipping `v` recovers a second, different address that
+        // needs no private key at all. If both ended up registered, a single
+        // keypair would satisfy the 2-of-3 threshold while every slot looked
+        // distinct and well-formed. Two independent signers cannot collide on
+        // (r, s) over the same digest, so requiring them to differ costs nothing.
+        if (_sameRS(sigs[0].signature, sigs[1].signature)) return false;
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) return false;
         FactorSlot storage a = l.slots[sigs[0].slotIndex];
