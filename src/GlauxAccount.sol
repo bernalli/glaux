@@ -16,6 +16,8 @@ import {
     InvalidSignature,
     InvalidSlot,
     PossessionNotProven,
+    P256VerifierUnavailable,
+    ProbeKeyNotInstallable,
     InvalidVerifierType,
     DuplicateSlot,
     NotEntryPoint,
@@ -72,7 +74,16 @@ contract GlauxAccount {
         l.initialized = true;
     }
 
-    function _validateSlot(FactorSlot memory s) internal pure {
+    /// @dev The single choke point for installing a slot: birth and rotation both
+    ///      reach it, so the two cannot drift apart — a divergence would be a hole in
+    ///      whichever of them checks less.
+    /// @dev The verifier probe runs only for P-256, and only after the cheap local
+    ///      checks: a chain that cannot verify P-256 is not the reason a malformed key
+    ///      is refused. Deliberately no probe for secp256k1 — `ecrecover` is in the
+    ///      protocol on every EVM chain — so rotating a factor AWAY from P-256 stays
+    ///      possible exactly where it is most needed, on the chain that lacks the
+    ///      verifier.
+    function _validateSlot(FactorSlot memory s) internal view {
         if (
             s.verifierType != GlauxStorage.VERIFIER_SECP256K1
                 && s.verifierType != GlauxStorage.VERIFIER_P256
@@ -80,6 +91,12 @@ contract GlauxAccount {
             revert InvalidVerifierType();
         }
         if (!SignatureVerify.isValidKey(s.verifierType, s.data)) revert InvalidSlot();
+        if (s.verifierType == GlauxStorage.VERIFIER_P256) {
+            // The probe vector's private key is public, so its public key is nobody's
+            // factor. A possession proof does not catch this: anyone can produce one.
+            if (SignatureVerify.isProbeKey(s.data)) revert ProbeKeyNotInstallable();
+            if (!SignatureVerify.p256VerifierAvailable()) revert P256VerifierUnavailable();
+        }
     }
 
     /// @dev A slot's key must prove it EXISTS before it is installed. Shape checks

@@ -321,10 +321,12 @@ into your own account grants you no ability to sign with it.
 
 Two consequences worth stating plainly:
 
-- **A P-256 factor can only be installed on a chain that has the P256VERIFY
-  precompile**, since the proof is verified with it. Birth fails cleanly there
-  rather than producing an account with an unusable factor, and the blob stays
-  retryable if the chain gains the precompile later. See residual 8.
+- **A P-256 factor can only be installed on a chain that has a working
+  P256VERIFY precompile**, since the proof is verified with it and since
+  installation probes the verifier first (v0.6). Birth fails cleanly there,
+  with `P256VerifierUnavailable()`, rather than producing an account with an
+  unusable factor, and the blob stays retryable if the chain gains the
+  precompile later. See residual 8.
 - The residual that remains is the ordinary one: possession is not exclusivity.
   A proof shows someone held the key at signing time, not that only the intended
   party holds it. That is residual 2's territory, not this one's.
@@ -336,21 +338,50 @@ EIP-7951). On a chain without that precompile the call returns empty and
 verification returns `false` — proven by
 `test/SignatureVerify.t.sol::test_p256_noPrecompile_false`.
 
-The failure mode is quiet and asymmetric: slot *installation* validates only
-the key's shape and therefore succeeds anywhere, while *signing* with that
-factor is impossible on such a chain. An account whose F1 is P-256 silently
-operates as 2-of-2 there.
+The failure mode *was* quiet and asymmetric: slot installation validated only
+the key's shape and therefore succeeded anywhere, while signing with that factor
+was impossible on such a chain — and with TWO P-256 slots the account was born
+inert, since every possible pair then contains a factor that cannot sign, so no
+quorum can form at all and `applyUpdate` cannot rotate out either, rotation
+being itself an operation that needs a quorum. Birth submission is
+permissionless, so a third party could bring an account up in that state on any
+chain it had not yet reached.
 
-**With TWO P-256 slots it is worse than degraded — the account is born inert.**
-Every possible pair of slots then contains at least one P-256 factor, so no
-quorum can be formed at all: nothing executes, and `applyUpdate` cannot rotate
-out of the situation either, because rotating is itself an operation requiring a
-quorum. Client guidance permits F3 to be P-256, so this configuration is
-reachable by following the documentation. Birth submission is permissionless, so
-a third party can bring an account up in this state on any chain it has not yet
-reached. Clients must maintain a supported-chain matrix and probe the precompile
-before relying on a chain, and must ensure at least two slots are verifiable on
-every chain the account is meant to operate on.
+*(closed at installation, v0.6)* `GlauxAccount._validateSlot` now probes the
+verifier before installing any P-256 slot, at birth and at rotation alike, and
+reverts `P256VerifierUnavailable()`. The probe is a known-answer test with two
+arms — a valid signature that must be accepted, the same signature against a
+different message that must be rejected — because a one-armed probe would
+accept any code that answers `1`, and a verifier that never says no is worse
+than no verifier: every signature presented to that slot would be valid. That
+second arm is what makes the check meaningful on a chain that put something
+unrelated at `0x100`. secp256k1 is deliberately not probed: `ecrecover` is in
+the protocol everywhere, and probing it would close the one rescue that matters
+— rotating a factor *away* from P-256 on the chain that lacks the verifier.
+
+What remains is not a bug but a consequence, and clients must design for it:
+
+- **A chain without the verifier cannot host the account's chosen
+  configuration.** The same signed birth blob succeeds where the verifier
+  exists and reverts where it does not, so a chain reached later may hold no
+  account at all rather than a degraded one. That is the intended trade — an
+  account that cannot be born is recoverable, an account born inert is not —
+  but it means the supported-chain matrix is still a client obligation.
+- **The probe speaks for the moment it runs.** It cannot bind the chain's
+  future: a fork that removes or weakens whatever answers at `0x100` degrades
+  or breaks a P-256 factor already installed. No on-chain control can prevent
+  that; it is a chain-trust assumption, and it is the reason client guidance
+  still refuses two P-256 slots unless every target chain has the precompile.
+- **The probe stops accidents, not a chain that is out to get you.** Its vector
+  is a constant in public source, so code at `0x100` written to defeat it —
+  answer honestly for those exact 160 bytes, answer "valid" to everything else
+  — passes both arms. That cannot be fixed by a better vector: verifying a
+  *fresh* challenge on chain would require the very verifier under test, so a
+  known answer must be a known answer. It also does not need fixing. A chain
+  whose P-256 verifier is adversarial owns every P-256 signature check the
+  account will ever make, at signing time as much as at installation, so no
+  install-time control could save the factor there. What the probe rules out is
+  the reachable accident: no verifier at all, or unrelated code at that address.
 
 This is a chain-availability limit, not an ERC-4337 limit: **ERC-7562 rule
 OP-062** explicitly permits the `P256VERIFY` precompile of EIP-7951 during the
