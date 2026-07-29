@@ -5,7 +5,10 @@ import "forge-std/Test.sol";
 import {GlauxDelegate} from "../../src/GlauxDelegate.sol";
 import {GlauxAccount} from "../../src/GlauxAccount.sol";
 import {GlauxStorage, FactorSlot} from "../../src/GlauxStorage.sol";
+import {GlauxAccountV2Mock} from "../mocks/GlauxAccountV2Mock.sol";
 import {Handler} from "./Handler.sol";
+
+contract NoMarkerImplementation {}
 
 /// @notice Property-based defence for the update channel: no sequence of authorized
 ///         rotations and rejected forgeries may ever move the account somewhere the
@@ -13,6 +16,8 @@ import {Handler} from "./Handler.sol";
 contract GlauxInvariants is Test {
     GlauxDelegate internal router;
     GlauxAccount internal impl;
+    GlauxAccountV2Mock internal compatibleImpl;
+    NoMarkerImplementation internal noMarkerImpl;
     address internal account;
     Handler internal handler;
 
@@ -23,6 +28,8 @@ contract GlauxInvariants is Test {
 
     function setUp() public {
         impl = new GlauxAccount(address(0xE47105157017));
+        compatibleImpl = new GlauxAccountV2Mock(address(0xE47105157017));
+        noMarkerImpl = new NoMarkerImplementation();
         router = new GlauxDelegate();
         account = vm.addr(BIRTH_PK);
 
@@ -38,17 +45,16 @@ contract GlauxInvariants is Test {
         vm.signAndAttachDelegation(address(router), BIRTH_PK);
         GlauxDelegate(payable(account)).initialize(address(impl), initData, birthSig);
 
-        handler = new Handler(account, K0, K1, K2);
+        handler = new Handler(
+            account, address(impl), address(compatibleImpl), address(noMarkerImpl), K0, K1, K2
+        );
 
         // Only the handler's own entry points may act as the account/attacker; the
         // account itself and the test contract must never be targeted directly, or
         // the fuzzer would bypass the ghost-model bookkeeping entirely.
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](4);
-        selectors[0] = Handler.rotate.selector;
-        selectors[1] = Handler.tryForgeUpdate.selector;
-        selectors[2] = Handler.tryDuplicateSlot.selector;
-        selectors[3] = Handler.tryWrongNonce.selector;
+        bytes4[] memory selectors = new bytes4[](1);
+        selectors[0] = Handler.exerciseAll.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -100,8 +106,38 @@ contract GlauxInvariants is Test {
     /// and every state-mutating entry point requires `initialized`).
     function invariant_accountAlwaysInitializedWithImplementationSet() public view {
         assertTrue(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT) != bytes32(0));
-        // Reverts NotInitialized() if the account ever lost its initialized flag.
-        GlauxAccount(payable(account)).updateNonce();
+        bytes32 layoutWord = vm.load(account, keccak256("glaux.account.v1.storage"));
+        assertEq(uint8(uint256(layoutWord)), 1);
+    }
+
+    /// No update action may point the account anywhere other than the independent
+    /// implementation ghost maintained by the handler after successful upgrades.
+    function invariant_implementationMatchesGhost() public view {
+        assertEq(
+            address(uint160(uint256(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT)))),
+            handler.ghostImplementation()
+        );
+    }
+
+    /// Rejected attack calls must never be accepted or fail with a different error.
+    /// This runs after every fuzzed step, so fail_on_revert cannot hide a regression.
+    function invariant_attacksRejectWithExpectedErrors() public view {
+        assertEq(handler.acceptedForgeAttacks(), 0);
+        assertEq(handler.wrongErrorForgeries(), 0);
+        assertEq(handler.acceptedDuplicateSlotAttacks(), 0);
+        assertEq(handler.wrongErrorDuplicateSlotAttempts(), 0);
+        assertEq(handler.acceptedWrongNonceAttacks(), 0);
+        assertEq(handler.wrongErrorWrongNonceAttempts(), 0);
+        assertEq(handler.acceptedWrongCodeHashAttacks(), 0);
+        assertEq(handler.wrongErrorWrongCodeHashAttempts(), 0);
+        assertEq(handler.acceptedNoMarkerAttacks(), 0);
+        assertEq(handler.wrongErrorNoMarkerAttempts(), 0);
+    }
+
+    /// Correctly authorized updates are never allowed to fail silently.
+    function invariant_authorizedUpdatesSucceed() public view {
+        assertEq(handler.failedRotations(), 0);
+        assertEq(handler.failedValidUpgrades(), 0);
     }
 
     /// Runs once at the end of each fuzzed call sequence (not after every single
@@ -110,8 +146,12 @@ contract GlauxInvariants is Test {
     /// would otherwise let every invariant above pass by never being exercised.
     function afterInvariant() public view {
         assertGt(handler.successfulRotations(), 0);
+        assertGt(handler.actualSlotChanges(), 0);
         assertGt(handler.rejectedForgeries(), 0);
         assertGt(handler.rejectedDuplicateSlotAttempts(), 0);
         assertGt(handler.rejectedWrongNonceAttempts(), 0);
+        assertGt(handler.successfulUpgrades(), 0);
+        assertGt(handler.rejectedWrongCodeHashAttempts(), 0);
+        assertGt(handler.rejectedNoMarkerAttempts(), 0);
     }
 }
