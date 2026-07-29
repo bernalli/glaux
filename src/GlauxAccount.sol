@@ -5,7 +5,11 @@ import {
     GlauxStorage,
     FactorSlot,
     SlotSig,
+    Update,
     AlreadyInitialized,
+    NotInitialized,
+    BadUpdateNonce,
+    InvalidAction,
     InvalidSignature,
     InvalidSlot,
     InvalidVerifierType,
@@ -62,6 +66,33 @@ contract GlauxAccount {
 
     function execNonce() external view returns (uint64) {
         return GlauxStorage.layout().execNonce;
+    }
+
+    function applyUpdate(Update calldata u, SlotSig[2] calldata sigs) external {
+        GlauxStorage.Layout storage l = GlauxStorage.layout();
+        if (!l.initialized) revert NotInitialized();
+        if (u.nonce != l.updateNonce + 1) revert BadUpdateNonce(l.updateNonce + 1, u.nonce);
+        bytes32 digest = keccak256(
+            abi.encode(
+                GlauxStorage.UPDATE_DOMAIN, address(this), u.nonce, u.action, keccak256(u.payload)
+            )
+        );
+        _requireTwoSigs(digest, [sigs[0], sigs[1]]);
+        l.updateNonce = u.nonce;
+
+        if (u.action == GlauxStorage.ACTION_SET_SLOT) {
+            (uint8 index, uint8 verifierType, bytes memory data) =
+                abi.decode(u.payload, (uint8, uint8, bytes));
+            if (index > 2) revert InvalidSlot();
+            FactorSlot memory s = FactorSlot(verifierType, data);
+            _validateSlot(s);
+            l.slots[index] = s;
+        } else if (u.action == GlauxStorage.ACTION_SET_IMPLEMENTATION) {
+            revert InvalidAction(); // enabled in Task 7
+        } else {
+            revert InvalidAction();
+        }
+        emit UpdateApplied(u.nonce, u.action);
     }
 
     function _requireTwoSigs(bytes32 digest, SlotSig[2] memory sigs) internal view {
