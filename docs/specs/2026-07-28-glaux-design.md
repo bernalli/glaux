@@ -65,6 +65,15 @@ abstraction UX (paymasters), commissioned audits.
   return data equal to that constant. This is a guard against accident and
   incompatible logic — it is self-attestation, not proof against an adversary
   who already holds two factors and therefore owns the account by definition.
+- *(revised v0.2)* **An implementation may never be an EIP-7702 delegation
+  designator.** For a delegated EOA, `EXTCODEHASH` hashes the 23-byte designator
+  while `DELEGATECALL` executes the delegation *target's* code — so a bound code
+  hash would bind nothing, and one designator can resolve to different code on
+  different chains. EIP-3541 forbids deploying code beginning with `0xEF`, so a
+  leading `0xEF` byte identifies a designator exactly, and both the birth and the
+  upgrade path reject it. Both also read the marker through a bounded 32-byte
+  output window, so hostile returndata is a clean rejection rather than an
+  out-of-gas failure.
 - **Every state-changing operation** — execution, key rotation, slot type
   change, implementation upgrade — requires 2 valid signatures from 2
   distinct slots.
