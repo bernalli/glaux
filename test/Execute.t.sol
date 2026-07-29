@@ -38,7 +38,7 @@ contract Reenterer {
     }
 
     function reenter() external {
-        GlauxAccount(payable(account)).executeWithSigs(replayCalls, replaySigs);
+        GlauxAccount(payable(account)).executeWithSigs(replayCalls, type(uint48).max, replaySigs);
     }
 }
 
@@ -56,7 +56,8 @@ contract ExecuteTest is GlauxFixture {
         Call[] memory calls = new Call[](2);
         calls[0] = Call(address(counter), 0.1 ether, abi.encodeCall(Counter.bump, ()));
         calls[1] = Call(address(counter), 0, abi.encodeCall(Counter.bump, ()));
-        GlauxAccount(payable(account)).executeWithSigs(calls, _twoSigs(_execDigest(calls)));
+        GlauxAccount(payable(account))
+            .executeWithSigs(calls, FAR_FUTURE, _twoSigs(_execDigest(calls)));
         assertEq(counter.n(), 2);
         assertEq(counter.paid(account), 0.1 ether);
         assertEq(GlauxAccount(payable(account)).execNonce(), 1);
@@ -71,7 +72,7 @@ contract ExecuteTest is GlauxFixture {
                 CallFailed.selector, uint256(0), abi.encodeWithSignature("Error(string)", "boom")
             )
         );
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
         assertEq(GlauxAccount(payable(account)).execNonce(), 0); // whole tx reverted
     }
 
@@ -81,16 +82,16 @@ contract ExecuteTest is GlauxFixture {
         SlotSig[2] memory sigs = _twoSigs(_execDigest(calls));
         vm.chainId(424242);
         vm.expectRevert(); // digest was bound to the old chain id
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
     }
 
     function test_executeReplayRejected() public {
         Call[] memory calls = new Call[](1);
         calls[0] = Call(address(counter), 0, abi.encodeCall(Counter.bump, ()));
         SlotSig[2] memory sigs = _twoSigs(_execDigest(calls));
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
         vm.expectRevert(); // execNonce advanced
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
     }
 
     function test_executeSingleSigRejected() public {
@@ -101,7 +102,7 @@ contract ExecuteTest is GlauxFixture {
         sigs[0] = SlotSig(0, _sig65(paperPk, d));
         sigs[1] = SlotSig(1, hex"00");
         vm.expectRevert();
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
     }
 
     // --- additional coverage this surface warrants ---
@@ -111,7 +112,8 @@ contract ExecuteTest is GlauxFixture {
         // over the (empty) call array and still advances execNonce, so a signed "do
         // nothing" batch cannot be replayed either.
         Call[] memory calls = new Call[](0);
-        GlauxAccount(payable(account)).executeWithSigs(calls, _twoSigs(_execDigest(calls)));
+        GlauxAccount(payable(account))
+            .executeWithSigs(calls, FAR_FUTURE, _twoSigs(_execDigest(calls)));
         assertEq(GlauxAccount(payable(account)).execNonce(), 1);
     }
 
@@ -126,7 +128,7 @@ contract ExecuteTest is GlauxFixture {
                 CallFailed.selector, uint256(1), abi.encodeWithSignature("Error(string)", "boom")
             )
         );
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
 
         // First call's effect must be rolled back with the rest of the tx.
         assertEq(counter.n(), 0);
@@ -152,7 +154,7 @@ contract ExecuteTest is GlauxFixture {
                 CallFailed.selector, uint256(0), abi.encodeWithSelector(InvalidSignature.selector)
             )
         );
-        GlauxAccount(payable(account)).executeWithSigs(calls, outerSigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, outerSigs);
         assertEq(GlauxAccount(payable(account)).updateNonce(), 0);
     }
 
@@ -172,7 +174,7 @@ contract ExecuteTest is GlauxFixture {
                 CallFailed.selector, uint256(0), abi.encodeWithSelector(ReentrantCall.selector)
             )
         );
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
         assertEq(GlauxAccount(payable(account)).execNonce(), 0);
         assertEq(counter.n(), 0);
     }
@@ -183,11 +185,13 @@ contract ExecuteTest is GlauxFixture {
 
         vm.expectEmit(true, true, true, true, account);
         emit Executed(1, 1);
-        GlauxAccount(payable(account)).executeWithSigs(calls, _twoSigs(_execDigest(calls)));
+        GlauxAccount(payable(account))
+            .executeWithSigs(calls, FAR_FUTURE, _twoSigs(_execDigest(calls)));
 
         vm.expectEmit(true, true, true, true, account);
         emit Executed(2, 1);
-        GlauxAccount(payable(account)).executeWithSigs(calls, _twoSigs(_execDigest(calls)));
+        GlauxAccount(payable(account))
+            .executeWithSigs(calls, FAR_FUTURE, _twoSigs(_execDigest(calls)));
     }
 
     function test_relayerWithNoKeysCanSubmitValidBatch() public {
@@ -196,7 +200,7 @@ contract ExecuteTest is GlauxFixture {
         SlotSig[2] memory sigs = _twoSigs(_execDigest(calls));
 
         vm.prank(address(0x4E1A7));
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
         assertEq(counter.n(), 1);
         assertEq(GlauxAccount(payable(account)).execNonce(), 1);
     }
@@ -211,7 +215,7 @@ contract ExecuteTest is GlauxFixture {
 
         vm.prank(address(0x4E1A7));
         vm.expectRevert(InvalidSignature.selector);
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
     }
 
     function test_executeSpendsAccountBalanceBeyondMsgValue() public {
@@ -219,7 +223,8 @@ contract ExecuteTest is GlauxFixture {
         vm.deal(account, 1 ether);
         Call[] memory calls = new Call[](1);
         calls[0] = Call(address(counter), 1 ether, abi.encodeCall(Counter.bump, ()));
-        GlauxAccount(payable(account)).executeWithSigs(calls, _twoSigs(_execDigest(calls)));
+        GlauxAccount(payable(account))
+            .executeWithSigs(calls, FAR_FUTURE, _twoSigs(_execDigest(calls)));
         assertEq(counter.paid(account), 1 ether);
         assertEq(account.balance, 0);
     }
@@ -231,7 +236,7 @@ contract ExecuteTest is GlauxFixture {
         calls[0] = Call(address(counter), 1 ether, abi.encodeCall(Counter.bump, ()));
         SlotSig[2] memory sigs = _twoSigs(_execDigest(calls));
         vm.expectRevert(abi.encodeWithSelector(CallFailed.selector, uint256(0), bytes("")));
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
         assertEq(GlauxAccount(payable(account)).execNonce(), 0);
     }
 }

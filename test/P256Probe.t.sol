@@ -272,7 +272,7 @@ contract P256ProbeTest is GlauxFixture {
         sigs[0] = SlotSig(0, _sig65(paperPk, digest));
         sigs[1] = SlotSig(1, abi.encode(uint256(1), uint256(2)));
 
-        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, sigs);
 
         assertEq(counter.n(), 1);
     }

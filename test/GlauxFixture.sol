@@ -174,11 +174,28 @@ abstract contract GlauxFixture is Test {
         return abi.encode(implementation, implementation.codehash);
     }
 
+    /// @notice The deadline tests use when the deadline is not what they are testing.
+    ///         Deliberately not zero: zero is an already-expired operation everywhere,
+    ///         never a licence to run forever.
+    uint48 internal constant FAR_FUTURE = type(uint48).max;
+
     function _execDigest(Call[] memory calls) internal view returns (bytes32) {
-        return _execDigestAtNonce(calls, GlauxAccount(payable(account)).execNonce());
+        return _execDigest(calls, FAR_FUTURE);
+    }
+
+    function _execDigest(Call[] memory calls, uint48 validUntil) internal view returns (bytes32) {
+        return _execDigestAtNonce(calls, GlauxAccount(payable(account)).execNonce(), validUntil);
     }
 
     function _execDigestAtNonce(Call[] memory calls, uint64 nonce) internal view returns (bytes32) {
+        return _execDigestAtNonce(calls, nonce, FAR_FUTURE);
+    }
+
+    function _execDigestAtNonce(Call[] memory calls, uint64 nonce, uint48 validUntil)
+        internal
+        view
+        returns (bytes32)
+    {
         return GlauxStorage.eip191(
             account,
             keccak256(
@@ -187,9 +204,27 @@ abstract contract GlauxFixture is Test {
                     block.chainid,
                     account,
                     nonce,
-                    keccak256(abi.encode(calls))
+                    keccak256(abi.encode(calls)),
+                    validUntil
                 )
             )
         );
+    }
+
+    /// @notice The digest the factors sign for an ERC-4337 operation. `userOpHash` is
+    ///         the EntryPoint's; the deadline is Glaux's and has to be signed with it,
+    ///         or whoever submits the operation could widen the window at will.
+    function _userOpDigest(bytes32 userOpHash, uint48 validUntil) internal view returns (bytes32) {
+        return GlauxStorage.eip191(
+            account, keccak256(abi.encode(GlauxStorage.USEROP_DOMAIN, userOpHash, validUntil))
+        );
+    }
+
+    function _userOpSignature(bytes32 userOpHash, uint48 validUntil)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return abi.encode(validUntil, _twoSigs(_userOpDigest(userOpHash, validUntil)));
     }
 }

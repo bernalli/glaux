@@ -2,13 +2,14 @@
 
 ## Local two-chain end-to-end (verified)
 
-Date: 2026-07-29. Contracts: the P-256 verifier probe (Phase 2), on top of the final
-Phase 1 state. The whole run below is repeated from scratch each time the contracts
-change: changing them changes their bytecode, and therefore every deterministic address
-and code hash recorded here. The previous record was already stale — it named commit
-`80ceff6` while `0dc123e` (proof of possession, EIP-191 v0) had changed the contracts
-after it — so the addresses below differ from the ones this file used to carry for two
-reasons, not one.
+Date: 2026-07-29. Contracts: the P-256 verifier probe and execution deadlines (Phase 2),
+on top of the final Phase 1 state. The whole run below is repeated from scratch each time
+the contracts change: changing them changes their bytecode, and therefore every
+deterministic address and code hash recorded here.
+
+`GlauxDelegate` keeps the same address across these re-runs while `GlauxAccount` moves,
+which is the expected signal rather than a coincidence: the router is the immutable half
+and Phase 2 has not touched it. Every change so far has landed in the implementation.
 
 Two local `anvil` instances with EIP-7702 (Prague) support, on different chain ids:
 
@@ -24,8 +25,8 @@ default account 0 (`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`).
 
 | Chain id | GlauxAccount (impl)                          | GlauxDelegate (router)                       |
 |----------|-----------------------------------------------|-----------------------------------------------|
-| 31337    | `0x60cCad1e7A3c6595A661b4601fAe0d2757eC6B94`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
-| 31338    | `0x60cCad1e7A3c6595A661b4601fAe0d2757eC6B94`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
+| 31337    | `0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
+| 31338    | `0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
 
 **Addresses are identical on both chains** — the CREATE2 determinism claim, confirmed by
 running the same salted-bytecode deployment through the canonical CREATE2 deployer
@@ -34,7 +35,7 @@ running the same salted-bytecode deployment through the canonical CREATE2 deploy
 Implementation runtime code hash (`address(impl).codehash`, printed by `Deploy.s.sol`):
 
 ```
-0x4bebc65bb180139ae52e90ead37b8f49865075dd24df3e602104ccfdcf9cecb0
+0x0dece52d0ef5c20a6c2a0360375534af0de56fcbe51f7c3496c9a26c70686b4d
 ```
 
 ### 2. Birth blob (one blob, generated once)
@@ -58,7 +59,7 @@ memory and was discarded on exit; it was never written to disk or logged.
 Born account address (recovered from the EIP-7702 authorization signed by the birth key):
 
 ```
-0xB0c98dDD4db87b2DC930a1ceF613EE9753d55520
+0xfD7969dB90258e91d414B0d40e1C113Bf83D3f6F
 ```
 
 ### 3. Submission — the SAME blob to BOTH chains
@@ -68,12 +69,12 @@ default account 0 acting as an ordinary, unprivileged relayer (`GLAUX_RELAYER_KE
 
 | Chain id | Tx hash                                                              | Status | Gas used |
 |----------|-----------------------------------------------------------------------|--------|----------|
-| 31337    | `0x02f1ad6034653ea66b54520294809778cd58e3536c30ce18155b0742308a6f3f`  | 1      | 1352377  |
-| 31338    | `0xb2afae7d1524d30a1e96d27b73507fa0992fd7c0d7fe6f3417733c0550d121e7`  | 1      | 1352377  |
+| 31337    | `0x16fd595dcbc5f450e13f39516a9eddcb3590defd8b142f56833d60ada608fd08`  | 1      | 1356339  |
+| 31338    | `0xf9d929ab6a6aa20983f076bf0a746025964545bcd8f32152eb9b6ed5e5c83313`  | 1      | 1356339  |
 
 Both transactions succeeded (status 1) with identical gas usage.
 
-Birth cost 687,651 gas before the probe and 1,352,377 after, but almost none of that
+Birth cost 687,651 gas before the probe and 1,356,339 after, but almost none of that
 difference is the probe's price on a real chain. These anvil instances answer P-256 with
 the vendored **Solidity** verifier, which costs on the order of 330k gas per
 verification, and the probe makes two calls; where `0x100` is the actual precompile the
@@ -92,7 +93,7 @@ ignored it rather than as a cheap birth.
 ### 4. Post-birth verification — identical on BOTH chains
 
 ```
-cast code 0xB0c98dDD4db87b2DC930a1ceF613EE9753d55520 --rpc-url <rpc>
+cast code 0xfD7969dB90258e91d414B0d40e1C113Bf83D3f6F --rpc-url <rpc>
   -> 0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9   (EIP-7702 delegation indicator to the router)
 
 cast call <account> "updateNonce()(uint64)" --rpc-url <rpc>
@@ -111,7 +112,7 @@ cast call <account> "getSlot(uint8)(uint8,bytes)" 2 --rpc-url <rpc>
 # left untouched, so nothing is exported to whatever wallet the account is
 # re-delegated to next.
 cast call <account> "implementation()(address)" --rpc-url <rpc>
-  -> 0x60cCad1e7A3c6595A661b4601fAe0d2757eC6B94
+  -> 0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3
 cast storage <account> 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url <rpc>
   -> 0x0000...0000   (ERC-1967: never written by Glaux)
 ```
@@ -129,7 +130,7 @@ carrying the same three factors — one of them the P-256 device key:
 
 ```
 python3 scripts/submit_birth.py --rpc http://127.0.0.1:8546 --blob blob.json
-  -> status 0, gas used 72661   (candidate account 0xa76D1619f883c9D63364de269946199eE6577646)
+  -> status 0, gas used 72657   (candidate account 0xc309f1fcd9040CA5AcfC2bDdF29Ab4C523A898bf)
 
 cast call <candidate> "initialize(address,bytes32,bytes,bytes)" <impl> <codehash> <initData> <birthSig>
   -> execution reverted: custom error 0x2d07aedf   (P256VerifierUnavailable)

@@ -454,6 +454,14 @@ These trip integrations more than anything else in this document.
 - **P-256 slot data**: exactly **64 bytes**, `abi.encode(uint256 qx,
   uint256 qy)` — the raw affine coordinates, not a SEC1 `04||X||Y` prefixed
   encoding and not a compressed point.
+- **Execution deadline**: a `uint48` unix timestamp, passed as the second
+  argument of `executeWithSigs(calls, validUntil, sigs)` *and* bound into the
+  digest the factors sign. Signing one value and submitting another fails as a
+  bad signature, which is the point. `0` is always an expired operation, never an
+  unbounded one — for a long-lived operation pass an explicit far-future
+  timestamp so the signers can see what they are agreeing to.
+- **ERC-4337 signature blob**: `abi.encode(uint48 validUntil, SlotSig[2] sigs)`,
+  bounded at 576 bytes. Note the deadline comes *first*, ahead of the array.
 
 Hardware and WebAuthn APIs typically return **DER-encoded** ECDSA
 signatures and SEC1 or COSE-encoded public keys. Converting them is the
@@ -484,9 +492,16 @@ asserting the paymaster's own deposit was debited by exactly the
 `actualGasCost` reported in the `UserOperationEvent`. Signatures authorize;
 the relayer or paymaster pays.
 
-Note the 4337 path gives no deadline either: `validateUserOp` returns `0`, which
-the EntryPoint reads as a `validUntil` of `type(uint48).max`. A signed user
-operation is valid forever, exactly like a signed direct batch.
+The 4337 path carries the same deadline the direct path does, but it travels in
+the signature rather than in the operation: `op.signature` is
+`abi.encode(uint48 validUntil, SlotSig[2] sigs)`, and the factors sign
+`eip191(account, keccak256(abi.encode(USEROP_DOMAIN, userOpHash, validUntil)))`
+rather than the bare `userOpHash`. Sign the deadline you actually mean — the
+account returns it to the EntryPoint as `validationData`, and the EntryPoint
+refuses the operation with `AA22 expired or not due` once it passes. A blob whose
+`validUntil` was edited after signing fails validation with `AA24 signature
+error`, so the window cannot be widened in flight. `validUntil == 0` is refused
+outright: the EntryPoint would read it as "no expiry".
 
 A P-256 factor is compatible with the 4337 path: **ERC-7562 rule OP-062**
 explicitly permits the `P256VERIFY` precompile of EIP-7951 during validation,
