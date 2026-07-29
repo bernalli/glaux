@@ -2,11 +2,14 @@
 pragma solidity 0.8.28;
 
 import {GlauxFixture} from "./GlauxFixture.sol";
+import {Counter} from "./Execute.t.sol";
 import {GlauxDelegate} from "../src/GlauxDelegate.sol";
 import {GlauxAccount} from "../src/GlauxAccount.sol";
 import {
     GlauxStorage,
     FactorSlot,
+    SlotSig,
+    Call,
     Update,
     P256VerifierUnavailable,
     ProbeKeyNotInstallable
@@ -22,6 +25,27 @@ contract P256AlwaysAcceptVerifier {
     fallback() external {
         assembly {
             mstore(0, 1)
+            return(0, 32)
+        }
+    }
+}
+
+/// @notice Answers the probe's two questions correctly and "valid" to everything else.
+///         This is the shape no known-answer test can catch, and the reason the threat
+///         model says the probe stops accidents rather than a hostile chain: a fresh
+///         challenge cannot be verified on chain without the very verifier under test,
+///         so a known answer must be publicly known, and code can special-case it.
+contract P256SelectiveVerifier {
+    bytes32 private immutable NEGATIVE_ARM;
+
+    constructor(bytes32 negativeArm) {
+        NEGATIVE_ARM = negativeArm;
+    }
+
+    fallback() external {
+        uint256 answer = keccak256(msg.data) == NEGATIVE_ARM ? 0 : 1;
+        assembly {
+            mstore(0, answer)
             return(0, 32)
         }
     }
@@ -210,6 +234,47 @@ contract P256ProbeTest is GlauxFixture {
     function test_probeVector_verifiesUnderTheRealVerifier() public view {
         assertTrue(_rawVerify(SignatureVerify.PROBE_DIGEST));
         assertFalse(_rawVerify(SignatureVerify.PROBE_DIGEST ^ bytes32(uint256(1))));
+    }
+
+    /// @notice The probe's boundary, pinned so nobody mistakes it for a stronger
+    ///         guarantee than it is: a verifier that answers the two probe questions
+    ///         honestly and says "valid" to everything else passes, the slot installs,
+    ///         and the P-256 factor is then forgeable by anyone — here a signature of
+    ///         `(1, 2)` completes the quorum and moves the account.
+    /// @dev This is not a defect the probe should close and cannot be closed by a
+    ///      better vector; see docs/threat-model.md residual 8. A chain whose verifier
+    ///      is adversarial owns every P-256 check the account makes, at signing time as
+    ///      much as at installation. The test exists so the claim stays honest and so a
+    ///      future change that pretends otherwise fails here.
+    function test_selectiveVerifier_defeatsTheProbe_documentedLimitation() public {
+        bytes32 negativeArm = keccak256(
+            abi.encodePacked(
+                SignatureVerify.PROBE_DIGEST ^ bytes32(uint256(1)),
+                SignatureVerify.PROBE_R,
+                SignatureVerify.PROBE_S,
+                SignatureVerify.PROBE_QX,
+                SignatureVerify.PROBE_QY
+            )
+        );
+        vm.etch(address(0x100), address(new P256SelectiveVerifier(negativeArm)).code);
+
+        // The probe is satisfied and the P-256 slot installs.
+        _birthAccount();
+        (uint8 verifierType,) = GlauxAccount(payable(account)).getSlot(1);
+        assertEq(verifierType, GlauxStorage.VERIFIER_P256);
+
+        // And the installed factor signs for anyone: no P-256 key involved.
+        Counter counter = new Counter();
+        Call[] memory calls = new Call[](1);
+        calls[0] = Call(address(counter), 0, abi.encodeWithSignature("bump()"));
+        bytes32 digest = _execDigest(calls);
+        SlotSig[2] memory sigs;
+        sigs[0] = SlotSig(0, _sig65(paperPk, digest));
+        sigs[1] = SlotSig(1, abi.encode(uint256(1), uint256(2)));
+
+        GlauxAccount(payable(account)).executeWithSigs(calls, sigs);
+
+        assertEq(counter.n(), 1);
     }
 
     function _rawVerify(bytes32 digest) internal view returns (bool) {
