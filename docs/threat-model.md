@@ -91,6 +91,27 @@ sponsorship, never authorize an unsigned operation.
 **A compromised birth environment.** Holds the key that authorizes
 initialization — and, as the first residual explains, far more than that.
 
+**An attacker who supplies the delegation target.** Not a Glaux adversary at
+all, and the most common one in practice: the user is persuaded to sign an
+EIP-7702 authorization pointing at the attacker's contract instead of Glaux's
+router. This is the dominant failure mode of 7702 in the wild — more than 97% of
+delegations on chain point at copies of one sweeper contract ("CrimeEnjoyor"),
+which has drained 450,000+ wallets, and an April 2026 incident routed a call
+through a delegated admin EOA to drain a token pool. *Guarantee:* none. Glaux's
+contracts are not reached at all in this scenario; the account never becomes a
+Glaux account. *What it demands of the design:* the delegation target must be
+worth pointing at and cheap to check — immutable, deployed deterministically at
+the same address on every chain, with a code hash a client can compare against a
+published constant before signing anything. That is why the router is frozen and
+CREATE2-deployed rather than upgradeable, and why `initialize` binds the
+implementation's code hash into the birth signature. A wallet integrating Glaux
+must show the user the target address and verify it against the canonical one;
+no on-chain check can help a user who signed for someone else's contract.
+Sources: [CrimeEnjoyor
+analysis](https://dev.to/ohmygod/the-crimeenjoyor-epidemic-how-eip-7702-delegation-phishing-drained-450k-wallets-and-how-to-e2g),
+[QNT pool drain via a delegated admin
+EOA](https://www.darknavy.org/web3/exploits/qnt-pool-drain-via-eip-7702-admin-eoa-delegation/).
+
 **An attacker who already holds two factors.** Meets the threshold for every
 operation the contract exposes. This is not a partial compromise; it is the
 definition of control under a 2-of-3 threshold, and every "guard" described
@@ -165,9 +186,17 @@ first, and it does not end when the account is born. It is unlimited authority,
 for the lifetime of the address.
 
 The only remedy for a suspected compromise is **migrating every asset to a
-newly born account**. EIP-7851, if it ships, would let a delegated EOA disable
-its residual ECDSA authority at the protocol level and is the only real fix;
-Glaux does not depend on it existing.
+newly born account**. Two protocol-level proposals would be the real fix, and
+Glaux depends on neither: EIP-7851, which would let a delegated EOA disable its
+residual ECDSA authority, and [EIP-8164](https://eips.ethereum.org/EIPS/eip-8164)
+(Draft, February 2026), which replaces the EOA's ECDSA authentication with an
+embedded ML-DSA-44 key under a `0xef0101` prefix, making the original key
+permanently inert — and which names "provably rootless accounts", created so
+that no party ever possessed the ECDSA private key, as an explicit goal. That is
+the same property Glaux buys in userland by generating the birth key inside one
+process and destroying it; if 8164 ships, this residual moves from a process
+guarantee to a protocol one. See §9 of the spec for what that would mean
+strategically.
 
 The entire security of the account therefore rests on the birth key never
 leaving the process that generated it, and being destroyed immediately after

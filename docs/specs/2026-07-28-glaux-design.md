@@ -1,10 +1,11 @@
 # Glaux — Design Specification
 
-- **Version**: v0.7
+- **Version**: v0.8
 - **Date**: 2026-07-28, revised 2026-07-29
 - **Status**: v0.1 was ratified before implementation. v0.2 to v0.5 fold in the
-  design changes that security review forced during Phase 1; v0.6 is the first
-  Phase 2 change. Each is marked in place and all are listed in §11.
+  design changes that security review forced during Phase 1; v0.6 and v0.7 are
+  Phase 2 changes; v0.8 adds the field survey and the EIP-8164 risk in §9 and
+  changes no behaviour. Each is marked in place and all are listed in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
   (cross-chain keystore state of the art) and 12 (post-quantum EVM state of
   the art). In the founding documents the project is referred to by its
@@ -267,6 +268,57 @@ Once validated in production: publish the verifier interface and the update
 channel as an **ERC draft**; evaluate an **ERC-7579 adapter** as future work,
 so Glaux slots can host ecosystem modules without importing their surface
 into the core.
+
+### Where the field actually stands (surveyed 2026-07-29)
+
+The problem Glaux attacks is not claimed by anyone who has shipped a solution,
+which is the reason to keep going and also the reason not to assume the window
+stays open.
+
+- **Cross-chain configuration consistency is open.** Base's Keyspace, the
+  reference attempt, states in its own documentation that the keystore "isn't
+  yet ready for its originally intended use case: ensuring cross-chain signer
+  consistency". It is v0.1.0 (March 2025), it deliberately chose resilience over
+  consistency, and consequently **revoking a signer does not propagate** — the
+  user replicates by hand on each chain. They explored ZK rollups and a
+  dedicated keystore rollup and abandoned both, on complexity and finality
+  grounds. Glaux's update channel answers exactly this, without a rollup or a
+  bridge, by removing `chainId` from the digests so one signature is portable.
+  See [Exploring the Keystore](https://blog.base.dev/exploring-the-keystore).
+- **The 7702 multisig path is unfinished at the incumbent.** Safe's own
+  documentation marks all three of its 7702 approaches experimental and **not
+  audited**, and flags front-running during setup — the window between the
+  delegation landing and the account being configured, which Glaux closes with
+  the signed birth blob and the router's birth guard. See
+  [Safe and EIP-7702](https://docs.safe.global/advanced/eip-7702/7702-safe).
+- **Signature-domain standards are converging on Glaux's concerns, not against
+  them.** ERC-7739 (readable typed signatures, replay across accounts owned by
+  one EOA) and ERC-7803 (EIP-712 signing domains) formalise the same hazards the
+  EIP-191 v0 decision in §11 reasons about, and the ecosystem frames a zero
+  `chainId` the way this spec does: the mechanism that makes one signature apply
+  everywhere is also the one that makes scope a UX obligation.
+
+### Strategic risk: EIP-8164
+
+[EIP-8164](https://eips.ethereum.org/EIPS/eip-8164) (Draft, Standards Track
+Core, created 2026-02-17) proposes native key delegation for EOAs: an embedded
+ML-DSA-44 post-quantum key under a `0xef0101` prefix that makes the account's
+original ECDSA key **permanently inert**, and it names provably rootless
+accounts — where no party ever held the ECDSA key — as an explicit goal.
+
+If it ships, two of this design's arguments change. The residual-key problem
+(threat model residual 1), which Glaux answers with an ephemeral birth key and a
+process guarantee, becomes a protocol guarantee available to everyone. And
+post-quantum readiness, listed here as a future verifier type, arrives at the
+EOA layer without Glaux.
+
+It does **not** subsume Glaux: 8164 authenticates with exactly one key at a
+time, so it offers no threshold, no factor independence, and nothing about
+cross-chain configuration. The honest reading is that it is complementary — a
+Glaux account could in principle be born on an 8164 EOA and inherit rootlessness
+for free — but it narrows the pitch to the two things that remain genuinely
+unclaimed: the 2-of-3 threshold and the chain-agnostic update channel. Track its
+status before writing the ERC draft.
 
 ## 10. Phase 1 acceptance
 
