@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {
+    GlauxStorage,
+    FactorSlot,
+    SlotSig,
+    AlreadyInitialized,
+    InvalidSignature,
+    InvalidSlot,
+    InvalidVerifierType,
+    UpdateApplied,
+    Executed
+} from "./GlauxStorage.sol";
+import {SignatureVerify} from "./lib/SignatureVerify.sol";
+
+/// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
+contract GlauxAccount {
+    address public immutable ENTRYPOINT;
+
+    constructor(address entryPoint) {
+        ENTRYPOINT = entryPoint;
+        GlauxStorage.layout().initialized = true;
+    }
+
+    function initializeAccount(bytes calldata initData) external {
+        GlauxStorage.Layout storage l = GlauxStorage.layout();
+        if (l.initialized) revert AlreadyInitialized();
+        FactorSlot[3] memory slots = abi.decode(initData, (FactorSlot[3]));
+        for (uint256 i = 0; i < 3; i++) {
+            _validateSlot(slots[i]);
+            l.slots[i] = slots[i];
+        }
+        l.initialized = true;
+    }
+
+    function _validateSlot(FactorSlot memory s) internal pure {
+        if (s.verifierType == GlauxStorage.VERIFIER_SECP256K1) {
+            if (s.data.length != 32) revert InvalidSlot();
+        } else if (s.verifierType == GlauxStorage.VERIFIER_P256) {
+            if (s.data.length != 64) revert InvalidSlot();
+        } else {
+            revert InvalidVerifierType();
+        }
+    }
+
+    function getSlot(uint8 index) external view returns (uint8, bytes memory) {
+        if (index > 2) revert InvalidSlot();
+        FactorSlot storage s = GlauxStorage.layout().slots[index];
+        return (s.verifierType, s.data);
+    }
+
+    function updateNonce() external view returns (uint64) {
+        return GlauxStorage.layout().updateNonce;
+    }
+
+    function execNonce() external view returns (uint64) {
+        return GlauxStorage.layout().execNonce;
+    }
+
+    function _requireTwoSigs(bytes32 digest, SlotSig[2] memory sigs) internal view {
+        if (!_checkTwoSigs(digest, sigs)) revert InvalidSignature();
+    }
+
+    function _checkTwoSigs(bytes32 digest, SlotSig[2] memory sigs) internal view returns (bool) {
+        if (sigs[0].slotIndex > 2 || sigs[1].slotIndex > 2) return false;
+        if (sigs[0].slotIndex == sigs[1].slotIndex) return false;
+        GlauxStorage.Layout storage l = GlauxStorage.layout();
+        if (!l.initialized) return false;
+        FactorSlot storage a = l.slots[sigs[0].slotIndex];
+        FactorSlot storage b = l.slots[sigs[1].slotIndex];
+        return SignatureVerify.verify(a.verifierType, a.data, digest, sigs[0].signature)
+            && SignatureVerify.verify(b.verifierType, b.data, digest, sigs[1].signature);
+    }
+}
