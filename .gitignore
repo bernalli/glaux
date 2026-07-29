@@ -5,3 +5,6 @@
 node_modules/
 out/
 cache/
+broadcast/**/dry-run/
+__pycache__/
+*.pyc

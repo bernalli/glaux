@@ -1,0 +1,27 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge fmt --check
+      - run: forge build --sizes
+      - run: forge test -vvv
+  slither:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Slither compiles through crytic-compile, which detects the Foundry
+      # project and shells out to `forge`. Install it explicitly: the action
+      # only auto-installs Foundry when it finds a foundry.toml inside the
+      # target directory, so a target of "src/" leaves forge missing entirely.
+      - uses: foundry-rs/foundry-toolchain@v1
+      # Target the project root, not src/, so crytic-compile gets the real
+      # Foundry project. Scoping to first-party code is slither.config.json's
+      # job (filter_paths excludes lib/, test/ and script/) and the two targets
+      # produce identical findings.
+      - uses: crytic/slither-action@v0.4.0
+        if: hashFiles('src/**/*.sol') != ''
+        with: { target: ".", fail-on: high, slither-config: "slither.config.json" }

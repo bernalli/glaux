@@ -7,8 +7,30 @@ Minimal, crypto-agile EIP-7702 smart account — self-custodial key management
 with threshold security on the operational path and a post-quantum-ready
 verification slot.
 
-> **Status: pre-alpha, design phase.** Nothing here is audited or
-> production-ready. Do not use with real funds.
+> **Status: unaudited reference implementation.** Phase 1 is complete — the
+> contracts, a property/invariant test suite, deterministic deployment and
+> birth tooling all exist and are green — but nothing here has been audited.
+> **Do not use with real funds.**
+
+## Documentation
+
+| Document | What it is |
+|---|---|
+| [`docs/specs/2026-07-28-glaux-design.md`](docs/specs/2026-07-28-glaux-design.md) | The design specification (v0.5), with a revision list |
+| [`docs/threat-model.md`](docs/threat-model.md) | What is protected, against whom, and the residuals the project declares openly |
+| [`docs/client-guidance.md`](docs/client-guidance.md) | Required reading before integrating: several residuals are closed **only** by a client-side rule |
+| [`docs/static-analysis.md`](docs/static-analysis.md) | Slither triage — every finding fixed, suppressed with reasoning, or accounted for |
+| [`docs/deployments.md`](docs/deployments.md) | Deterministic addresses and the end-to-end birth proof |
+
+## Build and test
+
+```bash
+forge build
+forge test
+```
+
+Dependencies are vendored under `lib/` (see `lib/VENDORED.md`) rather than
+installed as submodules, so a fresh checkout builds offline with no fetch step.
 
 ## Goals
 
@@ -35,4 +57,4 @@ verification slot.
 
 ## License
 
-Permissive open-source license (exact license TBD before first release).
+MIT — see [`LICENSE`](LICENSE).
