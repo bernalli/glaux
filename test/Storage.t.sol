@@ -98,31 +98,73 @@ contract StorageTest is Test {
         StorageHarness h = new StorageHarness();
         bytes32 root = keccak256("glaux.account.v1.storage");
 
-        h.setSlot(2, 7, abi.encode(uint256(1)));
+        h.setSlot(0, 0x11, hex"01");
+        h.setSlot(1, 0x22, hex"02");
+        h.setSlot(2, 0x33, hex"03");
 
-        bytes32 slotWord = vm.load(address(h), bytes32(uint256(root) + 1 + 2 * 2));
-        assertEq(uint256(slotWord), 7);
+        assertEq(uint256(vm.load(address(h), bytes32(uint256(root) + 1))), 0x11);
+        assertEq(uint256(vm.load(address(h), bytes32(uint256(root) + 1 + 2))), 0x22);
+        assertEq(uint256(vm.load(address(h), bytes32(uint256(root) + 1 + 2 * 2))), 0x33);
     }
 
     function test_factor_slot_roundtrip_short_data() public {
         StorageHarness h = new StorageHarness();
-        bytes memory shortData = abi.encode(address(0xCAFE));
-        h.setSlot(0, GlauxStorage.VERIFIER_SECP256K1, shortData);
+        bytes memory shortData0 = hex"01";
+        bytes memory shortData1 =
+            hex"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        bytes memory shortData2 = hex"aabbcc";
+        bytes32 root = keccak256("glaux.account.v1.storage");
 
-        (uint8 v, bytes memory d) = h.getSlot(0);
-        assertEq(v, GlauxStorage.VERIFIER_SECP256K1);
-        assertEq(d, shortData);
+        assertTrue(shortData0.length < 32);
+        assertTrue(shortData1.length < 32);
+        assertTrue(shortData2.length < 32);
+
+        h.setSlot(0, GlauxStorage.VERIFIER_SECP256K1, shortData0);
+        h.setSlot(1, GlauxStorage.VERIFIER_P256, shortData1);
+        h.setSlot(2, GlauxStorage.VERIFIER_SECP256K1, shortData2);
+
+        assertEq(
+            vm.load(address(h), bytes32(uint256(root) + 1 + 1)),
+            bytes32((uint256(1) << 248) | uint256(2))
+        );
+
+        (uint8 v0, bytes memory d0) = h.getSlot(0);
+        (uint8 v1, bytes memory d1) = h.getSlot(1);
+        (uint8 v2, bytes memory d2) = h.getSlot(2);
+        assertEq(v0, GlauxStorage.VERIFIER_SECP256K1);
+        assertEq(d0, shortData0);
+        assertEq(v1, GlauxStorage.VERIFIER_P256);
+        assertEq(d1, shortData1);
+        assertEq(v2, GlauxStorage.VERIFIER_SECP256K1);
+        assertEq(d2, shortData2);
     }
 
     function test_factor_slot_roundtrip_long_data() public {
         StorageHarness h = new StorageHarness();
-        bytes memory longData = abi.encode(uint256(1234567890), uint256(9876543210), uint256(42));
-        assertTrue(longData.length > 31);
-        h.setSlot(1, GlauxStorage.VERIFIER_P256, longData);
+        bytes memory longData0 =
+            hex"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021";
+        bytes memory longData1 =
+            hex"21201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100";
+        bytes memory longData2 =
+            hex"a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1";
 
-        (uint8 v, bytes memory d) = h.getSlot(1);
-        assertEq(v, GlauxStorage.VERIFIER_P256);
-        assertEq(d, longData);
+        assertTrue(longData0.length > 32);
+        assertTrue(longData1.length > 32);
+        assertTrue(longData2.length > 32);
+
+        h.setSlot(0, GlauxStorage.VERIFIER_SECP256K1, longData0);
+        h.setSlot(1, GlauxStorage.VERIFIER_P256, longData1);
+        h.setSlot(2, GlauxStorage.VERIFIER_SECP256K1, longData2);
+
+        (uint8 v0, bytes memory d0) = h.getSlot(0);
+        (uint8 v1, bytes memory d1) = h.getSlot(1);
+        (uint8 v2, bytes memory d2) = h.getSlot(2);
+        assertEq(v0, GlauxStorage.VERIFIER_SECP256K1);
+        assertEq(d0, longData0);
+        assertEq(v1, GlauxStorage.VERIFIER_P256);
+        assertEq(d1, longData1);
+        assertEq(v2, GlauxStorage.VERIFIER_SECP256K1);
+        assertEq(d2, longData2);
     }
 
     function test_factor_slot_roundtrip_third_slot() public {
