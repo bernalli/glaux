@@ -13,5 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # src/ is empty until the first contracts land; Slither cannot analyse a
+      # target that does not exist. The guard makes this step skip on such a
+      # checkout and activate by itself once any Solidity source is present.
       - uses: crytic/slither-action@v0.4.0
+        if: hashFiles('src/**/*.sol') != ''
         with: { target: "src/", fail-on: high }
