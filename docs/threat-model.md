@@ -298,8 +298,18 @@ verification returns `false` — proven by
 The failure mode is quiet and asymmetric: slot *installation* validates only
 the key's shape and therefore succeeds anywhere, while *signing* with that
 factor is impossible on such a chain. An account whose F1 is P-256 silently
-operates as 2-of-2 there. Clients must maintain a supported-chain matrix and
-probe the precompile before relying on a chain.
+operates as 2-of-2 there.
+
+**With TWO P-256 slots it is worse than degraded — the account is born inert.**
+Every possible pair of slots then contains at least one P-256 factor, so no
+quorum can be formed at all: nothing executes, and `applyUpdate` cannot rotate
+out of the situation either, because rotating is itself an operation requiring a
+quorum. Client guidance permits F3 to be P-256, so this configuration is
+reachable by following the documentation. Birth submission is permissionless, so
+a third party can bring an account up in this state on any chain it has not yet
+reached. Clients must maintain a supported-chain matrix and probe the precompile
+before relying on a chain, and must ensure at least two slots are verifiable on
+every chain the account is meant to operate on.
 
 This is a chain-availability limit, not an ERC-4337 limit: **ERC-7562 rule
 OP-062** explicitly permits the `P256VERIFY` precompile of EIP-7951 during the
@@ -359,3 +369,90 @@ guarantee that a live account can never be re-initialized out from under its
 owners, and it provides no safety net if an upgrade breaks the upgrade path.
 Client guidance therefore requires staged rollout — land an upgrade on one
 low-value chain and verify the account still functions before propagating it.
+
+### 13. A signed birth blob never expires and cannot be revoked
+
+The update channel has an absolute signer-side rule — never sign two updates for
+one nonce. Birth has no equivalent, and it needs one: **any birth blob ever
+signed stays a live takeover primitive, forever, on every chain the account has
+not yet been born on.** The digest carries no deadline, the immutable router has
+no mechanism to invalidate one, and the birth key that could have signed a
+replacement is destroyed by design. `test_birth_noCodeImplementationRevertsAndOriginalBlobIsRetryable`
+deliberately proves that durability, because a blob must survive to reach chains
+that do not exist yet; the same property means a second, differently-configured
+blob signed during setup is an unrevokable backdoor.
+
+The rule is therefore: **sign exactly one birth blob, ever.** If a client's flow
+can produce two — a retry, a "regenerate", an aborted setup that already
+signed — that flow is broken, and no on-chain check will catch it.
+
+### 14. Direct execution has no deadline
+
+The execution digest binds the chain, the account, the nonce and the calls — but
+not *when*. A relayer holding a signed batch may submit it at any later moment,
+and for a value-moving operation that is not a neutral choice: sitting on a
+signed swap and submitting it after the price has moved extracts real value. The
+only cancellation available is racing a different batch at the same nonce
+against the party who is holding yours.
+
+ERC-4337 has `validUntil` for exactly this reason; the direct path has no
+equivalent in v1. This lives in the upgradeable implementation, so it can be
+fixed by an ordinary upgrade rather than a redeployment — but until it is,
+clients should treat a signed batch as live indefinitely and prefer the 4337
+path for anything time-sensitive.
+
+### 15. Point-in-time code checks, and other narrow residuals
+
+- **The implementation code hash is checked at install, never again.** A
+  metamorphic address combined with EIP-6780 semantics could let quorum-signed
+  logic be swapped afterwards under an already-verified hash. This requires the
+  quorum to have signed a metamorphic implementation in the first place.
+- **A pointer to an address holding no code fails silently.** A delegatecall to
+  a codeless address succeeds with empty returndata, so calls appear to succeed
+  and `view` calls appear to return zero. Reachable only through
+  create/install/selfdestruct within one transaction, all quorum-authorized.
+- **The marker staticcall forwards all remaining gas.** The returndata window is
+  bounded, so nothing can be copied back, but a hostile candidate can still burn
+  the submitter's gas. The submitter is whoever chose to relay the operation.
+- **`executeFromEntryPoint` emits `Executed` without advancing the nonce it
+  reports**, by design — the EntryPoint owns replay protection on that path — so
+  every 4337 execution logs the same value and an indexer cannot distinguish
+  them by nonce alone.
+
+## Not implemented in v1 (scope, not oversight)
+
+- **No ERC-721/ERC-1155 receiver hooks.** `safeTransferFrom` of an NFT to a
+  Glaux account reverts. Any unknown selector reverts through the router.
+- **No ERC-1271.** The account cannot produce contract signatures, so it cannot
+  be used with Permit2, Seaport, or other signature-consuming protocols.
+
+Both live in the upgradeable implementation and are additive. They are called
+out here because a reference smart account is expected to have them, and their
+absence should be a stated decision rather than a surprise.
+
+## Open design decision: no EIP-712 typed data
+
+All three digests are raw `keccak256(abi.encode(...))` values, each prefixed
+with a distinct domain constant (`GLAUX_INIT_V1`, `GLAUX_UPDATE_V1`,
+`GLAUX_EXEC_V1`), and the update and execution digests additionally bind the
+account address. That provides domain separation *between Glaux operations and
+between Glaux and other protocols*, which is the security property usually meant
+by the phrase.
+
+What it does not provide is **legibility**. A signer sees an opaque 32-byte
+hash, not a rendered description of what they are authorizing. For a project
+whose stated ambition is an ERC draft and third-party adoption, that is a real
+weakness, and it is worth stating plainly that the argument for typed data here
+is an adoption argument, not merely an aesthetic one.
+
+Two things are true and pull in opposite directions. The birth digest lives in
+the **immutable** router, so this choice is permanent for birth once the router
+is deployed at a canonical address. But EIP-712's usual chain-id domain field
+would break the deliberate chain-agnosticism of the birth and update blobs, so
+adopting it means adopting a domain separator that omits `chainId` — unusual,
+and something wallet tooling may render or reject inconsistently.
+
+**Status: open, and deliberately not resolved unilaterally.** It must be decided
+before the router is deployed to any address intended to be canonical, because
+after that it cannot be revisited. Nothing in this repository has been deployed
+anywhere except local test chains.

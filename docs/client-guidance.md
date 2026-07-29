@@ -63,6 +63,13 @@ again before adding any new chain — by staticcalling `0x100` with a known
 valid vector and checking it returns one word equal to 1. Treat a chain
 without the precompile as one where F1 does not exist.
 
+**Never configure two P-256 slots unless every target chain has the
+precompile.** With two, every possible pair of slots contains one, so on a chain
+without it the account is not degraded but *inert*: nothing can execute, and
+`applyUpdate` cannot rotate out of it either, because rotating is itself an
+operation that needs a quorum. One P-256 slot degrades an account to 2-of-2 on
+such a chain; two strand it permanently.
+
 Glaux is deliberately platform-neutral: nothing in the contract or in this
 guidance ties F1 to Apple, Google, or any single vendor, and integrators
 should preserve that neutrality rather than hard-coding one platform's
@@ -202,6 +209,21 @@ Practically: generate the key in memory, use it for exactly two signatures,
 and destroy it without it ever touching disk, a log, a clipboard, a crash
 dump, or a backup. If you cannot guarantee that, you cannot guarantee the
 account.
+
+### Sign exactly one birth blob, ever
+
+The update channel has an absolute rule against signing two updates for one
+nonce. Birth needs the same rule, for a sharper reason: a birth blob **never
+expires and cannot be revoked**. There is no deadline in the digest, no
+mechanism in the immutable router to invalidate one, and no birth key left to
+sign a replacement.
+
+So a second blob signed during setup — a retry, a "regenerate", an aborted flow
+that had already signed — remains a permanent takeover primitive on every chain
+the account has not yet been born on. Anyone holding it can bring the account up
+there with *its* factor configuration instead of yours, and submission is
+permissionless. If your setup flow can produce two signed blobs under any
+circumstance, that flow is broken; no on-chain check will catch it.
 
 ### Retain the public artifacts durably — forever
 

@@ -1,10 +1,10 @@
 # Glaux — Design Specification
 
-- **Version**: v0.2
+- **Version**: v0.3
 - **Date**: 2026-07-28, revised 2026-07-29
-- **Status**: v0.1 was ratified before implementation. v0.2 folds in the design
-  changes that security review forced during Phase 1; each is marked
-  *(revised v0.2)* in place and listed in §11.
+- **Status**: v0.1 was ratified before implementation. v0.2 and v0.3 fold in the
+  design changes that security review forced during Phase 1; each is marked in
+  place and all are listed in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
   (cross-chain keystore state of the art) and 12 (post-quantum EVM state of
   the art). In the founding documents the project is referred to by its
@@ -215,8 +215,8 @@ signer-side rules that follow from it.
    read storage a client did not review. The check makes cross-chain code
    identical; it does not make it correct.
 8. *(revised v0.2)* **Upgrades are irreversible in one direction**: once the
-   ERC-1967 pointer is non-zero the birth path can never re-run, so an upgrade
-   to logic that cannot itself upgrade is terminal. Storage-layout and
+   implementation pointer is non-zero the birth path can never re-run, so an
+   upgrade to logic that cannot itself upgrade is terminal. Storage-layout and
    dependency review is a client obligation, not an on-chain check.
 9. *(revised v0.2)* **Submission is permissionless by design** — anyone may
    relay a signed operation and pay for it, which is what makes a cross-chain
@@ -278,6 +278,24 @@ specification. Neither is a design question. The direct `executeWithSigs` path
 needs no bundler at all.
 
 ## 11. Revision history
+
+- **v0.3 (2026-07-29)** — three defects from an independent review, two of them
+  in the immutable router. **The implementation pointer is now a Glaux-owned
+  namespaced slot**, not ERC-1967: that slot is an industry-wide standard and an
+  EIP-7702 re-delegation does not clear storage, so an EOA migrating from any
+  proxy-pattern wallet arrived with it occupied — which permanently blocked
+  birth *and* let the router's fallback execute the stale foreign pointer.
+  ERC-1967 is still written as a mirror for explorers, never read. **Birth is
+  guarded against re-entry** for the duration of the untrusted initializer, so
+  the router no longer depends on a convention that replaceable code could drop.
+  **Two signatures sharing `(r, s)` are rejected**: one ECDSA signature verifies
+  against more than one public key, so distinct slots were not yet distinct
+  credentials and a single keypair could meet the 2-of-3 threshold. Also
+  declared: a birth blob never expires and cannot be revoked (sign exactly one);
+  two P-256 slots make an account inert on a chain without the precompile; the
+  direct execution path has no deadline. **Open, must be decided before the
+  router is deployed to a canonical address: whether to adopt EIP-712 typed
+  data** — see the threat model.
 
 - **v0.2 (2026-07-29)** — six changes forced by Phase 1 security review, all
   ratified before landing: factor slots must be pairwise distinct (§3);
