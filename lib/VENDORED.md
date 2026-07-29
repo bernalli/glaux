@@ -9,6 +9,14 @@ git submodules.
 | `lib/forge-std` | https://github.com/foundry-rs/forge-std | `v1.16.2` | `bf647bd6046f2f7da30d0c2bf435e5c76a780c1b` | test framework (test-only) |
 | `lib/account-abstraction` | https://github.com/eth-infinitism/account-abstraction | `v0.7.0` | `7af70c8993a6f42973f520ae0752386a5032abe7` | ERC-4337 interfaces; `EntryPoint` in tests |
 | `lib/p256-verifier` | https://github.com/daimo-eth/p256-verifier | `master` | `607d3ec8377a3f59d65eca60d87dee8485d2ebcc` | `P256Verifier` etched at the precompile address in tests |
+| `lib/openzeppelin-contracts` | https://github.com/OpenZeppelin/openzeppelin-contracts | `v5.0.2` | — | transitive dependency of `account-abstraction` (test-only) |
+
+`lib/openzeppelin-contracts` exists solely because `account-abstraction`'s `EntryPoint`
+and `BasePaymaster` import it (`^5.0.0` in their `package.json`). Glaux's own `src/`
+imports nothing from OpenZeppelin, and must not: `src/` uses only the
+`account-abstraction` *interfaces*, which have no OpenZeppelin dependency. This tree is
+here so the tests can exercise the REAL EntryPoint and a real paymaster instead of a
+mock.
 
 ## Why vendored instead of submodules
 
