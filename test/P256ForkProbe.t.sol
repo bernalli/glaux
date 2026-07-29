@@ -26,11 +26,22 @@ import {SignatureVerify} from "../src/lib/SignatureVerify.sol";
 ///      chain's STATE, while the calls still execute in the local EVM at the
 ///      configured spec — and this repo builds for `prague`, which predates
 ///      EIP-7951, so `0x100` is not a precompile there and every chain looks broken.
-///      Overriding it is safe for the artifacts: `GlauxAccount`, `GlauxDelegate` and
-///      the implementation code hash are byte-identical under both specs (verified
-///      2026-07-29), so nothing a birth blob signs moves. `prague` stays the build
-///      target because the deployed bytecode must run on chains that have not
-///      forked to Osaka.
+///      Without the flag this test fails against perfectly healthy chains.
+///
+///      The flag does not reach the compiler, and that is why it is safe to pass.
+///      `foundry.toml` pins `src`/`script` to solc 0.8.28, which has no `osaka`
+///      target, so Foundry clamps the compiler input to `prague` and raises only the
+///      executor spec — verified by reading the solc standard-json in
+///      `out/build-info` (2026-07-29: `evmVersion=prague` under both invocations).
+///      The addresses and the implementation code hash are therefore byte-identical
+///      with and without it, and nothing a birth blob signs moves.
+///
+///      That guarantee is tied to the pinned compiler. Should `src` ever move to
+///      solc >= 0.8.29, `osaka` would reach the compiler for real and could change
+///      the emitted bytecode — which would move the CREATE2 addresses and the signed
+///      code hash. At that point this test needs its own compilation profile rather
+///      than a global flag. `prague` stays the build target regardless: the deployed
+///      bytecode must run on chains that have not forked to Osaka.
 ///
 ///      Read-only: it calls the precompile and nothing else, so it needs no funded
 ///      key and no deployment. A failure here means the target chain cannot host a
@@ -48,6 +59,14 @@ contract P256ForkProbeTest is Test {
     function _assertChainVerifiesP256(string memory rpcVar, uint256 expectedChainId) internal {
         string memory rpc = vm.envOr(rpcVar, string(""));
         if (bytes(rpc).length == 0) {
+            // Skipping keeps CI offline, but a skipped test is still a passing
+            // `forge test`, and this suite is meant to be run as a pre-flight before
+            // a broadcast — where "green" would read as "both chains verified" when
+            // nothing was checked at all. Set GLAUX_REQUIRE_FORK_CHECKS to make the
+            // absence of an endpoint a failure instead, and use it in that runbook.
+            if (vm.envOr("GLAUX_REQUIRE_FORK_CHECKS", false)) {
+                revert(string.concat(rpcVar, " is unset: this chain was not verified"));
+            }
             vm.skip(true);
             return;
         }
