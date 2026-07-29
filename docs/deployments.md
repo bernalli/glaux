@@ -151,22 +151,92 @@ call, with no new authorization to sign. Chain 31337, which kept its verifier, w
 unaffected — the same blob, the same factors, two different answers, each correct for
 its chain.
 
-## Public testnet deployment: NOT DONE
+## Public testnet: preconditions verified, broadcast NOT DONE
 
-Sepolia and Base Sepolia broadcast has **not** been performed. It is blocked on three
-environment variables that only the repository owner can supply:
+Date: 2026-07-29. No transaction has been broadcast to Sepolia or Base Sepolia. The
+local two-chain run above remains the only end-to-end evidence. What follows is
+everything about those two networks that could be checked *without* spending anything —
+all of it read-only — so that the one remaining blocker is isolated and the first real
+deployment has no open questions left in front of it.
 
-- `GLAUX_RPC_SEPOLIA` — a funded Sepolia RPC endpoint
-- `GLAUX_RPC_BASE_SEPOLIA` — a funded Base Sepolia RPC endpoint
-- `GLAUX_RELAYER_KEY` — a relayer private key funded with testnet ETH on both networks
+### The P-256 precompile is live on both, and this was the open question
 
-No claim is made here that this happened; the local two-chain proof above is the only
-end-to-end evidence currently available in this environment.
+Birth carrying a P-256 device factor probes `0x100` and reverts `P256VerifierUnavailable`
+rather than producing an account that can never reach its own threshold. Until now that
+probe had only ever met the vendored Solidity verifier etched onto anvil, never a real
+precompile, so whether the target chains could host the device factor at all was unknown.
+They can. Both arms of `p256VerifierAvailable()` answer correctly on both networks:
 
-Once those variables exist, run (from the repository root):
+| Chain (id)              | valid signature | same signature, `digest ^ 1` | probe verdict |
+|-------------------------|-----------------|------------------------------|---------------|
+| Sepolia (11155111)      | `0x…01`         | `0x` (empty)                 | installable   |
+| Base Sepolia (84532)    | `0x…01`         | `0x` (empty)                 | installable   |
+
+Sepolia has it via **EIP-7951**, which shipped in Fusaka and activated there on
+2025-10-14; Base Sepolia via **RIP-7212**, added in Fjord. The two differ in price —
+6900 gas for EIP-7951, 3450 for RIP-7212 — which is the whole of the probe's cost on a
+real chain, against the ~330k per verification the Solidity stand-in charges on anvil.
+The 1,356,339-gas birth figure recorded above is therefore the pessimistic end of the
+range and is not what these networks will bill.
+
+Verified two independent ways. First, `eth_call` to `0x100` executed by the nodes
+themselves, agreeing across three unrelated providers (`ethereum-sepolia-rpc.publicnode.com`,
+`1rpc.io/sepolia`, `sepolia.base.org` / `base-sepolia-rpc.publicnode.com`) — so the answer
+is not one endpoint's quirk. Second, `test/P256ForkProbe.t.sol`, which forks each chain
+and runs the shipped `SignatureVerify.p256VerifierAvailable()` against it, unchanged. That
+test is skipped unless `GLAUX_RPC_*` is set and **must** be run with `--evm-version osaka`:
+a fork supplies the chain's state while calls still execute in the local EVM at the
+configured spec, and this repo builds for `prague`, which predates EIP-7951 — under it
+`0x100` is not a precompile and every chain looks broken. The override is safe: both
+contract addresses and the implementation code hash are byte-identical under `prague` and
+`osaka`, so nothing a birth blob signs moves.
+
+One related trap, checked and not applicable: RIP-7212 on OP-stack chains has been
+reported returning empty data when reached by a plain `CALL` from a state-changing
+context. Every P-256 call in Glaux goes through `SignatureVerify._p256Verify`, which is
+`staticcall` inside a `view` function, on both the probe and the signing path.
+
+### The rest of the preconditions
+
+Read-only checks against both networks, all passing:
+
+- The canonical CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C` is present
+  on both, so the deterministic deployment has its factory.
+- Neither `0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3` (impl) nor
+  `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (router) is occupied on either chain.
+- ERC-4337 EntryPoint v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032` is deployed on
+  both, so the 4337 path has a real EntryPoint to meet.
+- `forge script Deploy.s.sol` simulated against live state on both chains reproduces
+  exactly the addresses and code hash recorded for the local run
+  (`0x0dece52d0ef5c20a6c2a0360375534af0de56fcbe51f7c3496c9a26c70686b4d`) — the CREATE2
+  determinism claim now also holds against the real chains, not only between two anvils.
+  Deployment cost 4,937,011 gas: ~0.0098 ETH on Sepolia at 1.99 gwei, ~0.000054 ETH on
+  Base Sepolia at 0.011 gwei, at the moment of measurement.
+
+### The one remaining blocker
+
+`GLAUX_RELAYER_KEY` — a private key funded with testnet ETH on both networks. Only the
+repository owner can obtain it, from the faucets.
+
+The other two variables are no longer blockers: the public keyless endpoints above serve
+`GLAUX_RPC_SEPOLIA` and `GLAUX_RPC_BASE_SEPOLIA` for both deployment and submission, and
+were used for every check in this section. A private endpoint is still preferable for the
+broadcast if rate limits bite. `--verify` additionally needs an `ETHERSCAN_API_KEY`; drop
+the flag to deploy without source verification.
+
+Once the key exists, run (from the repository root):
 
 ```bash
-# Deploy deterministically on both testnets.
+# The endpoints every check in the section above was run against. Substitute a
+# private one if rate limits bite.
+export GLAUX_RPC_SEPOLIA=https://ethereum-sepolia-rpc.publicnode.com
+export GLAUX_RPC_BASE_SEPOLIA=https://base-sepolia-rpc.publicnode.com
+export GLAUX_RELAYER_KEY=<funded testnet key>
+
+# Pre-flight: re-confirm both chains still verify P-256 before spending anything.
+forge test --match-contract P256ForkProbe --evm-version osaka -vv
+
+# Deploy deterministically on both testnets. Drop --verify without an ETHERSCAN_API_KEY.
 forge script script/Deploy.s.sol:Deploy --rpc-url "$GLAUX_RPC_SEPOLIA" --private-key "$GLAUX_RELAYER_KEY" --broadcast --verify
 forge script script/Deploy.s.sol:Deploy --rpc-url "$GLAUX_RPC_BASE_SEPOLIA" --private-key "$GLAUX_RELAYER_KEY" --broadcast --verify
 
