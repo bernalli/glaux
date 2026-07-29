@@ -2,9 +2,10 @@
 
 ## Local two-chain end-to-end (verified)
 
-Date: 2026-07-29. Commit: `a139b2d169a4a7e6fddc2c1b15d4f118d23a6245` (contracts unchanged by
-this deployment tooling; `forge build`/`forge test` were re-run against this commit before and
-after the proof below).
+Date: 2026-07-29. Commit: `d1104a5ae8f76e34b222409bcfbff777ac2d2f99` (contracts unchanged by
+this commit is the final Phase 1 state; the run below was repeated against it after the
+implementation checks changed, because changing the contracts changes their bytecode and
+therefore every deterministic address recorded here).
 
 Two local `anvil` instances with EIP-7702 (Prague) support, on different chain ids:
 
@@ -20,8 +21,8 @@ default account 0 (`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`).
 
 | Chain id | GlauxAccount (impl)                          | GlauxDelegate (router)                       |
 |----------|-----------------------------------------------|-----------------------------------------------|
-| 31337    | `0x14cadB3D9c7D0BcFF9eCD32c926a0E203eaEC823`  | `0xc8f1588dbCd2367aF76ba57E549388Dc8D11509a`  |
-| 31338    | `0x14cadB3D9c7D0BcFF9eCD32c926a0E203eaEC823`  | `0xc8f1588dbCd2367aF76ba57E549388Dc8D11509a`  |
+| 31337    | `0xF7d66d0D47286632C5cd48dA44fC68f19d6A827E`  | `0xcCc62DE32d7F2B4366d7b8312A2217dA53Ecd4eC`  |
+| 31338    | `0xF7d66d0D47286632C5cd48dA44fC68f19d6A827E`  | `0xcCc62DE32d7F2B4366d7b8312A2217dA53Ecd4eC`  |
 
 **Addresses are identical on both chains** — the CREATE2 determinism claim, confirmed by
 running the same salted-bytecode deployment through the canonical CREATE2 deployer
@@ -30,20 +31,22 @@ running the same salted-bytecode deployment through the canonical CREATE2 deploy
 Implementation runtime code hash (`address(impl).codehash`, printed by `Deploy.s.sol`):
 
 ```
-0x7774493ff879ebb52c4e0afd243243ea25fff1ebc67f93d0b2ac5d820de1e85a
+0xdfef5dfe4d79637286859b7164e6114b88b4a0df3f477a99849bb9e8e32672b8
 ```
 
 ### 2. Birth blob (one blob, generated once)
 
-Generated with `scripts/birth.py` using throwaway factor keys (paper/cloud secp256k1 EOAs
-freshly created for this run; device P-256 key is the anchored test vector from
-`test/P256Fixture.sol`). The ephemeral birth key existed only in the Python process memory
-and was discarded on exit; it was never written to disk or logged.
+Generated with `scripts/birth.py` using throwaway factor keys: the paper and cloud secp256k1
+factors are anvil's well-known default accounts 1 and 2
+(`0x7099...79C8`, `0x3C44...93BC`), and the device P-256 factor is the anchored test vector
+from `test/P256Fixture.sol`. These are public test keys with no value — never reuse this
+configuration for a real account. The ephemeral birth key existed only in the Python process
+memory and was discarded on exit; it was never written to disk or logged.
 
 Born account address (recovered from the EIP-7702 authorization signed by the birth key):
 
 ```
-0x4D22Ae6e725813c5B846f66a6056b31e6bc7B9CD
+0x985872F49e73c34Ad343C568DA2831Cba1E94159
 ```
 
 ### 3. Submission — the SAME blob to BOTH chains
@@ -53,28 +56,28 @@ default account 0 acting as an ordinary, unprivileged relayer (`GLAUX_RELAYER_KE
 
 | Chain id | Tx hash                                                              | Status | Gas used |
 |----------|-----------------------------------------------------------------------|--------|----------|
-| 31337    | `0x8e9c02daeaff39536ba71a299afbaa811fef8b7b54f15fc868f63badb6ee398a`  | 1      | 324522   |
-| 31338    | `0x0935805206bba60fb8fd2ddc291b4df338de56cee69d64b7e664346f2f26fb1b`  | 1      | 324522   |
+| 31337    | `0xcff656565b8abf3abab6cecf41f1585b354908ea4e319ba6cf392915448ce981`  | 1      | 324265   |
+| 31338    | `0xb6fee16bcdf904f1f3dc206c7e5adc55fd6a66c62675b16c1c6e38d51c8a987e`  | 1      | 324265   |
 
 Both transactions succeeded (status 1) with identical gas usage.
 
 ### 4. Post-birth verification — identical on BOTH chains
 
 ```
-cast code 0x4D22Ae6e725813c5B846f66a6056b31e6bc7B9CD --rpc-url <rpc>
-  -> 0xef0100c8f1588dbcd2367af76ba57e549388dc8d11509a   (EIP-7702 delegation indicator to the router)
+cast code 0x985872F49e73c34Ad343C568DA2831Cba1E94159 --rpc-url <rpc>
+  -> 0xef0100ccc62de32d7f2b4366d7b8312a2217da53ecd4ec   (EIP-7702 delegation indicator to the router)
 
 cast call <account> "updateNonce()(uint64)" --rpc-url <rpc>
   -> 0
 
 cast call <account> "getSlot(uint8)(uint8,bytes)" 0 --rpc-url <rpc>
-  -> 1, 0x...0044f4e7c18b902d58e5b64bcbb2b39e70b4ab69d3   (secp256k1 paper factor)
+  -> 1, 0x...70997970c51812dc3a010c7d01b50e0d17dc79c8   (secp256k1 paper factor)
 
 cast call <account> "getSlot(uint8)(uint8,bytes)" 1 --rpc-url <rpc>
   -> 2, 0xc9b91be2...b7de6f                                (P-256 device factor, qx||qy)
 
 cast call <account> "getSlot(uint8)(uint8,bytes)" 2 --rpc-url <rpc>
-  -> 1, 0x...000cf86db889cb20309b7c299061062563b3a6d7e5   (secp256k1 cloud factor)
+  -> 1, 0x...3c44cdddb6a900fa2b585dd299e03d12fa4293bc   (secp256k1 cloud factor)
 ```
 
 Every one of these checks returned byte-for-byte identical output on chain id 31337 and chain
