@@ -31,7 +31,6 @@ constitute the contract's purpose.
 | `calls-loop` | `GlauxAccount._execute` | Batching is a feature. A failing call reverts the whole batch (`CallFailed(index, revertData)`) rather than being silently skipped, so the loop cannot leave a partial batch applied. |
 | `reentrancy-eth` | `GlauxAccount._execute` | The state written after the external calls *is* the reentrancy guard being released. `executing` is set before the loop and any re-entry reverts `ReentrantCall()`; the transient flag is the mitigation Slither is reporting as the bug. |
 | `controlled-delegatecall` | `GlauxDelegate.initialize` | Delegatecall to a signed target is what a proxy is. The function id is a hardcoded literal, not input; the target is bound by the birth signature and by the code-hash and compatibility-marker checks performed immediately before. |
-| `reentrancy-no-eth` | `GlauxDelegate.initialize` | Same shape as the entry above: the state written after the delegatecall is the reentrancy guard being *released*. The flag is set before the untrusted initializer runs and any re-entry reverts `ReentrantCall()`. |
 
 ## Accepted, not suppressed
 
@@ -43,9 +42,8 @@ here rather than silenced, so a future reviewer sees the same list we did.
   nonce is snapshotted before the calls on the direct path, and on the
   EntryPoint path re-entry into `_execute` reverts, so no nested batch can
   advance it. Event ordering, not state, is what the detector observes.
-- **`assembly`** (Informational) — used for the namespaced storage pointer, the
-  ERC-1967 slot reads and writes, the router's fallback, and revert-data
-  bubbling. All are load-bearing and none can be expressed in high-level
+- **`assembly`** (Informational) — used for the namespaced storage and transient
+  slots, the router's fallback, and revert-data bubbling. All are load-bearing and none can be expressed in high-level
   Solidity without changing semantics.
 - **`low-level-calls`** (Informational) — the batch calls, the two
   `glauxCompatibilityId()` staticcalls, the birth delegatecall, and the ERC-4337
@@ -57,7 +55,7 @@ here rather than silenced, so a future reviewer sees the same list we did.
   because the EntryPoint verifies the resulting deposit itself and fails the
   operation there; reverting locally would be a worse failure mode.
 - **`unindexed-event-address`** (Informational) — `Initialized(address)` is not
-  indexed. Deliberate: cross-chain reconciliation reads the ERC-1967 slot and
-  its live code hash directly, which is authoritative, rather than filtering
-  logs — so indexing would add bytecode to the permanent router without
+  indexed. Deliberate: cross-chain reconciliation reads the implementation
+  pointer and its live code hash directly, which is authoritative, rather than
+  filtering logs — so indexing would add bytecode to the permanent router without
   supporting any workflow the design actually relies on.

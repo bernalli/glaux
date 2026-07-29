@@ -33,6 +33,24 @@ contract ForeignProxyLogic {
     }
 }
 
+/// @notice An implementation that declares its own `transient` variable, which Solidity
+///         places at transient slot 0 — the same slot a router guard would occupy,
+///         since both run with `address(this)` set to the account. It refuses to
+///         initialize if it observes that slot already set, so a colliding router
+///         guard turns into a failed birth rather than a silent misread.
+contract TransientProbeAccount {
+    bool private transient ownFlag;
+
+    function glauxCompatibilityId() external pure returns (bytes32) {
+        return GlauxStorage.COMPAT_ID;
+    }
+
+    function initializeAccount(bytes calldata) external {
+        require(!ownFlag, "router leaked its guard into the implementation's transient slot 0");
+        GlauxStorage.layout().initialized = true;
+    }
+}
+
 contract MarkerWithoutInitialization {
     function glauxCompatibilityId() external pure returns (bytes32) {
         return GlauxStorage.COMPAT_ID;
@@ -176,9 +194,17 @@ contract BirthTest is GlauxFixture {
     ///         needs no private key at all. A party that supplies or nominates two of
     ///         the three slots could therefore pre-arm one operation and satisfy the
     ///         2-of-3 threshold alone, while every slot looked distinct and
-    ///         well-formed and `DuplicateSlot()` never fired. Requiring the two
-    ///         signatures to differ in `(r, s)` closes it: two independent signers
-    ///         cannot collide there over the same digest.
+    ///         well-formed and `DuplicateSlot()` never fired.
+    ///
+    ///         Requiring the two signatures to differ in `(r, s)` closes THIS
+    ///         instance — one signature reused across two slots — and costs nothing,
+    ///         since two independent signers cannot collide there over one digest.
+    ///         It does NOT close the class: an attacker can present two signatures
+    ///         with different `(r, s)`, having derived one slot's address from a
+    ///         signature they manufactured rather than from a key they hold. That
+    ///         remainder is only closable at registration time, by proving
+    ///         possession of a key before installing it into a slot — a declared
+    ///         residual, see docs/threat-model.md.
     function test_threshold_rejectsOneKeypairSplitAcrossTwoSlotsByVFlip() public {
         // The digest is fixed in advance: it binds the chain, the account, exec
         // nonce 0 and the batch — all known before the account is even born.
@@ -403,10 +429,36 @@ contract BirthTest is GlauxFixture {
         assertEq(GlauxAccount(payable(account)).updateNonce(), 0);
         (uint8 vType,) = GlauxAccount(payable(account)).getSlot(1);
         assertEq(vType, GlauxStorage.VERIFIER_P256);
-        // Birth overwrites the stale foreign value in the mirror as well.
+        assertEq(GlauxAccount(payable(account)).implementation(), address(impl));
+        // And Glaux leaves the shared slot exactly as it found it. Writing it would
+        // export this very hazard to whatever wallet the account is re-delegated to
+        // next, which would read Glaux's implementation as its own.
         assertEq(
             address(uint160(uint256(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT)))),
-            address(impl)
+            address(foreign)
+        );
+    }
+
+    /// @notice The router's birth guard must not occupy transient slot 0. Solidity
+    ///         assigns `transient` variables from slot 0 per contract, but the router
+    ///         and the implementation both execute with `address(this)` set to the
+    ///         account — so a plain `bool transient` in the router would be the same
+    ///         location as the implementation's own first transient variable, and the
+    ///         implementation would read the guard as its own state for the whole of
+    ///         initialization. Namespacing the guard keeps the router out of a space
+    ///         it does not own.
+    function test_birth_guardDoesNotOccupyTheImplementationsTransientSlot() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        TransientProbeAccount probe = new TransientProbeAccount();
+        bytes memory initData = abi.encode(_slots());
+        bytes32 digest = _initDigest(address(probe), address(probe).codehash, initData);
+
+        GlauxDelegate(payable(account))
+            .initialize(address(probe), address(probe).codehash, initData, _sig65(birthPk, digest));
+
+        // Read the slot directly: the probe is a minimal mock without accessors.
+        assertEq(
+            address(uint160(uint256(vm.load(account, GlauxStorage.IMPL_SLOT)))), address(probe)
         );
     }
 

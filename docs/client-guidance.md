@@ -118,24 +118,61 @@ one of the supported backends.
 
 ## Prove possession of every factor before installing it
 
-`GlauxAccount._validateSlot` checks a candidate key's *shape*, never
-possession: `SignatureVerify.isValidKey` confirms a secp256k1 slot holds a
-clean non-zero address and that a P-256 slot holds a point actually on the
-curve, and nothing more. A key that is well-formed but whose private half
-was never generated, was lost, or was mistyped installs successfully.
+**This is not hygiene. It is the integrity control the 2-of-3 threshold rests
+on, and no on-chain check can substitute for it.**
 
-The consequence is graded, not catastrophic: **one** unusable slot does not
-brick the account — the other two still form a quorum — but it silently
-degrades a 2-of-3 into a 2-of-2 with no margin left, and the degradation is
-invisible on chain. **Two** unusable slots are unrecoverable on every chain
-born from that configuration.
+`GlauxAccount._validateSlot` checks a candidate key's *shape*, never possession:
+`SignatureVerify.isValidKey` confirms a secp256k1 slot holds a clean non-zero
+address and that a P-256 slot holds a point actually on the curve, and nothing
+more.
 
-So, before birth and before every rotation, require a **registration
-challenge**: have the candidate factor sign a random nonce, and verify that
-signature locally with exactly the same rules the contract applies (see
-wire formats below). Never install a factor that has not signed. After a
-rotation, re-run the challenge against the *stored* slot data read back
-from the chain, not against the value you intended to store.
+The mild consequence is availability. A key that is well-formed but whose
+private half was never generated, was lost, or was mistyped installs
+successfully: **one** such slot degrades 2-of-3 to 2-of-2 with no margin left,
+invisibly; **two** are unrecoverable on every chain born from that
+configuration.
+
+The serious consequence is that **an address nobody ever held a key for can
+still be a working credential — for an attacker.** ECDSA verifies by recovery,
+so a signature can be produced *before* the key it verifies under is chosen: run
+the recovery over arbitrary signature values for a digest you know in advance,
+and you get an address for which that signature is valid. Anyone who supplies or
+nominates two of the three slot addresses can therefore pre-arm one specific
+operation — a specific chain, nonce and payload, all knowable before birth — and
+meet the threshold alone. On chain, all three slots look distinct and
+well-formed.
+
+So, before birth and before every rotation:
+
+> Require a **registration challenge**: the candidate factor signs a digest that
+> commits to the key itself, e.g.
+> `keccak256(abi.encode(REG_DOMAIN, account, slotIndex, verifierType, keyData))`.
+> Verify that signature locally under exactly the contract's rules (see wire
+> formats below). **Never install a factor that has not signed.** Committing the
+> key material into the challenge is what stops pre-arming — an attacker would
+> have to satisfy the digest and the key it commits to simultaneously, which is
+> a hash-preimage search rather than a curve computation.
+
+After a rotation, re-run the challenge against the slot data read back *from the
+chain*, not against the value you intended to store.
+
+Treat any slot address proposed by a counterparty — a vendor-supplied recovery
+factor, a co-signing service — as unverified until it has answered a challenge
+you generated.
+
+## Never expose a factor key to a raw-hash signing API
+
+Glaux digests are plain `keccak256` values, not EIP-712 typed data (the decision
+is recorded as open in the threat model). Domain constants separate Glaux
+operations from other structured schemes, but nothing separates them from
+**raw-hash signing**: a key that can be induced to sign a bare 32-byte digest —
+`eth_sign` and its equivalents — can be induced to sign a Glaux operation.
+
+Therefore: a Glaux factor key is used for Glaux and nothing else. Never reuse an
+existing wallet key as a factor, never wire a factor key into a generic signing
+API, and on any migration path treat the birth key as the most dangerous key in
+the system, because one raw-hash signature obtained from it before birth
+installs an attacker's implementation and an attacker's slots.
 
 ## Birth
 

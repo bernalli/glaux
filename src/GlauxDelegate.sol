@@ -15,32 +15,37 @@ import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 
 /// @notice Immutable EIP-7702 delegation target. Frozen forever: keep minimal.
 contract GlauxDelegate {
-    /// @dev Guards the window in which the untrusted initializer runs. The pointer
-    ///      is only written after the delegatecall returns, so without this flag a
-    ///      re-entrant `initialize` would still see an unset pointer and could
-    ///      splice two independently signed birth blobs — taking the implementation
-    ///      from one and the factor configuration from the other. The shipped
-    ///      implementation happens to prevent that by setting `initialized` before
-    ///      returning, but that is a convention of replaceable code and this
-    ///      contract is permanent.
-    bool private transient initializing;
-
     /// @notice One-time initialization, authenticated by the birth key.
     /// @dev The birth key IS address(this) (EIP-7702 EOA). The digest contains
     ///      no chain-id: the same signed blob replays on every chain. Submitting
     ///      is permissionless; forging is impossible without the birth key.
-    /// @dev Slither reports `reentrancy-no-eth` because state is written after the
-    ///      delegatecall. That state IS the reentrancy guard being released; the
-    ///      flag is set before the call and any re-entry reverts `ReentrantCall()`.
-    // slither-disable-next-line reentrancy-no-eth
     function initialize(
         address implementation,
         bytes32 expectedCodeHash,
         bytes calldata initData,
         bytes calldata birthSig
     ) external {
-        if (initializing) revert ReentrantCall();
-        initializing = true;
+        // Guards the window in which the untrusted initializer runs. The pointer is
+        // only written after the delegatecall returns, so without this a re-entrant
+        // `initialize` would still see an unset pointer and could splice two
+        // independently signed birth blobs — implementation from one, factor
+        // configuration from the other. The shipped implementation happens to prevent
+        // that by setting `initialized` before returning, but that is a convention of
+        // replaceable code and this contract is permanent.
+        //
+        // Held in a NAMESPACED transient slot: Solidity would place a `transient`
+        // state variable at transient slot 0, which the implementation's own first
+        // transient variable also occupies, since both run with `address(this)` set
+        // to the account. The router must not squat a slot it does not own.
+        bytes32 guard = GlauxStorage.DELEGATE_BIRTH_GUARD_SLOT;
+        uint256 busy;
+        assembly {
+            busy := tload(guard)
+        }
+        if (busy != 0) revert ReentrantCall();
+        assembly {
+            tstore(guard, 1)
+        }
 
         bytes32 slot = GlauxStorage.IMPL_SLOT;
         address current;
@@ -75,13 +80,10 @@ contract GlauxDelegate {
             }
         }
         if (!GlauxStorage.layout().initialized) revert NotInitialized();
-        bytes32 mirror = GlauxStorage.ERC1967_IMPL_SLOT;
         assembly {
             sstore(slot, implementation)
-            // Mirror for explorer tooling. Never read back: see IMPL_SLOT.
-            sstore(mirror, implementation)
+            tstore(guard, 0)
         }
-        initializing = false;
         emit Initialized(implementation);
     }
 

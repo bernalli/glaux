@@ -35,7 +35,9 @@ the first residual, which is the most serious property in this document.
 two valid signatures over the next nonce controls the account's future signers,
 verifier types, and implementation.
 
-**The ERC-1967 implementation pointer.** Written once by
+**The implementation pointer.** Held in a Glaux-owned namespaced slot,
+`keccak256("glaux.account.v1.implementation")` — deliberately *not* the shared
+ERC-1967 slot, which Glaux never reads and never writes. Written once by
 `GlauxDelegate.initialize` and thereafter only by `applyUpdate` under
 `ACTION_SET_IMPLEMENTATION`. It decides which logic every delegatecall from the
 immutable router executes.
@@ -117,9 +119,18 @@ code, its runtime code hash must equal the hash the signers bound into the
 digest, it must not be an EIP-7702 delegation designator, and it must answer
 `glauxCompatibilityId()` with `GlauxStorage.COMPAT_ID` through a bounded
 32-byte output window. Birth additionally requires the implementation's own
-initializer to leave `initialized == true` before the ERC-1967 slot is written,
-so a delegatecall into an implementation that silently no-ops cannot produce a
+initializer to leave `initialized == true` before the pointer is written, so a
+delegatecall into an implementation that silently no-ops cannot produce a
 live-looking but unconfigured account.
+
+**Glaux touches no storage slot it does not own.** The implementation pointer
+lives in a Glaux namespace, and the router's birth guard lives in a namespaced
+*transient* slot rather than the transient slot 0 that Solidity would assign it
+— which the implementation's own first transient variable also occupies, since
+both execute with `address(this)` set to the account. The shared ERC-1967 slot
+is neither read nor written: an EIP-7702 account can be re-delegated at any
+time, so a value left there would be adopted as its own by whatever wallet the
+account moves to next. Tooling should read `GlauxAccount.implementation()`.
 
 > **Why designators are rejected.** For an EIP-7702 delegated EOA,
 > `EXTCODEHASH` hashes the 23-byte delegation designator while `DELEGATECALL`
@@ -269,24 +280,59 @@ The bounded 32-byte output window means a candidate returning enormous
 returndata is rejected cleanly rather than exhausting the gas of the
 transaction that carries it.
 
-### 7. Key-shape validation cannot prove key possession
+### 7. Nothing on chain proves a slot's key was ever possessed — an integrity control, not hygiene
 
-`SignatureVerify.isValidKey` checks that a secp256k1 slot holds a clean
-non-zero address, and that a P-256 slot holds a point actually on the curve.
-Both are checks of *well-formedness*, never evidence that anyone holds the
-corresponding private key. A quorum can install — by mistyping a value or
-restoring the wrong backup — a slot nobody can ever sign with.
+**No on-chain mitigation. Closed only by a client-side registration challenge,
+and that challenge is load-bearing for the entire threshold.**
 
-The consequence is graded, and it is worth stating precisely rather than
-dramatically: **one** unusable slot does not brick the account, because the
-other two still form a quorum; it silently degrades a 2-of-3 into a 2-of-2 with
-no remaining margin, and nothing on chain shows this. **Two** unusable slots
-are unrecoverable on every chain born from that configuration.
+`SignatureVerify.isValidKey` checks that a secp256k1 slot holds a clean non-zero
+address, and that a P-256 slot holds a point actually on the curve. Both are
+checks of *well-formedness*. Neither is evidence that anyone holds the
+corresponding private key.
 
-Mitigation is signer-side and cheap: require every candidate factor to sign a
-random registration challenge, verify that signature locally under exactly the
-contract's rules, and never install a factor that has not signed. After a
-rotation, re-run the challenge against the slot data read back from the chain.
+The obvious consequence is availability, and it is the mild one: a quorum can
+install — by mistyping a value or restoring the wrong backup — a slot nobody can
+sign with. **One** such slot does not brick the account, since the other two
+still form a quorum; it silently degrades 2-of-3 to 2-of-2 with no remaining
+margin, and nothing on chain shows it. **Two** are unrecoverable on every chain
+born from that configuration.
+
+**The serious consequence is integrity, and it defeats the threshold.** ECDSA
+verifies by recovery, which means a signature can be created *before* the key it
+verifies under is chosen: for any digest known in advance, running the recovery
+over arbitrary `(r, s, v)` yields an address for which that signature is valid.
+An adversary can therefore manufacture a signature, derive the address it
+recovers to, and have that address installed as a factor slot — a slot whose
+private key has never existed, and for which only they can produce a signature,
+for that one pre-committed operation.
+
+Concretely: a party who supplies or nominates two of the three slot addresses
+can pre-arm one specific operation — a specific chain, nonce and payload, all
+knowable before birth — and satisfy the 2-of-3 threshold alone. Every slot looks
+distinct and well-formed on chain, and `DuplicateSlot()` never fires.
+
+The contract rejects the cheapest instance, two signatures sharing `(r, s)` —
+one signature submitted under two indices — in `_checkTwoSigs`. That is worth
+having and costs nothing, but **it does not close the class**: a manufactured
+signature and a genuine one differ in `(r, s)`. No signature-side check can
+close it. The property actually required is "two parties independently proved
+possession", and possession is only checkable at *registration*.
+
+So the mitigation is not optional hygiene:
+
+> Require every candidate factor to sign a registration challenge before it is
+> installed, and verify that signature locally under exactly the contract's
+> rules. Never install a factor that has not signed. After a rotation, re-run
+> the challenge against the slot data read back *from the chain*, not against
+> the value you intended to store.
+
+Binding the challenge to the key itself — for example
+`keccak256(abi.encode(REG_DOMAIN, account, slotIndex, verifierType, keyData))` —
+also prevents pre-arming, because satisfying the digest and the key it commits
+to at once becomes a hash-preimage search rather than a curve computation.
+Moving the check on chain needs no change to the immutable router: the birth
+blob already commits to `keccak256(initData)`, so possession signatures can ride
+inside `initData`. Tracked as Phase 2 work.
 
 ### 8. P-256 verification depends on a precompile that not every chain has
 
@@ -442,8 +488,25 @@ by the phrase.
 What it does not provide is **legibility**. A signer sees an opaque 32-byte
 hash, not a rendered description of what they are authorizing. For a project
 whose stated ambition is an ERC draft and third-party adoption, that is a real
-weakness, and it is worth stating plainly that the argument for typed data here
-is an adoption argument, not merely an aesthetic one.
+weakness.
+
+**And there is a security half, which is the stronger argument.** The domain
+constants separate Glaux from other *structured* signing schemes; they do not
+separate it from **raw-hash signing**. Any factor key that is also an ordinary
+EOA key, and that can be induced to sign a bare 32-byte digest through
+`eth_sign` or an equivalent, produces a valid Glaux signature. On the migration
+path this project plans, the birth key *is* a long-lived user key — so a single
+raw-hash signature obtained before birth installs an attacker's implementation
+and an attacker's slot set. Until this is addressed, the rule in client guidance
+against ever exposing a factor key to an unprefixed-digest API is the only thing
+standing in the way.
+
+This also admits a third option, which dissolves the chain-agnosticism tension
+entirely: **EIP-191 version `0x00`** — `0x19 ‖ 0x00 ‖ validator ‖ data`. It
+makes a Glaux digest unreachable by raw-hash signing and binds the validator
+address, and it has **no `chainId` field at all**, so it costs nothing in
+replayability. It buys no legibility, being untyped, but it closes the security
+half independently of how the adoption half is decided.
 
 Two things are true and pull in opposite directions. The birth digest lives in
 the **immutable** router, so this choice is permanent for birth once the router

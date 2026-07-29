@@ -33,8 +33,22 @@ library GlauxStorage {
     ///      Reading a slot Glaux does not own would let a stale foreign pointer both
     ///      block birth forever and be executed by the router's own fallback.
     bytes32 internal constant IMPL_SLOT = keccak256("glaux.account.v1.implementation");
-    // ERC-1967: bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1).
-    // Written as a MIRROR for explorer tooling only; never read as authoritative.
+    /// @dev TRANSIENT slot reserved by the immutable router for its birth guard, and
+    ///      declared here so the reservation is visible to every implementation.
+    ///      Solidity assigns `transient` variables sequentially from slot 0 per
+    ///      contract, but the router and the implementation both execute with
+    ///      `address(this)` set to the account — so the router's guard and an
+    ///      implementation's first transient variable would occupy the same location.
+    ///      Namespacing it keeps the router out of a space it does not own, exactly as
+    ///      IMPL_SLOT does for persistent storage.
+    bytes32 internal constant DELEGATE_BIRTH_GUARD_SLOT =
+        keccak256("glaux.delegate.v1.initializing");
+    /// @dev ERC-1967: bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1).
+    ///      Declared to name what Glaux deliberately does NOT touch. It is never read
+    ///      and never written: an EIP-7702 account can be re-delegated at any time, so
+    ///      a value Glaux left in this shared slot would be picked up as its own by
+    ///      whatever wallet the account moves to next — the same hazard, pointed
+    ///      outward. Tooling should call `GlauxAccount.implementation()` instead.
     bytes32 internal constant ERC1967_IMPL_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 

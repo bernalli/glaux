@@ -49,11 +49,11 @@ contract GlauxAccount {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (l.initialized) revert AlreadyInitialized();
         bytes32 implementationSlot = GlauxStorage.IMPL_SLOT;
-        address implementation;
+        address installed;
         assembly {
-            implementation := sload(implementationSlot)
+            installed := sload(implementationSlot)
         }
-        if (implementation != address(0)) revert AlreadyInitialized();
+        if (installed != address(0)) revert AlreadyInitialized();
         FactorSlot[3] memory slots = abi.decode(initData, (FactorSlot[3]));
         for (uint256 i = 0; i < 3; i++) {
             _validateSlot(slots[i]);
@@ -105,6 +105,17 @@ contract GlauxAccount {
         return GlauxStorage.COMPAT_ID;
     }
 
+    /// @notice The installed implementation. Read this rather than the ERC-1967 slot:
+    ///         Glaux deliberately does not write that shared slot, because an
+    ///         EIP-7702 account can be re-delegated and a value left behind there
+    ///         would be read as its own by whatever wallet comes next.
+    function implementation() external view returns (address impl) {
+        bytes32 slot = GlauxStorage.IMPL_SLOT;
+        assembly {
+            impl := sload(slot)
+        }
+    }
+
     function applyUpdate(Update calldata u, SlotSig[2] calldata sigs) external {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) revert NotInitialized();
@@ -134,11 +145,8 @@ contract GlauxAccount {
                 revert InvalidImplementation();
             }
             bytes32 slot = GlauxStorage.IMPL_SLOT;
-            bytes32 mirror = GlauxStorage.ERC1967_IMPL_SLOT;
             assembly {
                 sstore(slot, newImplementation)
-                // Mirror for explorer tooling. Never read back: see IMPL_SLOT.
-                sstore(mirror, newImplementation)
             }
         } else {
             revert InvalidAction();
@@ -268,6 +276,11 @@ contract GlauxAccount {
         // keypair would satisfy the 2-of-3 threshold while every slot looked
         // distinct and well-formed. Two independent signers cannot collide on
         // (r, s) over the same digest, so requiring them to differ costs nothing.
+        //
+        // This closes signature REUSE, not the whole class: an attacker can also
+        // manufacture a signature first and register the address it recovers to,
+        // which yields two different (r, s). Only proof of possession at slot
+        // registration closes that, and it is a declared residual.
         if (_sameRS(sigs[0].signature, sigs[1].signature)) return false;
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) return false;

@@ -1,8 +1,8 @@
 # Glaux — Design Specification
 
-- **Version**: v0.3
+- **Version**: v0.4
 - **Date**: 2026-07-28, revised 2026-07-29
-- **Status**: v0.1 was ratified before implementation. v0.2 and v0.3 fold in the
+- **Status**: v0.1 was ratified before implementation. v0.2 to v0.4 fold in the
   design changes that security review forced during Phase 1; each is marked in
   place and all are listed in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
@@ -108,16 +108,6 @@ abstraction UX (paymasters), commissioned audits.
   code, `implementation.codehash == expectedCodeHash`, and the compatibility
   marker. Only then does it delegatecall `initializeAccount`, assert the
   `initialized` postcondition, write the implementation pointer, and emit.
-- *(revised v0.3)* **The authoritative implementation pointer lives in a
-  Glaux-owned namespaced slot**, `keccak256("glaux.account.v1.implementation")`,
-  and the ERC-1967 slot is written only as a mirror for explorer tooling. The
-  ERC-1967 slot is an industry-wide standard and an EIP-7702 re-delegation does
-  not clear storage, so an EOA arriving from any other proxy-pattern wallet
-  would otherwise find it occupied — which would block birth permanently *and*
-  let the router's fallback execute a stale foreign pointer. Glaux never reads a
-  slot it does not own. Birth is additionally guarded against re-entry for the
-  duration of the untrusted initializer.
-
   Rationale: the digest deliberately carries no chain id, so the blob replays
   everywhere — and the same *address* does not hold the same *code* on every
   chain. Without the code-hash binding, replaying the public blob on a chain
@@ -125,6 +115,20 @@ abstraction UX (paymasters), commissioned audits.
   foreign logic that then runs by delegatecall in the account's own storage and
   balance context, needing only to set `initialized` to satisfy the router. One
   signature must install byte-identical logic everywhere or fail cleanly.
+- *(revised v0.3)* **The authoritative implementation pointer lives in a
+  Glaux-owned namespaced slot**, `keccak256("glaux.account.v1.implementation")`,
+  and the ERC-1967 slot is neither read nor written. That slot is an
+  industry-wide standard and an EIP-7702 re-delegation does
+  not clear storage, so an EOA arriving from any other proxy-pattern wallet
+  would otherwise find it occupied — which would block birth permanently *and*
+  let the router's fallback execute a stale foreign pointer. Writing it would be
+  the same hazard pointed outward, since the account can be re-delegated again
+  and the next wallet would adopt Glaux's value as its own — so Glaux touches no
+  slot it does not own, in persistent *or* transient storage, and the router's
+  birth re-entry guard is likewise namespaced rather than sitting at the
+  transient slot 0 an implementation's own first transient variable occupies.
+  Tooling reads `GlauxAccount.implementation()`.
+
 - An implementation with no code on the target chain is rejected without
   writing any state, and **the same blob stays retryable** on that chain once
   the logic contract is deployed there. That is the ordinary case, not an
@@ -288,13 +292,29 @@ needs no bundler at all.
 
 ## 11. Revision history
 
+- **v0.4 (2026-07-29)** — a second independent review verified the v0.3 fixes and
+  found two things. The transient birth guard collided with the implementation's
+  own first transient variable, because Solidity assigns transient slots per
+  contract from zero while both execute as the account: it is now namespaced, and
+  the ERC-1967 mirror write is dropped entirely rather than exporting to the next
+  wallet the hazard v0.3 had just removed. Tooling reads
+  `GlauxAccount.implementation()`. Second, and more important: the `(r, s)`
+  distinctness check added in v0.3 closes only signature *reuse*, not the class —
+  an adversary can manufacture a signature and register the address it recovers
+  to, so **nothing on chain proves a slot's key was ever possessed**, and the
+  client-side registration challenge is an integrity control rather than hygiene.
+  Restated accordingly, with on-chain proof of possession tracked for Phase 2.
+  The EIP-712 decision write-up gains its missing security half and a third
+  option, EIP-191 version `0x00`, which has no `chainId` field and so costs
+  nothing in chain-agnosticism.
+
 - **v0.3 (2026-07-29)** — three defects from an independent review, two of them
   in the immutable router. **The implementation pointer is now a Glaux-owned
   namespaced slot**, not ERC-1967: that slot is an industry-wide standard and an
   EIP-7702 re-delegation does not clear storage, so an EOA migrating from any
   proxy-pattern wallet arrived with it occupied — which permanently blocked
   birth *and* let the router's fallback execute the stale foreign pointer.
-  ERC-1967 is still written as a mirror for explorers, never read. **Birth is
+  ERC-1967 is not written either. **Birth is
   guarded against re-entry** for the duration of the untrusted initializer, so
   the router no longer depends on a convention that replaceable code could drop.
   **Two signatures sharing `(r, s)` are rejected**: one ECDSA signature verifies
