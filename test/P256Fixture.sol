@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+uint256 constant P256_PK = 0x7459e13afd9158a379ee75ca9e80a328916dba1473c863f800f51ee5f46eb3ab;
+uint256 constant P256_QX = 0xc9b91be23306ebbd29f0f1718a1db88a151200eb10c6aad04aa24f8006704de6;
+uint256 constant P256_QY = 0xaccddfa8e09bddc03677b1f83a1d4aced4155d44ca7c1fd5226b8d312b7de6f;
+bytes32 constant P256_DIG = 0x547c05d9093cf1004d4426a5d03202cf500c22777a87f05c18ac247e38fc572e;
+uint256 constant P256_R = 0x56464d0bb7014173461871178e264acd5e981572bc495d8978bb5b16ca4895bb;
+uint256 constant P256_S = 0x1018fa59ce5f3bdd39e7df090dd93309be390b068a7cd3123a492cccd3524e5d;

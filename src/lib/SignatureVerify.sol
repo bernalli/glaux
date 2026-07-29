@@ -52,10 +52,17 @@ library SignatureVerify {
         view
         returns (bool)
     {
-        // implemented in Task 4
-        data;
-        digest;
-        signature;
-        return false;
+        if (signature.length != 64) return false;
+        if (data.length != 64) return false;
+        (uint256 r, uint256 s) = abi.decode(signature, (uint256, uint256));
+        (uint256 qx, uint256 qy) = abi.decode(data, (uint256, uint256));
+        (bool ok, bytes memory out) =
+            P256_VERIFIER.staticcall(abi.encodePacked(digest, r, s, qx, qy));
+        if (!ok || out.length != 32) return false;
+        bytes32 result;
+        assembly {
+            result := mload(add(out, 0x20))
+        }
+        return result == bytes32(uint256(1));
     }
 }
