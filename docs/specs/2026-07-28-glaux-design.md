@@ -107,7 +107,16 @@ abstraction UX (paymasters), commissioned audits.
   Before the delegatecall, the immutable router requires non-empty runtime
   code, `implementation.codehash == expectedCodeHash`, and the compatibility
   marker. Only then does it delegatecall `initializeAccount`, assert the
-  `initialized` postcondition, write the ERC-1967 pointer, and emit.
+  `initialized` postcondition, write the implementation pointer, and emit.
+- *(revised v0.3)* **The authoritative implementation pointer lives in a
+  Glaux-owned namespaced slot**, `keccak256("glaux.account.v1.implementation")`,
+  and the ERC-1967 slot is written only as a mirror for explorer tooling. The
+  ERC-1967 slot is an industry-wide standard and an EIP-7702 re-delegation does
+  not clear storage, so an EOA arriving from any other proxy-pattern wallet
+  would otherwise find it occupied — which would block birth permanently *and*
+  let the router's fallback execute a stale foreign pointer. Glaux never reads a
+  slot it does not own. Birth is additionally guarded against re-entry for the
+  duration of the untrusted initializer.
 
   Rationale: the digest deliberately carries no chain id, so the blob replays
   everywhere — and the same *address* does not hold the same *code* on every
