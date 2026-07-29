@@ -11,6 +11,7 @@ import {
     NotInitialized,
     InvalidImplementation,
     InvalidBirthSignature,
+    DuplicateSlot,
     InvalidSlot,
     InvalidVerifierType
 } from "../src/GlauxStorage.sol";
@@ -46,6 +47,42 @@ contract BirthTest is GlauxFixture {
         assertEq(qy, DEVICE_QY);
         assertEq(cloudType, GlauxStorage.VERIFIER_SECP256K1);
         assertEq(abi.decode(cloudData, (address)), vm.addr(cloudPk));
+    }
+
+    function test_birth_rejectsTwoSlotsWithIdenticalKey() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        FactorSlot[3] memory duplicate = _slots();
+        duplicate[2] = duplicate[0];
+        bytes memory initData = abi.encode(duplicate);
+        bytes32 digest =
+            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, address(impl), keccak256(initData)));
+
+        vm.expectRevert(DuplicateSlot.selector);
+        GlauxDelegate(payable(account)).initialize(address(impl), initData, _sig65(birthPk, digest));
+    }
+
+    function test_birth_rejectsAllSlotsWithIdenticalKey() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        FactorSlot[3] memory duplicate = _slots();
+        duplicate[1] = duplicate[0];
+        duplicate[2] = duplicate[0];
+        bytes memory initData = abi.encode(duplicate);
+        bytes32 digest =
+            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, address(impl), keccak256(initData)));
+
+        vm.expectRevert(DuplicateSlot.selector);
+        GlauxDelegate(payable(account)).initialize(address(impl), initData, _sig65(birthPk, digest));
+    }
+
+    function test_birth_withThreeDistinctKeysStillSucceeds() public {
+        _birthAccount();
+
+        (uint8 paperType, bytes memory paperData) = GlauxAccount(payable(account)).getSlot(0);
+        (uint8 deviceType, bytes memory deviceData) = GlauxAccount(payable(account)).getSlot(1);
+        (uint8 cloudType, bytes memory cloudData) = GlauxAccount(payable(account)).getSlot(2);
+        assertFalse(paperType == deviceType && keccak256(paperData) == keccak256(deviceData));
+        assertFalse(paperType == cloudType && keccak256(paperData) == keccak256(cloudData));
+        assertFalse(deviceType == cloudType && keccak256(deviceData) == keccak256(cloudData));
     }
 
     function test_birth_anyoneCanSubmitSameBlob() public {

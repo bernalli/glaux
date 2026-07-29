@@ -16,6 +16,7 @@ import {
     InvalidSignature,
     InvalidSlot,
     InvalidVerifierType,
+    DuplicateSlot,
     UpdateApplied,
     Executed
 } from "./GlauxStorage.sol";
@@ -42,6 +43,13 @@ contract GlauxAccount {
         FactorSlot[3] memory slots = abi.decode(initData, (FactorSlot[3]));
         for (uint256 i = 0; i < 3; i++) {
             _validateSlot(slots[i]);
+        }
+        for (uint256 i = 0; i < 3; i++) {
+            for (uint256 j = i + 1; j < 3; j++) {
+                if (_isDuplicateSlot(slots[i], slots[j])) revert DuplicateSlot();
+            }
+        }
+        for (uint256 i = 0; i < 3; i++) {
             l.slots[i] = slots[i];
         }
         l.initialized = true;
@@ -55,6 +63,14 @@ contract GlauxAccount {
             revert InvalidVerifierType();
         }
         if (!SignatureVerify.isValidKey(s.verifierType, s.data)) revert InvalidSlot();
+    }
+
+    function _isDuplicateSlot(FactorSlot memory a, FactorSlot memory b)
+        internal
+        pure
+        returns (bool)
+    {
+        return a.verifierType == b.verifierType && keccak256(a.data) == keccak256(b.data);
     }
 
     function getSlot(uint8 index) external view returns (uint8, bytes memory) {
@@ -89,6 +105,9 @@ contract GlauxAccount {
             if (index > 2) revert InvalidSlot();
             FactorSlot memory s = FactorSlot(verifierType, data);
             _validateSlot(s);
+            for (uint8 i = 0; i < 3; i++) {
+                if (i != index && _isDuplicateSlot(s, l.slots[i])) revert DuplicateSlot();
+            }
             l.slots[index] = s;
         } else if (u.action == GlauxStorage.ACTION_SET_IMPLEMENTATION) {
             address newImplementation = abi.decode(u.payload, (address));
