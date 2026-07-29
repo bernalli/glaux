@@ -55,6 +55,10 @@ library GlauxStorage {
     bytes32 internal constant INIT_DOMAIN = keccak256("GLAUX_INIT_V1");
     bytes32 internal constant UPDATE_DOMAIN = keccak256("GLAUX_UPDATE_V1");
     bytes32 internal constant EXEC_DOMAIN = keccak256("GLAUX_EXEC_V1");
+    /// @dev Domain for the ERC-4337 path. The EntryPoint computes `userOpHash` and it
+    ///      cannot carry a Glaux field, so the deadline the factors agree to has to be
+    ///      signed alongside it — see `GlauxAccount.validateUserOp`.
+    bytes32 internal constant USEROP_DOMAIN = keccak256("GLAUX_USEROP_V1");
     /// @dev Domain for the possession proof a key must produce before it can be
     ///      installed into a factor slot. See `GlauxAccount._requirePossession`.
     bytes32 internal constant REG_DOMAIN = keccak256("GLAUX_REG_V1");
@@ -110,6 +114,7 @@ error InvalidAction();
 error NotEntryPoint();
 error ZeroEntryPoint();
 error ReentrantCall();
+error OperationExpired(uint48 validUntil, uint256 blockTimestamp);
 error CallFailed(uint256 index, bytes revertData);
 
 event Initialized(address implementation);

@@ -37,7 +37,7 @@ contract Reenterer4337 {
     }
 
     function reenter() external {
-        GlauxAccount(payable(account)).executeWithSigs(replayCalls, replaySigs);
+        GlauxAccount(payable(account)).executeWithSigs(replayCalls, type(uint48).max, replaySigs);
     }
 }
 
@@ -88,7 +88,7 @@ contract EntryPoint4337Test is GlauxFixture {
         calls[0] = Call(address(counter), 0, abi.encodeCall(Counter.bump, ()));
         PackedUserOperation memory op = _packedOp(calls);
         bytes32 opHash = ep.getUserOpHash(op);
-        op.signature = abi.encode(_twoSigs(opHash));
+        op.signature = _userOpSignature(opHash, FAR_FUTURE);
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
         ep.handleOps(ops, payable(address(0xFEE)));
@@ -104,7 +104,7 @@ contract EntryPoint4337Test is GlauxFixture {
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(0xE711, opHash));
         sigs[1] = SlotSig(2, _sig65(0xE712, opHash));
-        op.signature = abi.encode(sigs);
+        op.signature = abi.encode(FAR_FUTURE, sigs);
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
         vm.expectRevert(
@@ -126,7 +126,7 @@ contract EntryPoint4337Test is GlauxFixture {
         Call[] memory calls = new Call[](0);
         PackedUserOperation memory op = _packedOp(calls);
         bytes32 opHash = ep.getUserOpHash(op);
-        op.signature = abi.encode(_twoSigs(opHash));
+        op.signature = _userOpSignature(opHash, FAR_FUTURE);
         vm.expectRevert(NotEntryPoint.selector);
         GlauxAccount(payable(account)).validateUserOp(op, opHash, 0);
     }
@@ -159,19 +159,21 @@ contract EntryPoint4337Test is GlauxFixture {
     }
 
     function test_userOp_absurdSignatureOffsetFailsValidationWithoutReverting() public {
-        bytes memory absurdOffset = abi.encode(_twoSigs(bytes32(0)));
+        bytes memory absurdOffset = _userOpSignature(bytes32(0), FAR_FUTURE);
         assembly ("memory-safe") {
-            // The first SlotSig.signature offset is word four of the encoding.
-            mstore(add(absurdOffset, 0xa0), not(0))
+            // The first SlotSig.signature offset is word five of the encoding: the
+            // deadline now occupies word zero, ahead of the array.
+            mstore(add(absurdOffset, 0xc0), not(0))
         }
         _assertUserOpSignatureFailsValidation(absurdOffset);
     }
 
     function test_userOp_outOfBoundsSignatureOffsetFailsValidationWithoutReverting() public {
-        bytes memory outOfBoundsOffset = abi.encode(_twoSigs(bytes32(0)));
+        bytes memory outOfBoundsOffset = _userOpSignature(bytes32(0), FAR_FUTURE);
         assembly ("memory-safe") {
-            // The first SlotSig.signature offset is word four of the encoding.
-            mstore(add(outOfBoundsOffset, 0xa0), 0x1000)
+            // The first SlotSig.signature offset is word five of the encoding: the
+            // deadline now occupies word zero, ahead of the array.
+            mstore(add(outOfBoundsOffset, 0xc0), 0x1000)
         }
         _assertUserOpSignatureFailsValidation(outOfBoundsOffset);
     }
@@ -200,7 +202,7 @@ contract EntryPoint4337Test is GlauxFixture {
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(paperPk, opHash));
         sigs[1] = SlotSig(0, _sig65(paperPk, opHash));
-        op.signature = abi.encode(sigs);
+        op.signature = abi.encode(FAR_FUTURE, sigs);
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
         vm.expectRevert(
@@ -218,7 +220,7 @@ contract EntryPoint4337Test is GlauxFixture {
         calls[0] = Call(address(counter), 0, abi.encodeCall(Counter.bump, ()));
         PackedUserOperation memory op = _packedOp(calls);
         bytes32 opHash = ep.getUserOpHash(op);
-        op.signature = abi.encode(_twoSigs(opHash));
+        op.signature = _userOpSignature(opHash, FAR_FUTURE);
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
         ep.handleOps(ops, payable(address(0xFEE)));
@@ -248,7 +250,7 @@ contract EntryPoint4337Test is GlauxFixture {
         op.paymasterAndData =
             abi.encodePacked(address(paymaster), uint128(200_000), uint128(200_000));
         bytes32 opHash = ep.getUserOpHash(op);
-        op.signature = abi.encode(_twoSigs(opHash));
+        op.signature = _userOpSignature(opHash, FAR_FUTURE);
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
         vm.recordLogs();
@@ -331,7 +333,7 @@ contract EntryPoint4337Test is GlauxFixture {
         calls[0] = Call(address(reenterer), 0, abi.encodeCall(Reenterer4337.reenter, ()));
         PackedUserOperation memory op = _packedOp(calls);
         bytes32 opHash = ep.getUserOpHash(op);
-        op.signature = abi.encode(_twoSigs(opHash));
+        op.signature = _userOpSignature(opHash, FAR_FUTURE);
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
 

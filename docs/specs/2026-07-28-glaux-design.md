@@ -1,6 +1,6 @@
 # Glaux — Design Specification
 
-- **Version**: v0.6
+- **Version**: v0.7
 - **Date**: 2026-07-28, revised 2026-07-29
 - **Status**: v0.1 was ratified before implementation. v0.2 to v0.5 fold in the
   design changes that security review forced during Phase 1; v0.6 is the first
@@ -77,6 +77,11 @@ abstraction UX (paymasters), commissioned audits.
 - **Every state-changing operation** — execution, key rotation, slot type
   change, implementation upgrade — requires 2 valid signatures from 2
   distinct slots.
+- **Execution carries a deadline the signers set**, on the direct path and the
+  ERC-4337 path alike: submission is permissionless, so *when* an operation lands
+  is the holder's choice, and the deadline is the signers' bound on it. Update
+  blobs deliberately have none — they must stay valid for chains not yet reached.
+  See §11 v0.7.
 - **v1 verifiers**: secp256k1 (`ecrecover`) and P-256 (EIP-7951 precompile on
   L1, RIP-7212 on L2s). Installing a P-256 slot **probes that verifier first**
   with a known-answer test and refuses `P256VerifierUnavailable()` when the
@@ -293,6 +298,27 @@ specification. Neither is a design question. The direct `executeWithSigs` path
 needs no bundler at all.
 
 ## 11. Revision history
+
+- **v0.7 (2026-07-29, Phase 2)** — **both execution paths now carry a deadline
+  the factors sign**, closing threat-model residual 14. Direct execution takes
+  `executeWithSigs(calls, validUntil, sigs)`, binds `validUntil` into the digest
+  and reverts `OperationExpired` past it, checked before the signature work so a
+  dead operation is cheap. The ERC-4337 path cannot put the deadline in
+  `userOpHash`, which is the EntryPoint's construction, so it rides in the
+  signature blob — `abi.encode(uint48 validUntil, SlotSig[2] sigs)` — and the
+  factors sign `(USEROP_DOMAIN, userOpHash, validUntil)` under the same EIP-191
+  version `0x00` wrapper the other three digests use. That is what stops a
+  bundler widening the window while the signature stays valid, and it also moves
+  the last Glaux digest off bare-hash signing. The account reports the window as
+  `validationData` and lets the EntryPoint enforce it, so an expired operation is
+  dropped rather than landed and reverted. `validUntil == 0` is refused on both
+  paths: the EntryPoint reads zero as "no expiry", and the two paths must not
+  disagree about what zero means. `applyUpdate` is deliberately excluded — update
+  blobs must stay valid for chains the account has not yet reached.
+
+  Both are breaking wire changes for clients: the direct call takes a new
+  argument, and the 4337 signature blob gains a leading word. Nothing canonical
+  is deployed, so no unspent blob is stranded by them.
 
 - **v0.6 (2026-07-29, Phase 2)** — **installing a P-256 slot now probes the
   verifier**. Before this, whether a chain could verify P-256 was discovered

@@ -23,6 +23,7 @@ import {
     NotEntryPoint,
     ZeroEntryPoint,
     ReentrantCall,
+    OperationExpired,
     UpdateApplied,
     Executed
 } from "./GlauxStorage.sol";
@@ -32,9 +33,10 @@ import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOper
 
 /// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
 contract GlauxAccount {
-    // Two 65-byte secp256k1 signatures encode as SlotSig[2] in 480 bytes. 512 bytes
-    // leaves room for one trailing ABI word while bounding the self-call copy.
-    uint256 internal constant MAX_USEROP_SIGNATURE_LENGTH = 512;
+    // Two 65-byte secp256k1 signatures encode as SlotSig[2] in 480 bytes, and the
+    // deadline the factors signed rides in front of them. 576 bytes leaves room for the
+    // added words plus one trailing one, while still bounding the self-call copy.
+    uint256 internal constant MAX_USEROP_SIGNATURE_LENGTH = 576;
 
     address public immutable ENTRYPOINT;
     bool private transient executing;
@@ -215,9 +217,18 @@ contract GlauxAccount {
         emit UpdateApplied(u.nonce, u.action);
     }
 
-    function executeWithSigs(Call[] calldata calls, SlotSig[2] calldata sigs) external payable {
+    function executeWithSigs(Call[] calldata calls, uint48 validUntil, SlotSig[2] calldata sigs)
+        external
+        payable
+    {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) revert NotInitialized();
+        // Before the signature work: an operation that is dead on arrival should cost a
+        // comparison, not two curve operations. `validUntil` is inside the digest below,
+        // so a submitter cannot widen the window it was handed — changing the value
+        // invalidates the signatures. Zero is a deadline in the past like any other; it
+        // is never a licence to run forever.
+        if (block.timestamp > validUntil) revert OperationExpired(validUntil, block.timestamp);
         bytes32 digest = GlauxStorage.eip191(
             address(this),
             keccak256(
@@ -226,7 +237,8 @@ contract GlauxAccount {
                     block.chainid,
                     address(this),
                     l.execNonce,
-                    keccak256(abi.encode(calls))
+                    keccak256(abi.encode(calls)),
+                    validUntil
                 )
             )
         );
@@ -241,14 +253,30 @@ contract GlauxAccount {
     /// @dev userOp.signature is attacker-controlled and may be malformed; decoding is
     ///      done through a try/catch so garbage bytes yield SIG_VALIDATION_FAILED (1)
     ///      instead of a revert, which would be a worse failure mode for the bundler.
+    /// @dev The deadline travels in the signature blob rather than in the operation,
+    ///      because `userOpHash` is the EntryPoint's construction and cannot carry a
+    ///      Glaux field. The factors therefore sign over `(userOpHash, validUntil)`: a
+    ///      bundler that rewrites the window invalidates the signatures it was handed.
+    ///      Enforcement is left to the EntryPoint, which is the point of reporting a
+    ///      window at all — it drops an expired operation before execution rather than
+    ///      landing a reverting one.
+    /// @dev `validUntil == 0` is refused. The EntryPoint reads a zero as "no expiry",
+    ///      so passing it through would reintroduce exactly the unbounded operation
+    ///      this path is meant to stop; on the direct path zero is simply a deadline in
+    ///      the past, and the two must not disagree about what zero means.
     function validateUserOp(
         PackedUserOperation calldata userOp,
         bytes32 userOpHash,
         uint256 missingAccountFunds
     ) external returns (uint256 validationData) {
         if (msg.sender != ENTRYPOINT) revert NotEntryPoint();
-        (bool decoded, SlotSig[2] memory sigs) = _tryDecodeSigs(userOp.signature);
-        validationData = (decoded && _checkTwoSigs(userOpHash, sigs)) ? 0 : 1;
+        (bool decoded, uint48 validUntil, SlotSig[2] memory sigs) = _tryDecodeSigs(userOp.signature);
+        bytes32 digest = GlauxStorage.eip191(
+            address(this), keccak256(abi.encode(GlauxStorage.USEROP_DOMAIN, userOpHash, validUntil))
+        );
+        validationData = (decoded && validUntil != 0 && _checkTwoSigs(digest, sigs))
+            ? uint256(validUntil) << 160
+            : 1;
         if (missingAccountFunds > 0) {
             (bool ok,) = msg.sender.call{value: missingAccountFunds}("");
             ok; // EntryPoint verifies the deposit; a failed prefund fails the op there
@@ -267,22 +295,26 @@ contract GlauxAccount {
     function _tryDecodeSigs(bytes calldata signature)
         internal
         view
-        returns (bool ok, SlotSig[2] memory sigs)
+        returns (bool ok, uint48 validUntil, SlotSig[2] memory sigs)
     {
         if (signature.length > MAX_USEROP_SIGNATURE_LENGTH) {
-            return (false, sigs);
+            return (false, 0, sigs);
         }
-        try this.decodeSlotSigs(signature) returns (SlotSig[2] memory decoded) {
-            return (true, decoded);
+        try this.decodeSlotSigs(signature) returns (uint48 until, SlotSig[2] memory decoded) {
+            return (true, until, decoded);
         } catch {
-            return (false, sigs);
+            return (false, 0, sigs);
         }
     }
 
     /// @notice Pure decode helper, external so `_tryDecodeSigs` can call it through a
     ///         try/catch and turn a malformed signature into a bool instead of a revert.
-    function decodeSlotSigs(bytes calldata signature) external pure returns (SlotSig[2] memory) {
-        return abi.decode(signature, (SlotSig[2]));
+    function decodeSlotSigs(bytes calldata signature)
+        external
+        pure
+        returns (uint48, SlotSig[2] memory)
+    {
+        return abi.decode(signature, (uint48, SlotSig[2]));
     }
 
     /// @dev Slither flags three patterns here that are the account's whole purpose:

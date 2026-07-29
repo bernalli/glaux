@@ -458,23 +458,50 @@ The rule is therefore: **sign exactly one birth blob, ever.** If a client's flow
 can produce two — a retry, a "regenerate", an aborted setup that already
 signed — that flow is broken, and no on-chain check will catch it.
 
-### 14. Direct execution has no deadline
+### 14. Execution deadlines *(closed, v0.7)*
 
-The execution digest binds the chain, the account, the nonce and the calls — but
-not *when*. A relayer holding a signed batch may submit it at any later moment,
+The execution digest bound the chain, the account, the nonce and the calls — but
+not *when*. A relayer holding a signed batch could submit it at any later moment,
 and for a value-moving operation that is not a neutral choice: sitting on a
 signed swap and submitting it after the price has moved extracts real value. The
-only cancellation available is racing a different batch at the same nonce
-against the party who is holding yours.
+only cancellation available was racing a different batch at the same nonce
+against the party holding yours. The 4337 path was no better: `validateUserOp`
+returned `0`, which the EntryPoint reads as a `validUntil` of `type(uint48).max`,
+so preferring it bought no protection — an earlier draft of this document said it
+did, which was wrong.
 
-ERC-4337 has `validUntil` for exactly this reason, and **v1 does not use it
-either**: `validateUserOp` returns `0`, which the EntryPoint interprets as a
-`validUntil` of `type(uint48).max`. So the sponsored path is valid forever too,
-and preferring it buys no protection — an earlier draft of this document said it
-did, which was wrong. Both paths live in the upgradeable implementation and can
-gain a deadline through an ordinary upgrade. Until they do, clients must treat
-every signed operation as live indefinitely and must not sign a time-sensitive
-one they are not willing to see executed at an arbitrary later moment.
+Both paths now carry a deadline the factors sign.
+
+- **Direct**: `executeWithSigs(calls, validUntil, sigs)` binds `validUntil` into
+  the digest and reverts `OperationExpired(validUntil, block.timestamp)` once
+  `block.timestamp` passes it. The check runs *before* signature verification, so
+  a dead operation costs a comparison rather than two curve operations.
+- **ERC-4337**: the deadline rides in the signature blob,
+  `abi.encode(uint48 validUntil, SlotSig[2] sigs)`, and the factors sign
+  `eip191(account, keccak256(abi.encode(USEROP_DOMAIN, userOpHash, validUntil)))`.
+  It cannot ride in `userOpHash` — that is the EntryPoint's construction and has
+  no room for an account field — so signing over both is what stops a bundler
+  from widening the window while the signature stays valid. The account reports
+  the window through `validationData` and the EntryPoint enforces it, which is
+  what makes an expired operation get dropped rather than landed and reverted.
+
+`validUntil == 0` is refused on both paths, and deliberately so: on the direct
+path zero is a deadline in the past like any other, while the EntryPoint reads a
+zero as "no expiry" — the exact unbounded state this closes. Rather than let the
+two paths disagree about what zero means, `validateUserOp` fails validation on
+it. An operation that genuinely should live a long time says so with an explicit
+far-future timestamp, in a field the signers can see.
+
+What remains is a bounded version of the same thing: within its window an
+operation is still submittable at any moment of the holder's choosing, and there
+is still no revocation short of racing the nonce. A deadline shrinks the window;
+it does not hand the signer a cancel button. Clients must size the window to the
+operation — minutes for a swap, not a year for convenience.
+
+`applyUpdate` deliberately has no deadline. Update blobs are chain-agnostic by
+construction and must stay valid for chains the account has not yet reached; a
+timestamp would silently strand them there. That trade is residual 4's territory,
+not this one's.
 
 ### 15. Point-in-time code checks, and other narrow residuals
 
