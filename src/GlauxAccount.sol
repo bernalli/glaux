@@ -26,6 +26,12 @@ contract GlauxAccount {
     function initializeAccount(bytes calldata initData) external {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (l.initialized) revert AlreadyInitialized();
+        bytes32 implementationSlot = GlauxStorage.ERC1967_IMPL_SLOT;
+        address implementation;
+        assembly {
+            implementation := sload(implementationSlot)
+        }
+        if (implementation != address(0)) revert AlreadyInitialized();
         FactorSlot[3] memory slots = abi.decode(initData, (FactorSlot[3]));
         for (uint256 i = 0; i < 3; i++) {
             _validateSlot(slots[i]);
@@ -35,13 +41,13 @@ contract GlauxAccount {
     }
 
     function _validateSlot(FactorSlot memory s) internal pure {
-        if (s.verifierType == GlauxStorage.VERIFIER_SECP256K1) {
-            if (s.data.length != 32) revert InvalidSlot();
-        } else if (s.verifierType == GlauxStorage.VERIFIER_P256) {
-            if (s.data.length != 64) revert InvalidSlot();
-        } else {
+        if (
+            s.verifierType != GlauxStorage.VERIFIER_SECP256K1
+                && s.verifierType != GlauxStorage.VERIFIER_P256
+        ) {
             revert InvalidVerifierType();
         }
+        if (!SignatureVerify.isValidKey(s.verifierType, s.data)) revert InvalidSlot();
     }
 
     function getSlot(uint8 index) external view returns (uint8, bytes memory) {

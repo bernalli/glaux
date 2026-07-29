@@ -22,11 +22,17 @@ contract SigVerifyHarness {
     {
         return SignatureVerify.verify(t, d, h, sig);
     }
+
+    function isValidKey(uint8 t, bytes calldata d) external pure returns (bool) {
+        return SignatureVerify.isValidKey(t, d);
+    }
 }
 
 contract SignatureVerifyTest is Test {
     uint256 internal constant P256_N =
         0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551;
+    uint256 internal constant P256_P =
+        0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF;
 
     SigVerifyHarness h;
     uint256 pk = 0xA11CE;
@@ -127,6 +133,39 @@ contract SignatureVerifyTest is Test {
     function test_unknownType_false() public view {
         assertFalse(h.verify(0, "", keccak256("x"), ""));
         assertFalse(h.verify(9, "", keccak256("x"), ""));
+    }
+
+    function test_isValidKey_secp256k1RejectsZeroAddress() public view {
+        assertFalse(h.isValidKey(1, abi.encode(address(0))));
+    }
+
+    function test_isValidKey_secp256k1RejectsDirtyHighBits() public view {
+        bytes memory dirtyAddress = abi.encodePacked(bytes12(uint96(1)), signer);
+        assertFalse(h.isValidKey(1, dirtyAddress));
+    }
+
+    function test_isValidKey_secp256k1AcceptsAddress() public view {
+        assertTrue(h.isValidKey(1, abi.encode(signer)));
+    }
+
+    function test_isValidKey_p256RejectsQxAtFieldPrime() public view {
+        assertFalse(h.isValidKey(2, abi.encode(P256_P, P256_QY)));
+    }
+
+    function test_isValidKey_p256RejectsQyAtFieldPrime() public view {
+        assertFalse(h.isValidKey(2, abi.encode(P256_QX, P256_P)));
+    }
+
+    function test_isValidKey_p256RejectsPointAtInfinity() public view {
+        assertFalse(h.isValidKey(2, abi.encode(0, 0)));
+    }
+
+    function test_isValidKey_p256RejectsOffCurvePoint() public view {
+        assertFalse(h.isValidKey(2, abi.encode(1, 1)));
+    }
+
+    function test_isValidKey_p256AcceptsCommittedDeviceKey() public view {
+        assertTrue(h.isValidKey(2, abi.encode(P256_QX, P256_QY)));
     }
 
     function _etchP256() internal {

@@ -9,10 +9,15 @@ import {
     FactorSlot,
     AlreadyInitialized,
     NotInitialized,
+    InvalidImplementation,
     InvalidBirthSignature,
     InvalidSlot,
     InvalidVerifierType
 } from "../src/GlauxStorage.sol";
+
+contract NonInitializingAccount {
+    function initializeAccount(bytes calldata) external {}
+}
 
 contract BirthTest is GlauxFixture {
     function test_birth_initializes() public {
@@ -91,6 +96,58 @@ contract BirthTest is GlauxFixture {
         GlauxDelegate(payable(account)).initialize(address(impl), initData, sig);
     }
 
+    function test_birth_noCodeImplementationRevertsAndOriginalBlobIsRetryable() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        address futureImplementation = address(0xF00D);
+        bytes memory initData = abi.encode(_slots());
+        bytes32 digest = keccak256(
+            abi.encode(GlauxStorage.INIT_DOMAIN, futureImplementation, keccak256(initData))
+        );
+        bytes memory sig = _sig65(birthPk, digest);
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxDelegate(payable(account)).initialize(futureImplementation, initData, sig);
+
+        assertEq(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT), bytes32(0));
+        vm.expectRevert(NotInitialized.selector);
+        GlauxAccount(payable(account)).updateNonce();
+
+        vm.etch(futureImplementation, address(impl).code);
+        GlauxDelegate(payable(account)).initialize(futureImplementation, initData, sig);
+
+        (uint8 vType,) = GlauxAccount(payable(account)).getSlot(0);
+        assertEq(vType, GlauxStorage.VERIFIER_SECP256K1);
+    }
+
+    function test_birth_zeroImplementationReverts() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        bytes memory initData = abi.encode(_slots());
+        bytes32 digest =
+            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, address(0), keccak256(initData)));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxDelegate(payable(account)).initialize(address(0), initData, _sig65(birthPk, digest));
+    }
+
+    function test_birth_revertsWhenImplementationDoesNotSetInitialized() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        NonInitializingAccount nonInitializingImplementation = new NonInitializingAccount();
+        bytes memory initData = abi.encode(_slots());
+        bytes32 digest = keccak256(
+            abi.encode(
+                GlauxStorage.INIT_DOMAIN,
+                address(nonInitializingImplementation),
+                keccak256(initData)
+            )
+        );
+
+        vm.expectRevert(NotInitialized.selector);
+        GlauxDelegate(payable(account))
+            .initialize(address(nonInitializingImplementation), initData, _sig65(birthPk, digest));
+
+        assertEq(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT), bytes32(0));
+    }
+
     function test_initializeAccountDirectlyOnImplementationReverts() public {
         vm.expectRevert(AlreadyInitialized.selector);
         impl.initializeAccount(abi.encode(_slots()));
@@ -103,11 +160,36 @@ contract BirthTest is GlauxFixture {
         GlauxAccount(payable(account)).initializeAccount(abi.encode(_slots()));
     }
 
+    function test_attackerCannotInitializeThroughAccountBeforeBirthWhenLogicExists() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        FactorSlot[3] memory attackerSlots = _slots();
+        attackerSlots[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0xBAD)));
+
+        vm.store(account, GlauxStorage.ERC1967_IMPL_SLOT, bytes32(uint256(uint160(address(impl)))));
+
+        vm.prank(address(0xA77AC));
+        vm.expectRevert(AlreadyInitialized.selector);
+        GlauxAccount(payable(account)).initializeAccount(abi.encode(attackerSlots));
+    }
+
     function test_initializeAccountDirectlyOnBornAccountReverts() public {
         _birthAccount();
 
         vm.expectRevert(AlreadyInitialized.selector);
         GlauxAccount(payable(account)).initializeAccount(abi.encode(_slots()));
+    }
+
+    function test_attackerCannotInitializeThroughAccountAfterBirth() public {
+        _birthAccount();
+        FactorSlot[3] memory attackerSlots = _slots();
+        attackerSlots[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0xBAD)));
+
+        vm.prank(address(0xA77AC));
+        vm.expectRevert(AlreadyInitialized.selector);
+        GlauxAccount(payable(account)).initializeAccount(abi.encode(attackerSlots));
+
+        (, bytes memory paperData) = GlauxAccount(payable(account)).getSlot(0);
+        assertEq(abi.decode(paperData, (address)), vm.addr(paperPk));
     }
 
     function test_birth_rejectsInvalidSlotAndRollsBackImplementation() public {
@@ -125,6 +207,31 @@ contract BirthTest is GlauxFixture {
         GlauxAccount(payable(account)).updateNonce();
         (bytes memory validData, bytes memory validSig) = _initBlob();
         GlauxDelegate(payable(account)).initialize(address(impl), validData, validSig);
+    }
+
+    function test_birth_rejectsOneUnusableSlot() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        FactorSlot[3] memory invalid = _slots();
+        invalid[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0)));
+        bytes memory initData = abi.encode(invalid);
+        bytes32 digest =
+            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, address(impl), keccak256(initData)));
+
+        vm.expectRevert(InvalidSlot.selector);
+        GlauxDelegate(payable(account)).initialize(address(impl), initData, _sig65(birthPk, digest));
+    }
+
+    function test_birth_rejectsTwoUnusableSlots() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        FactorSlot[3] memory invalid = _slots();
+        invalid[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0)));
+        invalid[1] = FactorSlot(GlauxStorage.VERIFIER_P256, abi.encode(0, 0));
+        bytes memory initData = abi.encode(invalid);
+        bytes32 digest =
+            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, address(impl), keccak256(initData)));
+
+        vm.expectRevert(InvalidSlot.selector);
+        GlauxDelegate(payable(account)).initialize(address(impl), initData, _sig65(birthPk, digest));
     }
 
     function test_birth_rejectsInvalidVerifierType() public {

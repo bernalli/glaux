@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 import {
     GlauxStorage,
     AlreadyInitialized,
+    NotInitialized,
+    InvalidImplementation,
     InvalidBirthSignature,
     Initialized
 } from "./GlauxStorage.sol";
@@ -31,9 +33,8 @@ contract GlauxDelegate {
                 GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(this)), digest, birthSig
             )) revert InvalidBirthSignature();
 
-        assembly {
-            sstore(slot, implementation)
-        }
+        if (implementation.code.length == 0) revert InvalidImplementation();
+
         (bool ok, bytes memory ret) = implementation.delegatecall(
             abi.encodeWithSignature("initializeAccount(bytes)", initData)
         );
@@ -41,6 +42,10 @@ contract GlauxDelegate {
             assembly {
                 revert(add(ret, 0x20), mload(ret))
             }
+        }
+        if (!GlauxStorage.layout().initialized) revert NotInitialized();
+        assembly {
+            sstore(slot, implementation)
         }
         emit Initialized(implementation);
     }
