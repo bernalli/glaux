@@ -27,6 +27,10 @@ import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOper
 
 /// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
 contract GlauxAccount {
+    // Two 65-byte secp256k1 signatures encode as SlotSig[2] in 480 bytes. 512 bytes
+    // leaves room for one trailing ABI word while bounding the self-call copy.
+    uint256 internal constant MAX_USEROP_SIGNATURE_LENGTH = 512;
+
     address public immutable ENTRYPOINT;
     bool private transient executing;
 
@@ -190,11 +194,13 @@ contract GlauxAccount {
         view
         returns (bool ok, SlotSig[2] memory sigs)
     {
+        if (signature.length > MAX_USEROP_SIGNATURE_LENGTH) {
+            return (false, sigs);
+        }
         try this.decodeSlotSigs(signature) returns (SlotSig[2] memory decoded) {
             return (true, decoded);
         } catch {
-            SlotSig[2] memory empty;
-            return (false, empty);
+            return (false, sigs);
         }
     }
 
