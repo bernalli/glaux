@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import "forge-std/Test.sol";
 import {GlauxDelegate} from "../src/GlauxDelegate.sol";
 import {GlauxAccount} from "../src/GlauxAccount.sol";
-import {GlauxStorage, FactorSlot, SlotSig, Update} from "../src/GlauxStorage.sol";
+import {GlauxStorage, FactorSlot, SlotSig, Update, Call} from "../src/GlauxStorage.sol";
 import {P256_PK, P256_QX, P256_QY} from "./P256Fixture.sol";
 
 abstract contract GlauxFixture is Test {
@@ -64,5 +64,17 @@ abstract contract GlauxFixture is Test {
     function _twoSigs(bytes32 digest) internal view returns (SlotSig[2] memory sigs) {
         sigs[0] = SlotSig(0, _sig65(paperPk, digest)); // F2 paper
         sigs[1] = SlotSig(2, _sig65(cloudPk, digest)); // F3 cloud
+    }
+
+    function _execDigest(Call[] memory calls) internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                GlauxStorage.EXEC_DOMAIN,
+                block.chainid,
+                account,
+                GlauxAccount(payable(account)).execNonce(),
+                keccak256(abi.encode(calls))
+            )
+        );
     }
 }

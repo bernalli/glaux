@@ -6,9 +6,11 @@ import {
     FactorSlot,
     SlotSig,
     Update,
+    Call,
     AlreadyInitialized,
     NotInitialized,
     BadUpdateNonce,
+    CallFailed,
     InvalidAction,
     InvalidImplementation,
     InvalidSignature,
@@ -99,6 +101,31 @@ contract GlauxAccount {
             revert InvalidAction();
         }
         emit UpdateApplied(u.nonce, u.action);
+    }
+
+    function executeWithSigs(Call[] calldata calls, SlotSig[2] calldata sigs) external payable {
+        GlauxStorage.Layout storage l = GlauxStorage.layout();
+        if (!l.initialized) revert NotInitialized();
+        bytes32 digest = keccak256(
+            abi.encode(
+                GlauxStorage.EXEC_DOMAIN,
+                block.chainid,
+                address(this),
+                l.execNonce,
+                keccak256(abi.encode(calls))
+            )
+        );
+        _requireTwoSigs(digest, [sigs[0], sigs[1]]);
+        l.execNonce += 1;
+        _execute(calls);
+        emit Executed(l.execNonce, calls.length);
+    }
+
+    function _execute(Call[] memory calls) internal {
+        for (uint256 i = 0; i < calls.length; i++) {
+            (bool ok, bytes memory ret) = calls[i].to.call{value: calls[i].value}(calls[i].data);
+            if (!ok) revert CallFailed(i, ret);
+        }
     }
 
     function _requireTwoSigs(bytes32 digest, SlotSig[2] memory sigs) internal view {
