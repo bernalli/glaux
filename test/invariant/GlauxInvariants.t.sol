@@ -55,10 +55,22 @@ contract GlauxInvariants is Test {
 
         // Only the handler's own entry points may act as the account/attacker; the
         // account itself and the test contract must never be targeted directly, or
-        // the fuzzer would bypass the ghost-model bookkeeping entirely.
+        // the fuzzer would bypass the ghost-model bookkeeping entirely. All seven
+        // actions are registered independently (not behind a fixed macro) so the
+        // fuzzer is free to explore every ordering and interleaving -- upgrade
+        // before any rotation, consecutive rotations, consecutive upgrades, attacks
+        // interleaved anywhere, etc. Reachability of each individual action is
+        // proven separately and deterministically by test_allSevenActionsReachable
+        // below, so this campaign never needs a seed-dependent liveness check.
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](1);
-        selectors[0] = Handler.exerciseAll.selector;
+        bytes4[] memory selectors = new bytes4[](7);
+        selectors[0] = Handler.rotate.selector;
+        selectors[1] = Handler.tryForgeUpdate.selector;
+        selectors[2] = Handler.tryDuplicateSlot.selector;
+        selectors[3] = Handler.tryWrongNonce.selector;
+        selectors[4] = Handler.tryUpgradeValid.selector;
+        selectors[5] = Handler.tryUpgradeWrongCodeHash.selector;
+        selectors[6] = Handler.tryUpgradeNoMarker.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -144,18 +156,73 @@ contract GlauxInvariants is Test {
         assertEq(handler.failedValidUpgrades(), 0);
     }
 
-    /// Runs once at the end of each fuzzed call sequence (not after every single
-    /// call, unlike the invariant_* checks above): guards against a vacuous
-    /// campaign in which the fuzzer happened never to attempt an attack, which
-    /// would otherwise let every invariant above pass by never being exercised.
-    function afterInvariant() public view {
-        assertGt(handler.successfulRotations(), 0);
-        assertGt(handler.actualSlotChanges(), 0);
-        assertGt(handler.rejectedForgeries(), 0);
-        assertGt(handler.rejectedDuplicateSlotAttempts(), 0);
-        assertGt(handler.rejectedWrongNonceAttempts(), 0);
-        assertGt(handler.successfulUpgrades(), 0);
-        assertGt(handler.rejectedWrongCodeHashAttempts(), 0);
-        assertGt(handler.rejectedNoMarkerAttempts(), 0);
+    /// @notice Deterministic reachability proof for every one of the seven handler
+    ///         actions, run once each in a fixed order. This is a plain unit test,
+    ///         not an invariant: it never depends on what the fuzzer decided to
+    ///         explore, so it cannot flake on any seed. It is the sole place where
+    ///         "this action fires and is wired correctly" is asserted -- the
+    ///         invariant campaign above only ever asserts that nothing bad happened,
+    ///         never that something specific ran, which is what keeps it
+    ///         seed-independent while still being free to explore every ordering.
+    function test_allSevenActionsReachable() public {
+        // 1. rotate(): authorized 2-of-3 rotation of slot 0 to a fresh key. Must
+        //    succeed and really move the on-chain slot to the new key.
+        uint64 nonceBeforeRotate = handler.ghostUpdateNonce();
+        handler.rotate(0, 0x1234);
+        assertEq(handler.successfulRotations(), 1);
+        assertEq(handler.actualSlotChanges(), 1);
+        assertEq(handler.failedRotations(), 0);
+        assertEq(handler.ghostUpdateNonce(), nonceBeforeRotate + 1);
+        (, bytes memory slot0Data) = GlauxAccount(payable(account)).getSlot(0);
+        assertEq(abi.decode(slot0Data, (address)), vm.addr(handler.keys(0)));
+
+        // 2. tryForgeUpdate(): an attacker holding none of the real keys signs with
+        //    their own key instead of a real quorum. Must revert InvalidSignature.
+        handler.tryForgeUpdate(0x9999, 1);
+        assertEq(handler.rejectedForgeries(), 1);
+        assertEq(handler.acceptedForgeAttacks(), 0);
+        assertEq(handler.wrongErrorForgeries(), 0);
+
+        // 3. tryDuplicateSlot(): a real quorum tries to rotate slot 0 onto the
+        //    current key of slot 1. Must revert DuplicateSlot and never advance
+        //    the nonce.
+        uint64 nonceBeforeDuplicate = handler.ghostUpdateNonce();
+        handler.tryDuplicateSlot(0, true);
+        assertEq(handler.rejectedDuplicateSlotAttempts(), 1);
+        assertEq(handler.acceptedDuplicateSlotAttacks(), 0);
+        assertEq(handler.wrongErrorDuplicateSlotAttempts(), 0);
+        assertEq(handler.ghostUpdateNonce(), nonceBeforeDuplicate);
+
+        // 4. tryWrongNonce(): a real quorum authorizes a valid rotation but under a
+        //    nonce that is not exactly current+1. Must revert BadUpdateNonce.
+        handler.tryWrongNonce(1, 0x4321, 999);
+        assertEq(handler.rejectedWrongNonceAttempts(), 1);
+        assertEq(handler.acceptedWrongNonceAttacks(), 0);
+        assertEq(handler.wrongErrorWrongNonceAttempts(), 0);
+
+        // 5. tryUpgradeValid(): a real quorum upgrades to the Glaux-compatible mock
+        //    implementation. Must succeed and really move the ERC-1967 pointer.
+        handler.tryUpgradeValid();
+        assertEq(handler.successfulUpgrades(), 1);
+        assertEq(handler.failedValidUpgrades(), 0);
+        assertEq(handler.ghostImplementation(), address(compatibleImpl));
+        assertEq(
+            address(uint160(uint256(vm.load(account, GlauxStorage.ERC1967_IMPL_SLOT)))),
+            address(compatibleImpl)
+        );
+
+        // 6. tryUpgradeWrongCodeHash(): a real quorum authorizes an upgrade whose
+        //    declared code hash does not match. Must revert InvalidImplementation.
+        handler.tryUpgradeWrongCodeHash();
+        assertEq(handler.rejectedWrongCodeHashAttempts(), 1);
+        assertEq(handler.acceptedWrongCodeHashAttacks(), 0);
+        assertEq(handler.wrongErrorWrongCodeHashAttempts(), 0);
+
+        // 7. tryUpgradeNoMarker(): a real quorum authorizes an upgrade to a contract
+        //    with code but no compatibility marker. Must revert InvalidImplementation.
+        handler.tryUpgradeNoMarker();
+        assertEq(handler.rejectedNoMarkerAttempts(), 1);
+        assertEq(handler.acceptedNoMarkerAttacks(), 0);
+        assertEq(handler.wrongErrorNoMarkerAttempts(), 0);
     }
 }
