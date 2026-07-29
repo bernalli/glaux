@@ -65,3 +65,7 @@ error InvalidVerifierType();
 error InvalidAction();
 error NotEntryPoint();
 error CallFailed(uint256 index, bytes revertData);
+
+event Initialized(address implementation);
+event UpdateApplied(uint64 nonce, uint8 action);
+event Executed(uint64 execNonce, uint256 numCalls);
