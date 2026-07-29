@@ -6,10 +6,12 @@ import {GlauxDelegate} from "../src/GlauxDelegate.sol";
 import {GlauxAccount} from "../src/GlauxAccount.sol";
 import {GlauxStorage, FactorSlot, SlotSig, Update, Call} from "../src/GlauxStorage.sol";
 import {P256_PK, P256_QX, P256_QY} from "./P256Fixture.sol";
+import {EntryPoint} from "account-abstraction/core/EntryPoint.sol";
 
 abstract contract GlauxFixture is Test {
     GlauxDelegate internal router;
     GlauxAccount internal impl;
+    EntryPoint internal ep;
 
     uint256 internal birthPk = 0xB112;
     address internal account;
@@ -22,7 +24,8 @@ abstract contract GlauxFixture is Test {
 
     function setUp() public virtual {
         _etchP256();
-        impl = new GlauxAccount(address(0xE47));
+        ep = new EntryPoint();
+        impl = new GlauxAccount(address(ep));
         router = new GlauxDelegate();
         account = vm.addr(birthPk);
     }

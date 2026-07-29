@@ -17,11 +17,13 @@ import {
     InvalidSlot,
     InvalidVerifierType,
     DuplicateSlot,
+    NotEntryPoint,
     ReentrantCall,
     UpdateApplied,
     Executed
 } from "./GlauxStorage.sol";
 import {SignatureVerify} from "./lib/SignatureVerify.sol";
+import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
 
 /// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
 contract GlauxAccount {
@@ -154,6 +156,52 @@ contract GlauxAccount {
         l.execNonce = nonce;
         _execute(calls);
         emit Executed(nonce, calls.length);
+    }
+
+    /// @notice ERC-4337 entry point validation hook. Only ENTRYPOINT may call this.
+    /// @dev userOp.signature is attacker-controlled and may be malformed; decoding is
+    ///      done through a try/catch so garbage bytes yield SIG_VALIDATION_FAILED (1)
+    ///      instead of a revert, which would be a worse failure mode for the bundler.
+    function validateUserOp(
+        PackedUserOperation calldata userOp,
+        bytes32 userOpHash,
+        uint256 missingAccountFunds
+    ) external returns (uint256 validationData) {
+        if (msg.sender != ENTRYPOINT) revert NotEntryPoint();
+        (bool decoded, SlotSig[2] memory sigs) = _tryDecodeSigs(userOp.signature);
+        validationData = (decoded && _checkTwoSigs(userOpHash, sigs)) ? 0 : 1;
+        if (missingAccountFunds > 0) {
+            (bool ok,) = msg.sender.call{value: missingAccountFunds}("");
+            ok; // EntryPoint verifies the deposit; a failed prefund fails the op there
+        }
+    }
+
+    /// @notice ERC-4337 execution hook, reached only from the EntryPoint after
+    ///         validateUserOp succeeded. The EntryPoint owns replay protection through
+    ///         its own per-account nonce, so this path does not touch execNonce.
+    function executeFromEntryPoint(Call[] calldata calls) external {
+        if (msg.sender != ENTRYPOINT) revert NotEntryPoint();
+        _execute(calls);
+        emit Executed(GlauxStorage.layout().execNonce, calls.length);
+    }
+
+    function _tryDecodeSigs(bytes calldata signature)
+        internal
+        view
+        returns (bool ok, SlotSig[2] memory sigs)
+    {
+        try this.decodeSlotSigs(signature) returns (SlotSig[2] memory decoded) {
+            return (true, decoded);
+        } catch {
+            SlotSig[2] memory empty;
+            return (false, empty);
+        }
+    }
+
+    /// @notice Pure decode helper, external so `_tryDecodeSigs` can call it through a
+    ///         try/catch and turn a malformed signature into a bool instead of a revert.
+    function decodeSlotSigs(bytes calldata signature) external pure returns (SlotSig[2] memory) {
+        return abi.decode(signature, (SlotSig[2]));
     }
 
     function _execute(Call[] memory calls) internal {

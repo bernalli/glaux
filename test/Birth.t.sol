@@ -29,7 +29,7 @@ contract BirthTest is GlauxFixture {
         assertEq(abi.decode(data, (address)), vm.addr(paperPk));
         assertEq(GlauxAccount(payable(account)).updateNonce(), 0);
         assertEq(GlauxAccount(payable(account)).execNonce(), 0);
-        assertEq(GlauxAccount(payable(account)).ENTRYPOINT(), address(0xE47));
+        assertEq(GlauxAccount(payable(account)).ENTRYPOINT(), address(ep));
     }
 
     function test_birth_preservesSlotOrdering() public {
