@@ -38,15 +38,27 @@ abstract contract GlauxFixture is Test {
 
     function _initBlob() internal view returns (bytes memory initData, bytes memory sig) {
         initData = abi.encode(_slots());
-        bytes32 digest =
-            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, address(impl), keccak256(initData)));
+        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
         sig = _sig65(birthPk, digest);
+    }
+
+    function _initDigest(address implementation, bytes32 expectedCodeHash, bytes memory initData)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                GlauxStorage.INIT_DOMAIN, implementation, expectedCodeHash, keccak256(initData)
+            )
+        );
     }
 
     function _birthAccount() internal {
         vm.signAndAttachDelegation(address(router), birthPk);
         (bytes memory initData, bytes memory sig) = _initBlob();
-        GlauxDelegate(payable(account)).initialize(address(impl), initData, sig);
+        GlauxDelegate(payable(account))
+            .initialize(address(impl), address(impl).codehash, initData, sig);
     }
 
     function _sig65(uint256 privateKey, bytes32 digest) internal pure returns (bytes memory) {
