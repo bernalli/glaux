@@ -28,18 +28,23 @@ library SignatureVerify {
         returns (bool)
     {
         if (signature.length != 65) return false;
+        if (data.length != 32) return false;
         bytes32 r;
         bytes32 s;
         uint8 v;
+        uint256 signerWord;
         assembly {
             r := mload(add(signature, 0x20))
             s := mload(add(signature, 0x40))
             v := byte(0, mload(add(signature, 0x60)))
+            signerWord := mload(add(data, 0x20))
         }
+        if (signerWord > type(uint160).max) return false;
         if (uint256(s) > SECP256K1_N_DIV_2) return false;
         if (v != 27 && v != 28) return false;
         address recovered = ecrecover(digest, v, r, s);
-        return recovered != address(0) && recovered == abi.decode(data, (address));
+        // forge-lint: disable-next-line(unsafe-typecast) -- signerWord is range-checked above.
+        return recovered != address(0) && recovered == address(uint160(signerWord));
     }
 
     function _verifyP256(bytes memory data, bytes32 digest, bytes memory signature)
