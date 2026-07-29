@@ -66,6 +66,7 @@ error InvalidSlot();
 error InvalidVerifierType();
 error InvalidAction();
 error NotEntryPoint();
+error ZeroEntryPoint();
 error ReentrantCall();
 error CallFailed(uint256 index, bytes revertData);
 

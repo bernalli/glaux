@@ -9,6 +9,7 @@ import {
     SlotSig,
     Call,
     NotEntryPoint,
+    ZeroEntryPoint,
     ReentrantCall,
     CallFailed
 } from "../src/GlauxStorage.sol";
@@ -370,5 +371,13 @@ contract EntryPoint4337Test is GlauxFixture {
             }
         }
         revert("missing UserOperationEvent");
+    }
+
+    /// @notice An implementation is immutable and lands at a deterministic CREATE2
+    ///         address, so a zero EntryPoint would be permanent at the canonical
+    ///         address with the whole 4337 path dead. Construction must reject it.
+    function test_constructor_rejectsZeroEntryPoint() public {
+        vm.expectRevert(ZeroEntryPoint.selector);
+        new GlauxAccount(address(0));
     }
 }

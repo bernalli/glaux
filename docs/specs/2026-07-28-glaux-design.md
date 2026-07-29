@@ -1,7 +1,10 @@
 # Glaux — Design Specification
 
-- **Version**: v0.1 (draft for review)
-- **Date**: 2026-07-28
+- **Version**: v0.2
+- **Date**: 2026-07-28, revised 2026-07-29
+- **Status**: v0.1 was ratified before implementation. v0.2 folds in the design
+  changes that security review forced during Phase 1; each is marked
+  *(revised v0.2)* in place and listed in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
   (cross-chain keystore state of the art) and 12 (post-quantum EVM state of
   the art). In the founding documents the project is referred to by its
@@ -50,6 +53,18 @@ abstraction UX (paymasters), commissioned audits.
 - Account state holds **3 factor slots**, each a pair `(verifierType, data)`,
   with a **fixed 2-of-3 threshold**. No generic k-of-n: deliberate
   opinionation, minimal audit surface.
+- *(revised v0.2)* **The three slots must hold pairwise-distinct credentials**,
+  enforced at birth and on every rotation. Counting distinct slot *indices* is
+  not enough: if the same key sits in two slots, one signature submitted twice
+  under two indices satisfies the threshold, and 2-of-3 silently collapses to
+  1-of-1. Two slots are duplicates when they share a verifier type and
+  identical key data.
+- *(revised v0.2)* **Every implementation must self-identify** by returning
+  `keccak256("GLAUX_ACCOUNT_V1")` from `glauxCompatibilityId()`. Both the birth
+  path and the upgrade path staticcall it and require exactly one word of
+  return data equal to that constant. This is a guard against accident and
+  incompatible logic — it is self-attestation, not proof against an adversary
+  who already holds two factors and therefore owns the account by definition.
 - **Every state-changing operation** — execution, key rotation, slot type
   change, implementation upgrade — requires 2 valid signatures from 2
   distinct slots.
@@ -72,13 +87,45 @@ abstraction UX (paymasters), commissioned audits.
   that chain (EIP-7702 increments the authority nonce), and the same tuple
   remains valid on every chain not yet touched, present or future ("replay
   on first touch").
+- *(revised v0.2)* The birth blob signs the **implementation identity**, not
+  merely its address:
+
+  ```
+  digest = keccak256(abi.encode(INIT_DOMAIN, implementation,
+                                expectedCodeHash, keccak256(initData)))
+  ```
+
+  Before the delegatecall, the immutable router requires non-empty runtime
+  code, `implementation.codehash == expectedCodeHash`, and the compatibility
+  marker. Only then does it delegatecall `initializeAccount`, assert the
+  `initialized` postcondition, write the ERC-1967 pointer, and emit.
+
+  Rationale: the digest deliberately carries no chain id, so the blob replays
+  everywhere — and the same *address* does not hold the same *code* on every
+  chain. Without the code-hash binding, replaying the public blob on a chain
+  where that address holds different code would initialize the account against
+  foreign logic that then runs by delegatecall in the account's own storage and
+  balance context, needing only to set `initialized` to satisfy the router. One
+  signature must install byte-identical logic everywhere or fail cleanly.
+- An implementation with no code on the target chain is rejected without
+  writing any state, and **the same blob stays retryable** on that chain once
+  the logic contract is deployed there. That is the ordinary case, not an
+  error: a birth blob is expected to outrun deployment on chains the account
+  has not reached yet.
 - Consequences, declared openly:
   - the delegation pointer is fixed forever; upgrades happen *inside* the
     delegate through an implementation slot governed by the 2-of-3;
-  - the residual-key threat collapses to birth-time environment compromise
-    (see threat model). EIP-7851, when live, will allow disabling residual
-    ECDSA authority at the protocol level; Glaux's construction does not
-    depend on it.
+  - *(revised v0.2)* **a birth key that survives destruction is a permanent
+    master key, not a front-running risk.** The birth key *is* the account's
+    EOA key, and EIP-7702 lets a delegated EOA still originate ordinary
+    transactions and sign further authorizations — so a surviving copy can
+    spend directly and can replace the delegation itself, forever. No factor
+    rotation revokes it, because the 2-of-3 governs the delegate's state, not
+    the EOA's authority. Suspected birth-key compromise therefore means
+    migrating assets to a new address, never rotating factors. EIP-7851, when
+    live, will allow disabling residual ECDSA authority at the protocol level
+    and is the only real remedy; Glaux's construction does not depend on it,
+    but this is the residual that most deserves a client's attention.
 
 ## 5. Single update channel (sign once, replay many)
 
@@ -86,6 +133,23 @@ abstraction UX (paymasters), commissioned audits.
   change, implementation upgrade — travel through one message type, signed
   without chain-id, carrying a monotonically increasing per-account update
   nonce.
+- Two actions exist. `SetSlot` carries `(uint8 index, uint8 verifierType,
+  bytes data)`. *(revised v0.2)* `SetImplementation` carries
+  `(address implementation, bytes32 expectedCodeHash)` and enforces the same
+  three checks as birth — code present, exact code hash, compatibility marker —
+  for the same cross-chain reason: one address does not hold one bytecode
+  everywhere, and an upgrade that installed foreign code would be delegatecalled
+  into the account's own storage.
+- *(revised v0.2)* **Same-nonce equivocation is a residual, not a defect.** Two
+  different updates signed for the same nonce can each land first on different
+  chains, leaving divergent configurations with both nonces advanced. Per-chain
+  nonces cannot prevent it — it is inherent to a deliberately chain-agnostic
+  channel. The rule is signer-side and absolute: *never sign two updates for one
+  nonce*, including "the same upgrade with a per-chain code hash", which is
+  exactly the forbidden case. Clients reconcile by comparing nonce, slots, **and
+  the implementation pointer with its live code hash** — an upgrade advances the
+  nonce while changing nothing else, so nonce-and-slots agreement alone can hide
+  two chains running different logic.
 - Updates are replayed **in order** on each chain at first touch ("silent
   submission"). No chain-specific configuration update exists: the Coinbase
   Smart Wallet audit lesson (issue #114 — mixing chain-specific and
@@ -118,16 +182,41 @@ abstraction UX (paymasters), commissioned audits.
 
 ## 7. Threat model — declared residuals
 
-1. **Unlocked-device runtime compromise** controls F1+F3: the daily pair is
+Summary only — `docs/threat-model.md` holds the full enumeration with the
+guarantee/non-guarantee per adversary, and `docs/client-guidance.md` holds the
+signer-side rules that follow from it.
+
+1. **Two factors are full control.** The threshold is the whole security model:
+   an adversary holding any two factors can rotate the third, upgrade the
+   implementation and move funds. Every "guard" below stops accidents and
+   incompatible code, never a two-factor adversary.
+2. **Unlocked-device runtime compromise** controls F1+F3: the daily pair is
    defeated; full theft still requires F2. No mobile wallet covers this
    case; Glaux declares it instead of pretending otherwise.
-2. **Birth-time environment compromise**: a compromised key-generation
-   environment can exfiltrate the ephemeral key before destruction.
-3. **Never-touched chain**: previous configuration remains valid there until
+3. *(revised v0.2)* **A retained birth key is a permanent master key** — see
+   §4. This is the gravest residual and the only one whose remedy is migration
+   rather than rotation.
+4. **Never-touched chain**: previous configuration remains valid there until
    the update replay lands (declared in client UX).
-4. **Cloud breach**: worth exactly 1 factor of 3.
-5. **Upgrade power**: the 2-of-3 controls implementation upgrades; a timelock
-   on upgrades is evaluated during implementation.
+5. **Same-nonce cross-chain equivocation** (§5): detectable by reconciliation,
+   preventable only signer-side.
+6. **Cloud breach**: worth exactly 1 factor of 3.
+7. *(revised v0.2)* **A code hash binds bytecode, not behaviour.** Identical
+   bytecode at the signed hash may still be a proxy pointing elsewhere, or may
+   read storage a client did not review. The check makes cross-chain code
+   identical; it does not make it correct.
+8. *(revised v0.2)* **Upgrades are irreversible in one direction**: once the
+   ERC-1967 pointer is non-zero the birth path can never re-run, so an upgrade
+   to logic that cannot itself upgrade is terminal. Storage-layout and
+   dependency review is a client obligation, not an on-chain check.
+9. *(revised v0.2)* **Submission is permissionless by design** — anyone may
+   relay a signed operation and pay for it, which is what makes a cross-chain
+   gas account possible. A relayer chooses *whether* and *when*, never *what*.
+10. *(resolved v0.2)* **No upgrade timelock in v1.** It was left open in v0.1;
+    the decision is not to add one. Upgrade authority is exactly the authority
+    that can already move the funds, so a timelock would delay an adversary who
+    could simply drain instead, while adding a stuck-state failure mode to the
+    permanent router.
 
 ## 8. License, stack, quality bar
 
@@ -155,6 +244,32 @@ into the core.
 - This specification ratified.
 - Delegate reference implementation: factor slots, fixed 2-of-3, single
   update channel, `validateUserOp`, deterministic deployment.
-- Property/invariant test suite green in CI.
+- Property/invariant test suite green in CI, plus a Slither gate.
+- A test proving a paymaster can sponsor a user operation for an account
+  holding zero native currency — the on-chain evidence for the cross-chain gas
+  account of Phase 2.
 - Testnet deployments: Sepolia + one L2 testnet with RIP-7212.
-- Threat model document.
+- Threat model document and client reference guidance.
+
+### Open adoption question (not a Phase 1 blocker)
+
+ERC-4337 bundlers restrict what an account may do during validation. A P-256
+factor makes validation staticcall the RIP-7212 / EIP-7951 precompile, and
+bundler policy toward that address during validation is **not yet verified**
+here. If some bundlers reject it, P-256-only accounts keep the direct
+`executeWithSigs` path — which is permissionless to relay and needs no
+bundler — but lose the sponsored 4337 path with those bundlers. To verify
+before promoting 4337 as a supported route.
+
+## 11. Revision history
+
+- **v0.2 (2026-07-29)** — six changes forced by Phase 1 security review, all
+  ratified before landing: factor slots must be pairwise distinct (§3);
+  implementations must carry the `GLAUX_ACCOUNT_V1` marker (§3); the birth blob
+  binds `expectedCodeHash` and the router validates code, hash and marker before
+  the delegatecall, asserting the `initialized` postcondition before writing the
+  ERC-1967 pointer (§4); `SetImplementation` carries `expectedCodeHash` (§5);
+  same-nonce equivocation and implementation-pointer reconciliation declared
+  (§5); the birth-key residual restated as a permanent master key rather than a
+  front-running window (§4, §7). Also resolved: no upgrade timelock in v1 (§7).
+- **v0.1 (2026-07-28)** — ratified before implementation.

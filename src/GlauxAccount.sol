@@ -18,6 +18,7 @@ import {
     InvalidVerifierType,
     DuplicateSlot,
     NotEntryPoint,
+    ZeroEntryPoint,
     ReentrantCall,
     UpdateApplied,
     Executed
@@ -34,7 +35,11 @@ contract GlauxAccount {
     address public immutable ENTRYPOINT;
     bool private transient executing;
 
+    /// @dev Implementations are deployed at a deterministic CREATE2 address and are
+    ///      immutable, so a wrong EntryPoint would be permanent at the canonical
+    ///      address: reject the obvious deployment mistake at construction time.
     constructor(address entryPoint) {
+        if (entryPoint == address(0)) revert ZeroEntryPoint();
         ENTRYPOINT = entryPoint;
         GlauxStorage.layout().initialized = true;
     }
@@ -210,6 +215,16 @@ contract GlauxAccount {
         return abi.decode(signature, (SlotSig[2]));
     }
 
+    /// @dev Slither flags three patterns here that are the account's whole purpose:
+    ///      `arbitrary-send-eth` — a smart account exists to send value to
+    ///      destinations its owners chose, and every destination, value and calldata
+    ///      below is bound into the digest the 2-of-3 quorum signed;
+    ///      `calls-loop` — batching is a feature, and a failed call reverts the batch
+    ///      rather than being skipped;
+    ///      `reentrancy-eth` — the state written after the calls IS the reentrancy
+    ///      guard being released; the flag is set before the loop and any re-entry
+    ///      reverts `ReentrantCall()`.
+    // slither-disable-next-line arbitrary-send-eth,calls-loop,reentrancy-eth
     function _execute(Call[] memory calls) internal {
         if (executing) revert ReentrantCall();
         executing = true;

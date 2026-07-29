@@ -49,6 +49,10 @@ contract GlauxDelegate {
                 || abi.decode(compatibilityId, (bytes32)) != GlauxStorage.COMPAT_ID
         ) revert InvalidImplementation();
 
+        // Delegatecall to a signed target is what a proxy IS. The function id is a
+        // hardcoded literal, not input; the target is bound by the birth signature
+        // and by the code-hash and marker checks immediately above.
+        // slither-disable-next-line controlled-delegatecall
         (bool ok, bytes memory ret) = implementation.delegatecall(
             abi.encodeWithSignature("initializeAccount(bytes)", initData)
         );
