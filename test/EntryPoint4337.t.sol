@@ -15,7 +15,7 @@ import {
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 import {TestPaymasterAcceptAll} from "account-abstraction/test/TestPaymasterAcceptAll.sol";
-import {Vm} from "forge-std/Vm.sol";
+import {Vm, VmSafe} from "forge-std/Vm.sol";
 
 /// @notice Calls back into the account's executeWithSigs (the direct path) during a
 /// batch driven through the EntryPoint, to prove the shared `_execute` reentrancy
@@ -251,7 +251,9 @@ contract EntryPoint4337Test is GlauxFixture {
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
         vm.recordLogs();
+        vm.startStateDiffRecording();
         ep.handleOps(ops, payable(address(0xFEE)));
+        VmSafe.AccountAccess[] memory diffs = vm.stopAndReturnStateDiff();
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         assertEq(counter.n(), 1);
@@ -259,9 +261,61 @@ contract EntryPoint4337Test is GlauxFixture {
         assertEq(observer.accountDepositDuringExecution(), accountDepositBefore);
         assertEq(account.balance, accountBalanceBefore);
         assertEq(ep.balanceOf(account), accountDepositBefore);
+        _assertAccountNeverFundedThroughoutHandleOps(diffs);
         uint256 actualGasCost = _userOpActualGasCost(logs, opHash, address(paymaster));
         assertGt(actualGasCost, 0);
         assertEq(paymasterDepositBefore - ep.balanceOf(address(paymaster)), actualGasCost);
+    }
+
+    /// @notice Walks every recorded state transition of the `handleOps` call (not just
+    /// sampled moments) and proves the account's native balance and its EntryPoint
+    /// deposit were zero at every single step, i.e. throughout the whole call, not just
+    /// before/after or at the one point an observer contract happened to look.
+    function _assertAccountNeverFundedThroughoutHandleOps(VmSafe.AccountAccess[] memory diffs)
+        internal
+        view
+    {
+        // EntryPoint v0.7's StakeManager.deposits is the first declared storage
+        // variable of the first base contract with storage in EntryPoint's
+        // inheritance chain (`EntryPoint is IEntryPoint, StakeManager, ...`), so
+        // `mapping(address => DepositInfo) public deposits` sits at storage slot 0.
+        // DepositInfo's first field is `uint256 deposit`, so the deposit amount
+        // itself lives at the mapping's computed base slot (no struct offset).
+        bytes32 depositSlot = keccak256(abi.encode(account, uint256(0)));
+
+        uint256 accountAccessCount;
+        for (uint256 i = 0; i < diffs.length; i++) {
+            VmSafe.AccountAccess memory diff = diffs[i];
+
+            if (diff.account == account) {
+                accountAccessCount++;
+                assertEq(diff.oldBalance, 0, "account had non-zero balance before an access");
+                assertEq(diff.newBalance, 0, "account had non-zero balance after an access");
+                assertEq(diff.value, 0, "account was ever sent non-zero value");
+            }
+
+            if (diff.account == address(ep)) {
+                for (uint256 j = 0; j < diff.storageAccesses.length; j++) {
+                    Vm.StorageAccess memory storageAccess = diff.storageAccesses[j];
+                    if (storageAccess.isWrite && storageAccess.slot == depositSlot) {
+                        assertEq(
+                            storageAccess.previousValue,
+                            bytes32(0),
+                            "account's EntryPoint deposit was non-zero before a write"
+                        );
+                        assertEq(
+                            storageAccess.newValue,
+                            bytes32(0),
+                            "account's EntryPoint deposit was non-zero after a write"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Non-vacuity guard: the loop above proves nothing if it never actually
+        // observed the account in the recorded diffs.
+        assertGt(accountAccessCount, 0, "state-diff recording never observed the account");
     }
 
     function test_userOp_reentrancyIntoDirectPathStoppedByGuard() public {
