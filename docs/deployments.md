@@ -197,8 +197,11 @@ against healthy chains, which is how this was found.
 The flag does not reach the compiler, and that is precisely why it is safe. `foundry.toml`
 pins `src`/`script` to solc 0.8.28, which has no `osaka` target, so Foundry clamps the
 compiler input to `prague` and raises only the executor spec — read directly out of the
-solc standard-json in `out/build-info`, which records `evmVersion=prague` under both
-invocations. Both contract addresses and the implementation code hash are consequently
+solc standard-json, which records `evmVersion=prague` under both invocations. Build info
+is off by default, so reproducing that evidence takes
+`forge build --evm-version osaka --build-info --force` and then reading
+`input.settings.evmVersion` in `out/build-info/*.json`. Both contract addresses and the
+implementation code hash are consequently
 byte-identical with and without the flag, and nothing a birth blob signs moves. That
 guarantee is tied to the pinned compiler: moving `src` to solc >= 0.8.29 would let `osaka`
 reach the compiler for real, and the test would then need its own compilation profile

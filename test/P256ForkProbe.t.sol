@@ -31,8 +31,10 @@ import {SignatureVerify} from "../src/lib/SignatureVerify.sol";
 ///      The flag does not reach the compiler, and that is why it is safe to pass.
 ///      `foundry.toml` pins `src`/`script` to solc 0.8.28, which has no `osaka`
 ///      target, so Foundry clamps the compiler input to `prague` and raises only the
-///      executor spec — verified by reading the solc standard-json in
-///      `out/build-info` (2026-07-29: `evmVersion=prague` under both invocations).
+///      executor spec — verified by reading the solc standard-json, which is not
+///      emitted by default: `forge build --evm-version osaka --build-info --force`,
+///      then `input.settings.evmVersion` in `out/build-info/*.json` (2026-07-29:
+///      `prague` under both invocations).
 ///      The addresses and the implementation code hash are therefore byte-identical
 ///      with and without it, and nothing a birth blob signs moves.
 ///
