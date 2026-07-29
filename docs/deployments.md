@@ -2,10 +2,10 @@
 
 ## Local two-chain end-to-end (verified)
 
-Date: 2026-07-29. Commit: `d1104a5ae8f76e34b222409bcfbff777ac2d2f99` (contracts unchanged by
-this commit is the final Phase 1 state; the run below was repeated against it after the
-implementation checks changed, because changing the contracts changes their bytecode and
-therefore every deterministic address recorded here).
+Date: 2026-07-29. Commit: `534aac82a61ba37e550fbc79a8d538593d982de6`, the final Phase 1
+state. The whole run below was repeated from scratch each time the contracts changed:
+changing them changes their bytecode, and therefore every deterministic address and code
+hash recorded here.
 
 Two local `anvil` instances with EIP-7702 (Prague) support, on different chain ids:
 
@@ -21,8 +21,8 @@ default account 0 (`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`).
 
 | Chain id | GlauxAccount (impl)                          | GlauxDelegate (router)                       |
 |----------|-----------------------------------------------|-----------------------------------------------|
-| 31337    | `0xF7d66d0D47286632C5cd48dA44fC68f19d6A827E`  | `0xcCc62DE32d7F2B4366d7b8312A2217dA53Ecd4eC`  |
-| 31338    | `0xF7d66d0D47286632C5cd48dA44fC68f19d6A827E`  | `0xcCc62DE32d7F2B4366d7b8312A2217dA53Ecd4eC`  |
+| 31337    | `0x33BF9d94Cf86Fe166E141109d33D2bd6AF949fEA`  | `0x08CCF256F187df7A96cd44090250546979F71F7C`  |
+| 31338    | `0x33BF9d94Cf86Fe166E141109d33D2bd6AF949fEA`  | `0x08CCF256F187df7A96cd44090250546979F71F7C`  |
 
 **Addresses are identical on both chains** — the CREATE2 determinism claim, confirmed by
 running the same salted-bytecode deployment through the canonical CREATE2 deployer
@@ -31,7 +31,7 @@ running the same salted-bytecode deployment through the canonical CREATE2 deploy
 Implementation runtime code hash (`address(impl).codehash`, printed by `Deploy.s.sol`):
 
 ```
-0xdfef5dfe4d79637286859b7164e6114b88b4a0df3f477a99849bb9e8e32672b8
+0x33114ee6661114c3a2c24002d2c7b087749b1a762e07e522412d72b263f58fc4
 ```
 
 ### 2. Birth blob (one blob, generated once)
@@ -46,7 +46,7 @@ memory and was discarded on exit; it was never written to disk or logged.
 Born account address (recovered from the EIP-7702 authorization signed by the birth key):
 
 ```
-0x985872F49e73c34Ad343C568DA2831Cba1E94159
+0x917Da75DA099E9635209293BB6cac5AFfA443892
 ```
 
 ### 3. Submission — the SAME blob to BOTH chains
@@ -56,16 +56,16 @@ default account 0 acting as an ordinary, unprivileged relayer (`GLAUX_RELAYER_KE
 
 | Chain id | Tx hash                                                              | Status | Gas used |
 |----------|-----------------------------------------------------------------------|--------|----------|
-| 31337    | `0xcff656565b8abf3abab6cecf41f1585b354908ea4e319ba6cf392915448ce981`  | 1      | 324265   |
-| 31338    | `0xb6fee16bcdf904f1f3dc206c7e5adc55fd6a66c62675b16c1c6e38d51c8a987e`  | 1      | 324265   |
+| 31337    | `0xf988d9ec08fa166b085ff6b9cae71a6984ac53f87b337bd57550b085ec80e9b2`  | 1      | 346942   |
+| 31338    | `0xd7ed21a42cb75a1dba8b4b85f39b59fc35e57a7160bafccdb3a36007ce9b8310`  | 1      | 346942   |
 
 Both transactions succeeded (status 1) with identical gas usage.
 
 ### 4. Post-birth verification — identical on BOTH chains
 
 ```
-cast code 0x985872F49e73c34Ad343C568DA2831Cba1E94159 --rpc-url <rpc>
-  -> 0xef0100ccc62de32d7f2b4366d7b8312a2217da53ecd4ec   (EIP-7702 delegation indicator to the router)
+cast code 0x917Da75DA099E9635209293BB6cac5AFfA443892 --rpc-url <rpc>
+  -> 0xef010008ccf256f187df7a96cd44090250546979f71f7c   (EIP-7702 delegation indicator to the router)
 
 cast call <account> "updateNonce()(uint64)" --rpc-url <rpc>
   -> 0
@@ -78,6 +78,12 @@ cast call <account> "getSlot(uint8)(uint8,bytes)" 1 --rpc-url <rpc>
 
 cast call <account> "getSlot(uint8)(uint8,bytes)" 2 --rpc-url <rpc>
   -> 1, 0x...3c44cdddb6a900fa2b585dd299e03d12fa4293bc   (secp256k1 cloud factor)
+
+# The authoritative pointer lives in Glaux's own namespaced slot; ERC-1967 is a mirror.
+cast storage <account> $(cast keccak "glaux.account.v1.implementation") --rpc-url <rpc>
+  -> 0x...33bf9d94cf86fe166e141109d33d2bd6af949fea   (authoritative)
+cast storage <account> 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url <rpc>
+  -> 0x...33bf9d94cf86fe166e141109d33d2bd6af949fea   (ERC-1967 mirror, written but never read)
 ```
 
 Every one of these checks returned byte-for-byte identical output on chain id 31337 and chain
