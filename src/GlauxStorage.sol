@@ -103,6 +103,8 @@ error DuplicateSlot();
 error InvalidSignature();
 error InvalidSlot();
 error PossessionNotProven();
+error P256VerifierUnavailable();
+error ProbeKeyNotInstallable();
 error InvalidVerifierType();
 error InvalidAction();
 error NotEntryPoint();

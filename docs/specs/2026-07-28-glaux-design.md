@@ -1,10 +1,10 @@
 # Glaux — Design Specification
 
-- **Version**: v0.5
+- **Version**: v0.6
 - **Date**: 2026-07-28, revised 2026-07-29
 - **Status**: v0.1 was ratified before implementation. v0.2 to v0.5 fold in the
-  design changes that security review forced during Phase 1; each is marked in
-  place and all are listed in §11.
+  design changes that security review forced during Phase 1; v0.6 is the first
+  Phase 2 change. Each is marked in place and all are listed in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
   (cross-chain keystore state of the art) and 12 (post-quantum EVM state of
   the art). In the founding documents the project is referred to by its
@@ -78,7 +78,9 @@ abstraction UX (paymasters), commissioned audits.
   change, implementation upgrade — requires 2 valid signatures from 2
   distinct slots.
 - **v1 verifiers**: secp256k1 (`ecrecover`) and P-256 (EIP-7951 precompile on
-  L1, RIP-7212 on L2s).
+  L1, RIP-7212 on L2s). Installing a P-256 slot **probes that verifier first**
+  with a known-answer test and refuses `P256VerifierUnavailable()` when the
+  chain cannot verify P-256 — see §11 v0.6.
 - The **verifier interface is the crypto-agility point**: new verifier types
   (hash-based SLH-DSA post-quantum, zk-email DKIM proofs, …) are additive,
   audited upgrades. A factor can change *kind*, not just key, with no fund
@@ -291,6 +293,24 @@ specification. Neither is a design question. The direct `executeWithSigs` path
 needs no bundler at all.
 
 ## 11. Revision history
+
+- **v0.6 (2026-07-29, Phase 2)** — **installing a P-256 slot now probes the
+  verifier**. Before this, whether a chain could verify P-256 was discovered
+  only by the possession proof failing, which reported `PossessionNotProven()`
+  — the client's fault, not the chain's — and, worse, was not discovered at all
+  where address `0x100` answers without verifying anything: a chain that put
+  something else there, or a fork that reused the address, made every P-256
+  signature valid for that slot forever. The probe is a known-answer test with
+  two arms, a valid signature that must be accepted and the same signature
+  against a different message that must be rejected, so it establishes that the
+  address *discriminates* rather than merely answers. It runs at birth and at
+  rotation through the single slot-validation path, only for P-256, and never
+  for secp256k1 — so rotating a factor *away* from P-256 stays possible on the
+  very chain that lacks the verifier, which is where that rescue is needed.
+  The probe vector's private key is public by construction (a known answer has
+  to be known), so its public key is refused as slot material with
+  `ProbeKeyNotInstallable()`: a possession proof cannot catch that key, since
+  anyone can produce one for it.
 
 - **v0.5 (2026-07-29)** — a third independent review rejected two dispositions
   and found one more permanent hazard. **Proof of possession is now enforced on

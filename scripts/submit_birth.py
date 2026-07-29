@@ -29,6 +29,19 @@ from web3 import Web3
 
 INITIALIZE_SELECTOR = keccak(text="initialize(address,bytes32,bytes,bytes)")[:4]
 
+# Any real birth runs three possession-proof verifications and, when a P-256 factor
+# is present, the verifier probe on top. Nothing that does the job fits in this, so
+# an estimate below it means the node priced a call to an account that is not
+# delegated yet — the delegation and the call ride in the SAME transaction, so a node
+# that ignores the authorization list sees a plain EOA and answers for a value
+# transfer with calldata (~47k). Trusting that number sends a transaction that runs
+# out of gas mid-birth.
+MIN_PLAUSIBLE_BIRTH_GAS = 200_000
+# Enough for the worst case observed: a chain that answers P-256 with a Solidity
+# verifier at 0x100 rather than a precompile, where birth costs ~1.4M. Unused gas is
+# refunded; only the relayer's balance has to cover the limit.
+FALLBACK_BIRTH_GAS = 3_000_000
+
 
 def load_blob(path: str) -> dict[str, Any]:
     """Read and parse a birth blob JSON file produced by `scripts/birth.py`."""
@@ -89,20 +102,27 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
         "authorizationList": [build_authorization(blob)],
     }
     # Birth cost depends on the verifier types in the blob: each factor's possession
-    # proof is verified on chain, and a P-256 proof costs far more than a secp256k1
-    # one. Estimate rather than hardcode, with headroom for the delegation itself,
-    # which estimation does not always account for on a type-4 transaction.
+    # proof is verified on chain, a P-256 proof costs far more than a secp256k1 one,
+    # and installing a P-256 slot also probes the verifier. Estimate rather than
+    # hardcode — but an estimate for a type-4 transaction is only meaningful if the
+    # node applies the authorization first, since the account has no code until it
+    # does. Pass the authorization list, and treat an implausibly cheap answer as a
+    # node that ignored it rather than as a cheap birth.
     try:
         estimate = w3.eth.estimate_gas(
             {
                 "from": relayer.address,
                 "to": account_address,
                 "data": transaction["data"],
+                "authorizationList": transaction["authorizationList"],
             }
         )
-        transaction["gas"] = int(estimate * 3 // 2) + 100_000
     except Exception:  # noqa: BLE001 - node may refuse to estimate pre-delegation
-        transaction["gas"] = 2_000_000
+        estimate = 0
+    if estimate >= MIN_PLAUSIBLE_BIRTH_GAS:
+        transaction["gas"] = int(estimate * 3 // 2) + 100_000
+    else:
+        transaction["gas"] = FALLBACK_BIRTH_GAS
 
     signed = Account.sign_transaction(transaction, relayer.key)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)

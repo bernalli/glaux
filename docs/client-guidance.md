@@ -52,23 +52,33 @@ the only one with an EVM precompile the contract can call. But
 (RIP-7212 / EIP-7951), and on a chain where that precompile is absent the
 staticcall returns empty and verification returns `false` — the repository
 proves exactly this in
-`test/SignatureVerify.t.sol::test_p256_noPrecompile_false`. The failure is
-silent at installation time and total at signing time: F1 installs
-successfully into a slot and is simply unusable there, degrading the
-account to the two remaining factors on that chain.
+`test/SignatureVerify.t.sol::test_p256_noPrecompile_false`. Signing with such
+a factor is impossible there.
 
-Clients must therefore maintain a **supported-chain matrix** and probe the
-precompile on every chain the account will be used on — before birth, and
-again before adding any new chain — by staticcalling `0x100` with a known
-valid vector and checking it returns one word equal to 1. Treat a chain
-without the precompile as one where F1 does not exist.
+The contract refuses to install one rather than let you find out later:
+`_validateSlot` probes the verifier before every P-256 slot installation, at
+birth and at rotation, and reverts `P256VerifierUnavailable()`. Do not read
+that as permission to stop checking. The probe answers for the chain the
+transaction is running on, and only at that moment; your account's
+configuration has to work on every chain you intend to reach, including the
+ones you have not touched yet. Maintain a **supported-chain matrix** and probe
+`0x100` yourself — before birth, and again before adding any chain — with a
+known valid vector *and* with a signature that must be rejected, checking that
+the first returns one word equal to 1 and the second does not. A verifier that
+answers "valid" to everything is worse than an absent one, and only the second
+half of that check finds it. Treat a chain that fails either half as one where
+F1 does not exist.
 
 **Never configure two P-256 slots unless every target chain has the
 precompile.** With two, every possible pair of slots contains one, so on a chain
-without it the account is not degraded but *inert*: nothing can execute, and
-`applyUpdate` cannot rotate out of it either, because rotating is itself an
-operation that needs a quorum. One P-256 slot degrades an account to 2-of-2 on
-such a chain; two strand it permanently.
+without it the account would be not degraded but *inert*: nothing can execute,
+and `applyUpdate` cannot rotate out of it either, because rotating is itself an
+operation that needs a quorum. The installation probe means such an account
+cannot be born there at all — the failure is a clean revert instead of a
+stranded account — but that is a backstop against the accident, not a licence to
+plan the configuration. A chain where your account cannot exist is still a chain
+your account cannot reach, and the probe cannot speak for a chain the
+transaction has not run on.
 
 Glaux is deliberately platform-neutral: nothing in the contract or in this
 guidance ties F1 to Apple, Google, or any single vendor, and integrators
@@ -164,10 +174,19 @@ For a hardware-backed device key the private half is not exportable: use
 `--digest-only` to obtain the 32-byte challenge, have the platform's signing API
 sign it, and encode the resulting `(r, s)` as two padded 32-byte words.
 
-**A P-256 factor can only be installed on a chain that has the P256VERIFY
-precompile**, because the proof is verified with it. Birth fails cleanly on a
-chain without it rather than installing an unusable factor — the blob stays
-valid and retryable there if the precompile arrives later.
+**A P-256 factor can only be installed on a chain that has a working P256VERIFY
+precompile**, because the proof is verified with it and because installation
+probes the verifier first. Birth fails cleanly on a chain without it —
+`P256VerifierUnavailable()` — rather than installing an unusable factor, and the
+blob stays valid and retryable there if the precompile arrives later.
+
+**Never install the probe vector's own public key as a factor.** The constants
+`SignatureVerify.PROBE_QX` / `PROBE_QY` exist so the contract can ask the chain
+a question whose answer it already knows; the matching private key is published
+with them and belongs to everyone. A possession proof does not protect you here
+— anyone can produce one for that key — so the contract refuses it outright with
+`ProbeKeyNotInstallable()`. Never seed a slot, not even a test slot, from those
+constants.
 
 Treat any slot address proposed by a counterparty — a vendor-supplied recovery
 factor, a co-signing service — as unverified until it has answered a challenge
