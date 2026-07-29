@@ -372,6 +372,16 @@ What remains is not a bug but a consequence, and clients must design for it:
   or breaks a P-256 factor already installed. No on-chain control can prevent
   that; it is a chain-trust assumption, and it is the reason client guidance
   still refuses two P-256 slots unless every target chain has the precompile.
+- **The probe stops accidents, not a chain that is out to get you.** Its vector
+  is a constant in public source, so code at `0x100` written to defeat it —
+  answer honestly for those exact 160 bytes, answer "valid" to everything else
+  — passes both arms. That cannot be fixed by a better vector: verifying a
+  *fresh* challenge on chain would require the very verifier under test, so a
+  known answer must be a known answer. It also does not need fixing. A chain
+  whose P-256 verifier is adversarial owns every P-256 signature check the
+  account will ever make, at signing time as much as at installation, so no
+  install-time control could save the factor there. What the probe rules out is
+  the reachable accident: no verifier at all, or unrelated code at that address.
 
 This is a chain-availability limit, not an ERC-4337 limit: **ERC-7562 rule
 OP-062** explicitly permits the `P256VERIFY` precompile of EIP-7951 during the
