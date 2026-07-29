@@ -38,12 +38,16 @@ contract GlauxInvariants is Test {
         slots[1] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(K1)));
         slots[2] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(K2)));
         bytes memory initData = abi.encode(slots);
-        bytes32 digest =
-            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, address(impl), keccak256(initData)));
+        bytes32 digest = keccak256(
+            abi.encode(
+                GlauxStorage.INIT_DOMAIN, address(impl), address(impl).codehash, keccak256(initData)
+            )
+        );
         bytes memory birthSig = _sig65(BIRTH_PK, digest);
 
         vm.signAndAttachDelegation(address(router), BIRTH_PK);
-        GlauxDelegate(payable(account)).initialize(address(impl), initData, birthSig);
+        GlauxDelegate(payable(account))
+            .initialize(address(impl), address(impl).codehash, initData, birthSig);
 
         handler = new Handler(
             account, address(impl), address(compatibleImpl), address(noMarkerImpl), K0, K1, K2

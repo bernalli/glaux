@@ -17,9 +17,12 @@ contract GlauxDelegate {
     /// @dev The birth key IS address(this) (EIP-7702 EOA). The digest contains
     ///      no chain-id: the same signed blob replays on every chain. Submitting
     ///      is permissionless; forging is impossible without the birth key.
-    function initialize(address implementation, bytes calldata initData, bytes calldata birthSig)
-        external
-    {
+    function initialize(
+        address implementation,
+        bytes32 expectedCodeHash,
+        bytes calldata initData,
+        bytes calldata birthSig
+    ) external {
         bytes32 slot = GlauxStorage.ERC1967_IMPL_SLOT;
         address current;
         assembly {
@@ -27,13 +30,24 @@ contract GlauxDelegate {
         }
         if (current != address(0)) revert AlreadyInitialized();
 
-        bytes32 digest =
-            keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, implementation, keccak256(initData)));
+        bytes32 digest = keccak256(
+            abi.encode(
+                GlauxStorage.INIT_DOMAIN, implementation, expectedCodeHash, keccak256(initData)
+            )
+        );
         if (!SignatureVerify.verify(
                 GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(this)), digest, birthSig
             )) revert InvalidBirthSignature();
 
-        if (implementation.code.length == 0) revert InvalidImplementation();
+        if (implementation.code.length == 0 || implementation.codehash != expectedCodeHash) {
+            revert InvalidImplementation();
+        }
+        (bool compatible, bytes memory compatibilityId) =
+            implementation.staticcall(abi.encodeWithSignature("glauxCompatibilityId()"));
+        if (
+            !compatible || compatibilityId.length != 32
+                || abi.decode(compatibilityId, (bytes32)) != GlauxStorage.COMPAT_ID
+        ) revert InvalidImplementation();
 
         (bool ok, bytes memory ret) = implementation.delegatecall(
             abi.encodeWithSignature("initializeAccount(bytes)", initData)
