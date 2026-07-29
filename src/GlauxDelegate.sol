@@ -10,6 +10,7 @@ import {
     Initialized
 } from "./GlauxStorage.sol";
 import {SignatureVerify} from "./lib/SignatureVerify.sol";
+import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 
 /// @notice Immutable EIP-7702 delegation target. Frozen forever: keep minimal.
 contract GlauxDelegate {
@@ -39,15 +40,9 @@ contract GlauxDelegate {
                 GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(this)), digest, birthSig
             )) revert InvalidBirthSignature();
 
-        if (implementation.code.length == 0 || implementation.codehash != expectedCodeHash) {
+        if (!ImplementationCheck.isInstallable(implementation, expectedCodeHash)) {
             revert InvalidImplementation();
         }
-        (bool compatible, bytes memory compatibilityId) =
-            implementation.staticcall(abi.encodeWithSignature("glauxCompatibilityId()"));
-        if (
-            !compatible || compatibilityId.length != 32
-                || abi.decode(compatibilityId, (bytes32)) != GlauxStorage.COMPAT_ID
-        ) revert InvalidImplementation();
 
         // Delegatecall to a signed target is what a proxy IS. The function id is a
         // hardcoded literal, not input; the target is bound by the birth signature

@@ -24,6 +24,7 @@ import {
     Executed
 } from "./GlauxStorage.sol";
 import {SignatureVerify} from "./lib/SignatureVerify.sol";
+import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
 
 /// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
@@ -129,13 +130,7 @@ contract GlauxAccount {
         } else if (u.action == GlauxStorage.ACTION_SET_IMPLEMENTATION) {
             (address newImplementation, bytes32 expectedCodeHash) =
                 abi.decode(u.payload, (address, bytes32));
-            if (
-                newImplementation.code.length == 0 || newImplementation.codehash != expectedCodeHash
-            ) revert InvalidImplementation();
-            (bool ok, bytes memory ret) = newImplementation.staticcall(
-                abi.encodeWithSelector(this.glauxCompatibilityId.selector)
-            );
-            if (!ok || ret.length != 32 || abi.decode(ret, (bytes32)) != GlauxStorage.COMPAT_ID) {
+            if (!ImplementationCheck.isInstallable(newImplementation, expectedCodeHash)) {
                 revert InvalidImplementation();
             }
             bytes32 slot = GlauxStorage.ERC1967_IMPL_SLOT;

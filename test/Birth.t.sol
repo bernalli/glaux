@@ -115,6 +115,48 @@ contract BirthTest is GlauxFixture {
             .initialize(address(impl), address(impl).codehash, initData, _sig65(0xE711, digest));
     }
 
+    /// @notice An EIP-7702 delegated EOA reports the 23-byte delegation designator
+    ///         as its code: EXTCODEHASH hashes the DESIGNATOR while DELEGATECALL
+    ///         executes the TARGET's code. Binding the code hash would therefore
+    ///         bind nothing — the identical designator can point at an address
+    ///         holding different code on a different chain, which is precisely the
+    ///         cross-chain substitution the binding exists to prevent.
+    function test_birth_rejectsDelegatedEoaAsImplementation() public {
+        uint256 decoyPk = 0xDEC0;
+        address decoy = vm.addr(decoyPk);
+        vm.signAndAttachDelegation(address(impl), decoyPk);
+
+        // The decoy passes every other check the router performs: it has code,
+        // that code hash is stable across chains, and the marker staticcall
+        // resolves through the delegation to the real implementation.
+        bytes memory decoyCode = decoy.code;
+        assertEq(decoyCode.length, 23);
+        assertEq(uint8(decoyCode[0]), 0xEF);
+        assertEq(GlauxAccount(payable(decoy)).glauxCompatibilityId(), GlauxStorage.COMPAT_ID);
+
+        vm.signAndAttachDelegation(address(router), birthPk);
+        bytes memory initData = abi.encode(_slots());
+        bytes32 digest = _initDigest(decoy, decoy.codehash, initData);
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxDelegate(payable(account))
+            .initialize(decoy, decoy.codehash, initData, _sig65(birthPk, digest));
+    }
+
+    /// @notice Proves `expectedCodeHash` is cryptographically bound INTO the digest,
+    ///         not merely compared at runtime: the blob is signed over a wrong hash
+    ///         and submitted with the right one. Without the field in the digest
+    ///         this would satisfy both the signature check and the hash comparison.
+    function test_birth_rejectsSignatureBoundToADifferentCodeHash() public {
+        vm.signAndAttachDelegation(address(router), birthPk);
+        bytes memory initData = abi.encode(_slots());
+        bytes32 digest = _initDigest(address(impl), bytes32(uint256(0xBAD)), initData);
+
+        vm.expectRevert(InvalidBirthSignature.selector);
+        GlauxDelegate(payable(account))
+            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+    }
+
     function test_birth_rejectsDifferentImplementationWithSameSignature() public {
         vm.signAndAttachDelegation(address(router), birthPk);
         (bytes memory initData, bytes memory sig) = _initBlob();

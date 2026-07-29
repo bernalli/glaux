@@ -9,6 +9,41 @@ import {InvalidImplementation, InvalidSignature} from "../src/GlauxStorage.sol";
 
 contract IncompatibleImplementation {}
 
+/// @notice Answers the marker call successfully with exactly one word — the wrong one.
+contract WrongMarkerImplementation {
+    function glauxCompatibilityId() external pure returns (bytes32) {
+        return keccak256("NOT_GLAUX_V1");
+    }
+}
+
+/// @notice Answers with fewer than 32 bytes, so the length gate must reject it.
+contract ShortMarkerImplementation {
+    fallback() external {
+        assembly {
+            return(0, 4)
+        }
+    }
+}
+
+/// @notice Answers with the right value followed by a second word: 64 bytes, and the
+///         exact-length gate must reject it rather than decoding the first word.
+contract LongMarkerImplementation {
+    function glauxCompatibilityId() external pure returns (bytes32, bytes32) {
+        return (GlauxStorage.COMPAT_ID, bytes32(uint256(1)));
+    }
+}
+
+/// @notice Returns far more data than the 32-byte output window. The bounded
+///         staticcall copies only one word, so this is a clean rejection rather
+///         than a caller-side memory blow-up.
+contract ReturndataBombImplementation {
+    fallback() external {
+        assembly {
+            return(0, 0x20000)
+        }
+    }
+}
+
 contract UpgradeTest is GlauxFixture {
     function setUp() public override {
         super.setUp();
@@ -109,6 +144,61 @@ contract UpgradeTest is GlauxFixture {
     function test_upgradeToIncompatibleContractRejected() public {
         IncompatibleImplementation incompatible = new IncompatibleImplementation();
         Update memory u = Update(1, 1, _implementationPayload(address(incompatible)));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
+    }
+
+    /// @notice The code-hash binding is worthless against an EIP-7702 delegated EOA:
+    ///         EXTCODEHASH hashes the 23-byte delegation designator while
+    ///         DELEGATECALL runs the delegation TARGET's code, and that target can
+    ///         hold different code on a different chain. The upgrade path must
+    ///         refuse designators, exactly as birth does.
+    function test_upgradeToDelegatedEoaRejected() public {
+        uint256 decoyPk = 0xDEC0DE;
+        address decoy = vm.addr(decoyPk);
+        GlauxAccountV2Mock v2 = new GlauxAccountV2Mock(address(0xE47));
+        vm.signAndAttachDelegation(address(v2), decoyPk);
+
+        // It would otherwise pass every check: it has code, and the marker
+        // staticcall resolves through the delegation to compatible logic.
+        bytes memory decoyCode = decoy.code;
+        assertEq(decoyCode.length, 23);
+        assertEq(uint8(decoyCode[0]), 0xEF);
+        assertEq(GlauxAccount(payable(decoy)).glauxCompatibilityId(), GlauxStorage.COMPAT_ID);
+
+        Update memory u = Update(1, 1, _implementationPayload(decoy));
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
+    }
+
+    function test_upgradeToWrongMarkerValueRejected() public {
+        WrongMarkerImplementation wrong = new WrongMarkerImplementation();
+        Update memory u = Update(1, 1, _implementationPayload(address(wrong)));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
+    }
+
+    function test_upgradeToShortMarkerReturndataRejected() public {
+        ShortMarkerImplementation short = new ShortMarkerImplementation();
+        Update memory u = Update(1, 1, _implementationPayload(address(short)));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
+    }
+
+    function test_upgradeToLongMarkerReturndataRejected() public {
+        LongMarkerImplementation long = new LongMarkerImplementation();
+        Update memory u = Update(1, 1, _implementationPayload(address(long)));
+
+        vm.expectRevert(InvalidImplementation.selector);
+        GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
+    }
+
+    function test_upgradeToReturndataBombRejected() public {
+        ReturndataBombImplementation bomb = new ReturndataBombImplementation();
+        Update memory u = Update(1, 1, _implementationPayload(address(bomb)));
 
         vm.expectRevert(InvalidImplementation.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
