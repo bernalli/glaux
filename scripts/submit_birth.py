@@ -81,13 +81,29 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
         "nonce": w3.eth.get_transaction_count(relayer.address),
         "to": account_address,
         "value": 0,
-        "gas": 500_000,
+        "gas": 0,  # replaced by the estimate below
         "maxFeePerGas": max_fee,
         "maxPriorityFeePerGas": priority_fee,
         "data": "0x" + build_initialize_calldata(blob).hex(),
         "accessList": (),
         "authorizationList": [build_authorization(blob)],
     }
+    # Birth cost depends on the verifier types in the blob: each factor's possession
+    # proof is verified on chain, and a P-256 proof costs far more than a secp256k1
+    # one. Estimate rather than hardcode, with headroom for the delegation itself,
+    # which estimation does not always account for on a type-4 transaction.
+    try:
+        estimate = w3.eth.estimate_gas(
+            {
+                "from": relayer.address,
+                "to": account_address,
+                "data": transaction["data"],
+            }
+        )
+        transaction["gas"] = int(estimate * 3 // 2) + 100_000
+    except Exception:  # noqa: BLE001 - node may refuse to estimate pre-delegation
+        transaction["gas"] = 2_000_000
+
     signed = Account.sign_transaction(transaction, relayer.key)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)

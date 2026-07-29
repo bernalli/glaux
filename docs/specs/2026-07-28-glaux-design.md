@@ -1,8 +1,8 @@
 # Glaux — Design Specification
 
-- **Version**: v0.4
+- **Version**: v0.5
 - **Date**: 2026-07-28, revised 2026-07-29
-- **Status**: v0.1 was ratified before implementation. v0.2 to v0.4 fold in the
+- **Status**: v0.1 was ratified before implementation. v0.2 to v0.5 fold in the
   design changes that security review forced during Phase 1; each is marked in
   place and all are listed in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
@@ -291,6 +291,23 @@ specification. Neither is a design question. The direct `executeWithSigs` path
 needs no bundler at all.
 
 ## 11. Revision history
+
+- **v0.5 (2026-07-29)** — a third independent review rejected two dispositions
+  and found one more permanent hazard. **Proof of possession is now enforced on
+  chain**: a slot's key must sign a challenge committing to the key material
+  before it can be installed, at birth and on every rotation. Deferring this was
+  wrong — ECDSA verifies by recovery, so without it two addresses derived from
+  chosen signatures meet the 2-of-3 threshold with no private keys in existence,
+  and an account born without the check is indistinguishable on chain from one
+  born with it. **EIP-191 version `0x00` is adopted** for all three digests,
+  closing raw-hash signature reuse at no cost in chain-agnosticism, since version
+  0 carries no `chainId`. **`bytecode_hash = "none"`**, because the default CBOR
+  metadata hash covers source comments and file names and feeds both the CREATE2
+  address and the signed code hash — editing a comment would have moved the
+  canonical address and invalidated every unspent blob. The ERC-1967 mirror write
+  is dropped so nothing is exported to a wallet the account is re-delegated to
+  later, and the router's transient birth guard is namespaced away from the slot
+  an implementation's own first transient variable occupies.
 
 - **v0.4 (2026-07-29)** — a second independent review verified the v0.3 fixes and
   found two things. The transient birth guard collided with the implementation's

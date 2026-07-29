@@ -15,6 +15,12 @@ import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 
 /// @notice Immutable EIP-7702 delegation target. Frozen forever: keep minimal.
 contract GlauxDelegate {
+    /// @dev The router's own address, captured at construction — inside `initialize`
+    ///      `address(this)` is the ACCOUNT, because the router is reached through the
+    ///      account's EIP-7702 delegation. Deterministic deployment puts the same
+    ///      value on every chain, so binding it costs nothing in replayability.
+    address private immutable SELF = address(this);
+
     /// @notice One-time initialization, authenticated by the birth key.
     /// @dev The birth key IS address(this) (EIP-7702 EOA). The digest contains
     ///      no chain-id: the same signed blob replays on every chain. Submitting
@@ -54,9 +60,12 @@ contract GlauxDelegate {
         }
         if (current != address(0)) revert AlreadyInitialized();
 
-        bytes32 digest = keccak256(
-            abi.encode(
-                GlauxStorage.INIT_DOMAIN, implementation, expectedCodeHash, keccak256(initData)
+        bytes32 digest = GlauxStorage.eip191(
+            SELF,
+            keccak256(
+                abi.encode(
+                    GlauxStorage.INIT_DOMAIN, implementation, expectedCodeHash, keccak256(initData)
+                )
             )
         );
         if (!SignatureVerify.verify(

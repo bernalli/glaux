@@ -37,10 +37,21 @@ contract GlauxInvariants is Test {
         slots[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(K0)));
         slots[1] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(K1)));
         slots[2] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(K2)));
-        bytes memory initData = abi.encode(slots);
-        bytes32 digest = keccak256(
-            abi.encode(
-                GlauxStorage.INIT_DOMAIN, address(impl), address(impl).codehash, keccak256(initData)
+        bytes[3] memory proofs;
+        uint256[3] memory keys = [K0, K1, K2];
+        for (uint8 i = 0; i < 3; i++) {
+            proofs[i] = _sig65(keys[i], _regDigest(i, slots[i].verifierType, slots[i].data));
+        }
+        bytes memory initData = abi.encode(slots, proofs);
+        bytes32 digest = GlauxStorage.eip191(
+            address(router),
+            keccak256(
+                abi.encode(
+                    GlauxStorage.INIT_DOMAIN,
+                    address(impl),
+                    address(impl).codehash,
+                    keccak256(initData)
+                )
             )
         );
         bytes memory birthSig = _sig65(BIRTH_PK, digest);
@@ -72,6 +83,14 @@ contract GlauxInvariants is Test {
         selectors[5] = Handler.tryUpgradeWrongCodeHash.selector;
         selectors[6] = Handler.tryUpgradeNoMarker.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
+    }
+
+    function _regDigest(uint8 index, uint8 verifierType, bytes memory data)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(GlauxStorage.REG_DOMAIN, index, verifierType, keccak256(data)));
     }
 
     function _sig65(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {

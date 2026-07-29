@@ -116,8 +116,7 @@ contract UpgradeTest is GlauxFixture {
 
         // The update nonce continues, and a further SetSlot applies through the new
         // implementation code, proving the channel survives its own upgrade.
-        Update memory u2 =
-            Update(2, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(0xC10D2))));
+        Update memory u2 = Update(2, 0, _setSlotPayload(2, 0xC10D2));
         GlauxAccount(payable(account)).applyUpdate(u2, _twoSigs(_updateDigest(u2)));
 
         (, bytes memory data) = GlauxAccount(payable(account)).getSlot(2);

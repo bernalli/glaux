@@ -55,6 +55,23 @@ library GlauxStorage {
     bytes32 internal constant INIT_DOMAIN = keccak256("GLAUX_INIT_V1");
     bytes32 internal constant UPDATE_DOMAIN = keccak256("GLAUX_UPDATE_V1");
     bytes32 internal constant EXEC_DOMAIN = keccak256("GLAUX_EXEC_V1");
+    /// @dev Domain for the possession proof a key must produce before it can be
+    ///      installed into a factor slot. See `GlauxAccount._requirePossession`.
+    bytes32 internal constant REG_DOMAIN = keccak256("GLAUX_REG_V1");
+
+    /// @notice Wraps a structured hash as EIP-191 version `0x00` signed data:
+    ///         `0x19 ‖ 0x00 ‖ validator ‖ structHash`.
+    /// @dev Two reasons this exists. It makes a Glaux digest unreachable through
+    ///      raw-hash signing APIs (`eth_sign` and friends): without the prefix, any
+    ///      factor key that can be induced to sign a bare 32-byte value produces a
+    ///      valid Glaux signature, which matters most on the migration path where a
+    ///      birth key is a long-lived user key. And it binds the validating contract
+    ///      into every digest. Version `0x00` is used deliberately over EIP-712:
+    ///      it carries no `chainId` field, so birth and update blobs keep replaying
+    ///      on every chain, which is the whole design.
+    function eip191(address validator, bytes32 structHash) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(hex"19", hex"00", validator, structHash));
+    }
     bytes32 internal constant COMPAT_ID = keccak256("GLAUX_ACCOUNT_V1");
 
     uint8 internal constant VERIFIER_SECP256K1 = 1;
@@ -85,6 +102,7 @@ error BadUpdateNonce(uint64 expected, uint64 got);
 error DuplicateSlot();
 error InvalidSignature();
 error InvalidSlot();
+error PossessionNotProven();
 error InvalidVerifierType();
 error InvalidAction();
 error NotEntryPoint();

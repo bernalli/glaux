@@ -208,7 +208,7 @@ requires a shared nonce space. The rule is therefore absolute and signer-side:
 consumed the moment it is signed rather than when it is observed.
 
 **Detection must include the implementation pointer.** A `SetImplementation`
-update changes only the ERC-1967 pointer while advancing the nonce like any
+update changes only the implementation pointer while advancing the nonce like any
 other update. Two chains can therefore show an identical `updateNonce` *and*
 identical factor slots while running entirely different logic. Comparing nonce
 and slots alone hides precisely the divergence that matters most; clients must
@@ -280,59 +280,54 @@ The bounded 32-byte output window means a candidate returning enormous
 returndata is rejected cleanly rather than exhausting the gas of the
 transaction that carries it.
 
-### 7. Nothing on chain proves a slot's key was ever possessed — an integrity control, not hygiene
+### 7. A key must prove possession before it is installed — enforced on chain
 
-**No on-chain mitigation. Closed only by a client-side registration challenge,
-and that challenge is load-bearing for the entire threshold.**
+This was a declared residual in an earlier draft. It is now a contract check,
+because review demonstrated it was not a hygiene issue but the foundation the
+whole threshold stands on.
 
-`SignatureVerify.isValidKey` checks that a secp256k1 slot holds a clean non-zero
-address, and that a P-256 slot holds a point actually on the curve. Both are
-checks of *well-formedness*. Neither is evidence that anyone holds the
-corresponding private key.
+`SignatureVerify.isValidKey` checks a candidate key's *shape*: a clean non-zero
+address for secp256k1, a point actually on the curve for P-256. Shape is not
+possession, and the gap is exploitable rather than merely untidy. **ECDSA
+verifies by recovery, so a signature can be created before the key it verifies
+under is chosen**: run the recovery over arbitrary signature values for a digest
+known in advance and you obtain an address for which that signature is valid.
+Two such addresses installed as slots meet the 2-of-3 threshold **with no
+private keys in existence at all**, while every slot looks distinct and
+well-formed on chain and `DuplicateSlot()` never fires. Anyone who supplies or
+nominates two of the three slot addresses could pre-arm one specific operation —
+a chain, a nonce and a payload, all knowable before birth — and execute it alone,
+months later, through any unprivileged relayer.
 
-The obvious consequence is availability, and it is the mild one: a quorum can
-install — by mistyping a value or restoring the wrong backup — a slot nobody can
-sign with. **One** such slot does not brick the account, since the other two
-still form a quorum; it silently degrades 2-of-3 to 2-of-2 with no remaining
-margin, and nothing on chain shows it. **Two** are unrecoverable on every chain
-born from that configuration.
+`GlauxAccount._requirePossession` closes it. Every slot, at birth and on every
+rotation, must carry a signature by its own key over
 
-**The serious consequence is integrity, and it defeats the threshold.** ECDSA
-verifies by recovery, which means a signature can be created *before* the key it
-verifies under is chosen: for any digest known in advance, running the recovery
-over arbitrary `(r, s, v)` yields an address for which that signature is valid.
-An adversary can therefore manufacture a signature, derive the address it
-recovers to, and have that address installed as a factor slot — a slot whose
-private key has never existed, and for which only they can produce a signature,
-for that one pre-committed operation.
+```
+keccak256(abi.encode(REG_DOMAIN, slotIndex, verifierType, keccak256(keyData)))
+```
 
-Concretely: a party who supplies or nominates two of the three slot addresses
-can pre-arm one specific operation — a specific chain, nonce and payload, all
-knowable before birth — and satisfy the 2-of-3 threshold alone. Every slot looks
-distinct and well-formed on chain, and `DuplicateSlot()` never fires.
+Because the challenge **commits to the key material**, deriving a key from a
+chosen signature no longer helps: an attacker would need a signature valid under
+a key that a digest committing to that same key recovers to — a hash-preimage
+search, not a curve computation.
 
-The contract rejects the cheapest instance, two signatures sharing `(r, s)` —
-one signature submitted under two indices — in `_checkTwoSigs`. That is worth
-having and costs nothing, but **it does not close the class**: a manufactured
-signature and a genuine one differ in `(r, s)`. No signature-side check can
-close it. The property actually required is "two parties independently proved
-possession", and possession is only checkable at *registration*.
+The challenge deliberately binds neither chain nor account. The proof rides
+inside the birth blob and the update payload, both of which replay everywhere;
+and a factor must be able to produce its proof **before the account exists**,
+because the paper factor is generated on an air-gapped machine and never comes
+back online. A proof is therefore a portable, reusable artifact per key. That is
+harmless: it authorizes nothing. Installing someone else's proven public key
+into your own account grants you no ability to sign with it.
 
-So the mitigation is not optional hygiene:
+Two consequences worth stating plainly:
 
-> Require every candidate factor to sign a registration challenge before it is
-> installed, and verify that signature locally under exactly the contract's
-> rules. Never install a factor that has not signed. After a rotation, re-run
-> the challenge against the slot data read back *from the chain*, not against
-> the value you intended to store.
-
-Binding the challenge to the key itself — for example
-`keccak256(abi.encode(REG_DOMAIN, account, slotIndex, verifierType, keyData))` —
-also prevents pre-arming, because satisfying the digest and the key it commits
-to at once becomes a hash-preimage search rather than a curve computation.
-Moving the check on chain needs no change to the immutable router: the birth
-blob already commits to `keccak256(initData)`, so possession signatures can ride
-inside `initData`. Tracked as Phase 2 work.
+- **A P-256 factor can only be installed on a chain that has the P256VERIFY
+  precompile**, since the proof is verified with it. Birth fails cleanly there
+  rather than producing an account with an unusable factor, and the blob stays
+  retryable if the chain gains the precompile later. See residual 8.
+- The residual that remains is the ordinary one: possession is not exclusivity.
+  A proof shows someone held the key at signing time, not that only the intended
+  party holds it. That is residual 2's territory, not this one's.
 
 ### 8. P-256 verification depends on a precompile that not every chain has
 
@@ -402,8 +397,8 @@ interest and represent staleness and divergence honestly.
 
 ### 12. Upgrade is irreversible in one direction
 
-`initialize` reverts `AlreadyInitialized()` the moment the ERC-1967 slot is
-non-zero, and nothing anywhere clears it back to zero. Once born, an account's
+`initialize` reverts `AlreadyInitialized()` the moment Glaux's own
+implementation slot is non-zero, and nothing anywhere clears it back to zero. Once born, an account's
 logic can change only through `applyUpdate`, which depends on the currently
 installed implementation still working. A quorum that installs an
 implementation which passes the code-hash and marker checks but whose
@@ -441,11 +436,14 @@ signed swap and submitting it after the price has moved extracts real value. The
 only cancellation available is racing a different batch at the same nonce
 against the party who is holding yours.
 
-ERC-4337 has `validUntil` for exactly this reason; the direct path has no
-equivalent in v1. This lives in the upgradeable implementation, so it can be
-fixed by an ordinary upgrade rather than a redeployment — but until it is,
-clients should treat a signed batch as live indefinitely and prefer the 4337
-path for anything time-sensitive.
+ERC-4337 has `validUntil` for exactly this reason, and **v1 does not use it
+either**: `validateUserOp` returns `0`, which the EntryPoint interprets as a
+`validUntil` of `type(uint48).max`. So the sponsored path is valid forever too,
+and preferring it buys no protection — an earlier draft of this document said it
+did, which was wrong. Both paths live in the upgradeable implementation and can
+gain a deadline through an ordinary upgrade. Until they do, clients must treat
+every signed operation as live indefinitely and must not sign a time-sensitive
+one they are not willing to see executed at an arbitrary later moment.
 
 ### 15. Point-in-time code checks, and other narrow residuals
 
@@ -476,7 +474,7 @@ Both live in the upgradeable implementation and are additive. They are called
 out here because a reference smart account is expected to have them, and their
 absence should be a stated decision rather than a surprise.
 
-## Open design decision: no EIP-712 typed data
+## Resolved: EIP-191 version 0x00, not EIP-712 typed data
 
 All three digests are raw `keccak256(abi.encode(...))` values, each prefixed
 with a distinct domain constant (`GLAUX_INIT_V1`, `GLAUX_UPDATE_V1`,
@@ -515,7 +513,35 @@ would break the deliberate chain-agnosticism of the birth and update blobs, so
 adopting it means adopting a domain separator that omits `chainId` — unusual,
 and something wallet tooling may render or reject inconsistently.
 
-**Status: open, and deliberately not resolved unilaterally.** It must be decided
-before the router is deployed to any address intended to be canonical, because
-after that it cannot be revisited. Nothing in this repository has been deployed
+**Resolved: EIP-191 version `0x00` is adopted.** The birth, update and execution
+digests are each wrapped as `0x19 ‖ 0x00 ‖ validator ‖ structHash`, with the
+router as validator for birth and the account for the other two. This closes the
+raw-hash-signing hole — a bare 32-byte value signed through `eth_sign` can no
+longer be a Glaux digest — and it binds the validating contract into every
+signature, while carrying **no `chainId` field**, so blobs keep replaying on
+every chain. It buys no legibility, being untyped; adopting full EIP-712 on top
+remains open for a future version and would be a spec change, not a security
+fix. The decision was taken before deployment: nothing here has been deployed
 anywhere except local test chains.
+
+## Declared residual: deployment reproducibility
+
+The cross-chain claim rests on the router and the implementation existing at the
+same CREATE2 addresses on every chain, and on the birth blob's `expectedCodeHash`
+matching the implementation deployed there. Both are functions of the exact
+compilation output.
+
+`bytecode_hash = "none"` is set in `foundry.toml` for this reason: Foundry
+otherwise appends a CBOR metadata hash that covers compiler settings, source
+unit names and the keccak of every source file **including its comments** — so
+editing a comment would move the canonical address and silently invalidate every
+unspent blob. With it stripped, the bytecode is a function of the code alone.
+
+What remains a client obligation: deploying on a new chain requires reproducing
+the same compilation (same solc version, same settings) and requires the
+canonical CREATE2 deployer `0x4e59b448...` to exist there. If either fails, the
+account cannot be born on that chain — and because the router's `receive()`
+accepts value regardless, an address that can never be born on is still an
+address that can receive funds. **Never accept funds at the account address on a
+chain where the router and implementation are not already deployed at the
+canonical addresses.**

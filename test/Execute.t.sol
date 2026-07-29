@@ -136,7 +136,8 @@ contract ExecuteTest is GlauxFixture {
     function test_executeCannotRouteApplyUpdateWithoutUpdateSigs() public {
         // Routing applyUpdate through executeWithSigs confers no authority of its own:
         // the inner call still needs a validly signed Update with its own two sigs.
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u =
+            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1)), bytes("")));
         bytes32 badDigest = keccak256("not a real update signature");
         SlotSig[2] memory badSigs;
         badSigs[0] = SlotSig(0, _sig65(paperPk, badDigest));

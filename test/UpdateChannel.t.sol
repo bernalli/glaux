@@ -21,8 +21,7 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_rotateCloudKey() public {
-        Update memory u =
-            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(NEW_CLOUD_PK))));
+        Update memory u = Update(1, 0, _setSlotPayload(2, NEW_CLOUD_PK));
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
 
         (, bytes memory data) = GlauxAccount(payable(account)).getSlot(2);
@@ -31,7 +30,7 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_rotateSlotToExistingKeyReverts() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(paperPk))));
+        Update memory u = Update(1, 0, _setSlotPayload(2, paperPk));
 
         vm.expectRevert(DuplicateSlot.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
@@ -40,7 +39,7 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_rotateSlotToItsCurrentValueSucceeds() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(cloudPk))));
+        Update memory u = Update(1, 0, _setSlotPayload(2, cloudPk));
 
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
 
@@ -48,13 +47,12 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_duplicateRotationCannotReachSameSignatureTwoSlotAttack() public {
-        Update memory collapse =
-            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(paperPk))));
+        Update memory collapse = Update(1, 0, _setSlotPayload(2, paperPk));
         vm.expectRevert(DuplicateSlot.selector);
         GlauxAccount(payable(account)).applyUpdate(collapse, _twoSigs(_updateDigest(collapse)));
 
         Update memory attack =
-            Update(1, 0, abi.encode(uint8(1), uint8(1), abi.encode(address(0xA11CE))));
+            Update(1, 0, abi.encode(uint8(1), uint8(1), abi.encode(address(0xA11CE)), bytes("")));
         bytes32 digest = _updateDigest(attack);
         bytes memory paperSignature = _sig65(paperPk, digest);
         SlotSig[2] memory sigs;
@@ -71,7 +69,7 @@ contract UpdateChannelTest is GlauxFixture {
         // It must be a DIFFERENT P-256 key from the device slot: rotating slot 2 onto
         // slot 1's key would collapse the 2-of-3 and is rejected as a duplicate.
         (uint256 qx, uint256 qy) = vm.publicKeyP256(0xD1FF);
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(2), abi.encode(qx, qy)));
+        Update memory u = Update(1, 0, _setSlotPayloadP256(2, 0xD1FF));
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
 
         (uint8 vType, bytes memory data) = GlauxAccount(payable(account)).getSlot(2);
@@ -83,14 +81,15 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_nonceMustBeSequential() public {
-        Update memory u = Update(2, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u =
+            Update(2, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1)), bytes("")));
 
         vm.expectRevert(abi.encodeWithSelector(BadUpdateNonce.selector, uint64(1), uint64(2)));
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
     }
 
     function test_replaySameUpdateReverts() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u = Update(1, 0, _setSlotPayload(2, NEW_CLOUD_PK));
         SlotSig[2] memory sigs = _twoSigs(_updateDigest(u));
         GlauxAccount(payable(account)).applyUpdate(u, sigs);
 
@@ -99,7 +98,8 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_sameSlotTwiceRejected() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u =
+            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1)), bytes("")));
         bytes32 d = _updateDigest(u);
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(paperPk, d));
@@ -110,7 +110,8 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_outOfRangeSignatureSlotIndexRejected() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u =
+            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1)), bytes("")));
         bytes32 d = _updateDigest(u);
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(paperPk, d));
@@ -121,7 +122,8 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_outOfRangeSetSlotTargetRejected() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(3), uint8(1), abi.encode(address(1))));
+        Update memory u =
+            Update(1, 0, abi.encode(uint8(3), uint8(1), abi.encode(address(1)), bytes("")));
 
         vm.expectRevert(InvalidSlot.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
@@ -130,7 +132,8 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_oneValidOneGarbageRejected() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u =
+            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1)), bytes("")));
         bytes32 d = _updateDigest(u);
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(paperPk, d));
@@ -141,7 +144,7 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_updateAppliesUnderOriginalChainId() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u = Update(1, 0, _setSlotPayload(2, NEW_CLOUD_PK));
         SlotSig[2] memory sigs = _twoSigs(_updateDigest(u));
 
         GlauxAccount(payable(account)).applyUpdate(u, sigs);
@@ -151,7 +154,7 @@ contract UpdateChannelTest is GlauxFixture {
     function test_sameSignedUpdateAppliesOnUntouchedChain() public {
         // Same signed update, fresh account state (setUp reruns per test), different
         // chain id: proves the digest carries no chain-id and rotations replay everywhere.
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u = Update(1, 0, _setSlotPayload(2, NEW_CLOUD_PK));
         SlotSig[2] memory sigs = _twoSigs(_updateDigest(u));
 
         vm.chainId(424242);
@@ -161,10 +164,8 @@ contract UpdateChannelTest is GlauxFixture {
 
     function test_sameNonceDifferentUpdates_divergeAcrossChains() public {
         // A signer must never sign two updates for one nonce, or chains can diverge.
-        Update memory updateA =
-            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(NEW_CLOUD_PK))));
-        Update memory updateB =
-            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(0xB0B))));
+        Update memory updateA = Update(1, 0, _setSlotPayload(2, NEW_CLOUD_PK));
+        Update memory updateB = Update(1, 0, _setSlotPayload(2, 0xB0B0B0));
         SlotSig[2] memory sigsA = _twoSigs(_updateDigest(updateA));
         SlotSig[2] memory sigsB = _twoSigs(_updateDigest(updateB));
         uint256 snapshot = vm.snapshot();
@@ -183,7 +184,7 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_anyoneCanRelay() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1))));
+        Update memory u = Update(1, 0, _setSlotPayload(2, NEW_CLOUD_PK));
         SlotSig[2] memory sigs = _twoSigs(_updateDigest(u));
 
         vm.prank(address(0x4E1A7));
@@ -191,7 +192,8 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_permissionlessRelayCannotForge() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(0xE11))));
+        Update memory u =
+            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(0xE11)), bytes("")));
         bytes32 d = _updateDigest(u);
         SlotSig[2] memory sigs;
         sigs[0] = SlotSig(0, _sig65(0xE11, d));
@@ -214,7 +216,8 @@ contract UpdateChannelTest is GlauxFixture {
     // --- Controller decision 4: a rotation must not install an unusable key ---
 
     function test_rotateToZeroAddressReverts() public {
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(0))));
+        Update memory u =
+            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(0)), bytes("")));
 
         vm.expectRevert(InvalidSlot.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
@@ -224,7 +227,7 @@ contract UpdateChannelTest is GlauxFixture {
 
     function test_rotateToDirtyPaddedAddressReverts() public {
         bytes memory dirtyPaddedSigner = abi.encodePacked(bytes12(uint96(1)), vm.addr(NEW_CLOUD_PK));
-        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), dirtyPaddedSigner));
+        Update memory u = Update(1, 0, abi.encode(uint8(2), uint8(1), dirtyPaddedSigner, bytes("")));
 
         vm.expectRevert(InvalidSlot.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
@@ -233,8 +236,9 @@ contract UpdateChannelTest is GlauxFixture {
     }
 
     function test_rotateToOffCurveP256PointReverts() public {
-        Update memory u =
-            Update(1, 0, abi.encode(uint8(2), uint8(2), abi.encode(uint256(1), uint256(1))));
+        Update memory u = Update(
+            1, 0, abi.encode(uint8(2), uint8(2), abi.encode(uint256(1), uint256(1)), bytes(""))
+        );
 
         vm.expectRevert(InvalidSlot.selector);
         GlauxAccount(payable(account)).applyUpdate(u, _twoSigs(_updateDigest(u)));
@@ -244,8 +248,7 @@ contract UpdateChannelTest is GlauxFixture {
 
     function _assertNonceRollsBackAndValidNonceOneApplies() internal {
         assertEq(GlauxAccount(payable(account)).updateNonce(), 0);
-        Update memory valid =
-            Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(vm.addr(NEW_CLOUD_PK))));
+        Update memory valid = Update(1, 0, _setSlotPayload(2, NEW_CLOUD_PK));
         GlauxAccount(payable(account)).applyUpdate(valid, _twoSigs(_updateDigest(valid)));
         assertEq(GlauxAccount(payable(account)).updateNonce(), 1);
     }

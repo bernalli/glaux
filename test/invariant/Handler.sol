@@ -67,13 +67,27 @@ contract Handler is Test {
     }
 
     function _digest(Update memory u) internal view returns (bytes32) {
-        return keccak256(
-            abi.encode(GlauxStorage.UPDATE_DOMAIN, account, u.nonce, u.action, keccak256(u.payload))
+        return GlauxStorage.eip191(
+            account,
+            keccak256(
+                abi.encode(
+                    GlauxStorage.UPDATE_DOMAIN, account, u.nonce, u.action, keccak256(u.payload)
+                )
+            )
         );
     }
 
+    /// @dev Carries a real possession proof: every key the handler proposes is one it
+    ///      actually holds, so rotations exercise the authorization logic rather than
+    ///      bouncing off the registration check.
     function _slotPayload(uint8 slot, uint256 pk) internal pure returns (bytes memory) {
-        return abi.encode(slot, GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(pk)));
+        bytes memory data = abi.encode(vm.addr(pk));
+        bytes32 reg = keccak256(
+            abi.encode(
+                GlauxStorage.REG_DOMAIN, slot, GlauxStorage.VERIFIER_SECP256K1, keccak256(data)
+            )
+        );
+        return abi.encode(slot, GlauxStorage.VERIFIER_SECP256K1, data, _sig65(pk, reg));
     }
 
     /// @dev Bounds a candidate private key so its derived address differs from all

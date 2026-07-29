@@ -29,6 +29,7 @@ from eth_account import Account
 from eth_utils import keccak, to_bytes, to_checksum_address
 
 INIT_DOMAIN = keccak(text="GLAUX_INIT_V1")
+REG_DOMAIN = keccak(text="GLAUX_REG_V1")
 
 VERIFIER_SECP256K1 = 1
 VERIFIER_P256 = 2
@@ -69,26 +70,63 @@ def build_slots(
     ]
 
 
-def build_init_data(slots: list[tuple[int, bytes]]) -> bytes:
-    """ABI-encode the three factor slots as the `initData` blob.
+def build_init_data(slots: list[tuple[int, bytes]], proofs: list[bytes]) -> bytes:
+    """ABI-encode the three factor slots and their possession proofs as `initData`.
 
-    Matches `abi.decode(initData, (FactorSlot[3]))` in `GlauxAccount.initializeAccount`.
+    Matches `abi.decode(initData, (FactorSlot[3], bytes[3]))` in
+    `GlauxAccount.initializeAccount`. Each proof is a signature by the slot's own
+    key over the registration digest (see `registration_digest`); the contract
+    refuses to install a key that has not signed one, because shape validation
+    alone cannot tell a held key from an address derived from a chosen signature.
     """
-    return encode(["(uint8,bytes)[3]"], [slots])
+    return encode(["(uint8,bytes)[3]", "bytes[3]"], [slots, proofs])
+
+
+def registration_digest(index: int, verifier_type: int, key_data: bytes) -> bytes:
+    """The digest a candidate key must sign to prove it exists.
+
+    `keccak256(abi.encode(REG_DOMAIN, index, verifierType, keccak256(keyData)))`.
+    It commits to the key material itself, which is what stops an attacker choosing
+    a signature and deriving the address it is valid under. It binds neither chain
+    nor account, so a factor can produce its proof offline before the account
+    exists — the paper factor never comes back online — and the proof travels with
+    the blob to every chain. A proof authorizes nothing, so its portability is
+    harmless.
+    """
+    return keccak(
+        encode(
+            ["bytes32", "uint8", "uint8", "bytes32"],
+            [REG_DOMAIN, index, verifier_type, keccak(key_data)],
+        )
+    )
+
+
+def eip191_v0(validator: str, struct_hash: bytes) -> bytes:
+    """Wrap a structured hash as EIP-191 version 0x00 signed data.
+
+    `0x19 || 0x00 || validator || structHash`. Version 0x00 carries no chain id,
+    so Glaux blobs keep replaying on every chain, while the prefix keeps a Glaux
+    digest out of reach of raw-hash signing APIs.
+    """
+    return keccak(
+        b"\x19\x00" + to_bytes(hexstr=to_checksum_address(validator)) + struct_hash
+    )
 
 
 def build_init_digest(
+    router: str,
     implementation: str,
     expected_code_hash: bytes,
     init_data: bytes,
 ) -> bytes:
     """Compute the chain-agnostic init digest bound by the birth signature.
 
-    digest = keccak256(abi.encode(
-        INIT_DOMAIN, implementation, expectedCodeHash, keccak256(initData)
-    ))
+    EIP-191 version 0x00 with the ROUTER as validator, over
+    `keccak256(abi.encode(INIT_DOMAIN, implementation, expectedCodeHash,
+    keccak256(initData)))`. The router has the same address on every chain, so
+    binding it costs nothing in replayability.
     """
-    return keccak(
+    struct_hash = keccak(
         encode(
             ["bytes32", "address", "bytes32", "bytes32"],
             [
@@ -99,6 +137,7 @@ def build_init_digest(
             ],
         )
     )
+    return eip191_v0(router, struct_hash)
 
 
 def sign_birth_digest(private_key: bytes, digest: bytes) -> bytes:
@@ -125,6 +164,7 @@ def build_birth_blob(
     device_qx: int,
     device_qy: int,
     cloud_address: str,
+    proofs: list[bytes],
 ) -> dict[str, Any]:
     """Generate an ephemeral birth key and the full chain-agnostic birth blob.
 
@@ -142,8 +182,8 @@ def build_birth_blob(
     )
 
     slots = build_slots(paper_address, device_qx, device_qy, cloud_address)
-    init_data = build_init_data(slots)
-    digest = build_init_digest(implementation, expected_code_hash, init_data)
+    init_data = build_init_data(slots, proofs)
+    digest = build_init_digest(router, implementation, expected_code_hash, init_data)
     birth_signature = sign_birth_digest(birth_account.key, digest)
 
     return {
@@ -196,6 +236,19 @@ def main() -> None:
     parser.add_argument(
         "--cloud", required=True, help="cloud factor: secp256k1 address (slot 2)"
     )
+    for flag, who, slot in (
+        ("--paper-proof", "paper", 0),
+        ("--device-proof", "device", 1),
+        ("--cloud-proof", "cloud", 2),
+    ):
+        parser.add_argument(
+            flag,
+            required=True,
+            help=(
+                f"hex possession proof for the {who} factor (slot {slot}), produced "
+                "by its holder with scripts/prove_possession.py"
+            ),
+        )
     args = parser.parse_args()
 
     blob = build_birth_blob(
@@ -206,6 +259,11 @@ def main() -> None:
         device_qx=args.device_qx,
         device_qy=args.device_qy,
         cloud_address=args.cloud,
+        proofs=[
+            to_bytes(hexstr=args.paper_proof),
+            to_bytes(hexstr=args.device_proof),
+            to_bytes(hexstr=args.cloud_proof),
+        ],
     )
     print(json.dumps(blob, indent=2))
 

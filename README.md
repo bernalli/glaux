@@ -16,8 +16,8 @@ verification slot.
 
 | Document | What it is |
 |---|---|
-| [`docs/specs/2026-07-28-glaux-design.md`](docs/specs/2026-07-28-glaux-design.md) | The design specification (v0.2), with a revision list |
-| [`docs/threat-model.md`](docs/threat-model.md) | What is protected, against whom, and the twelve residuals the project declares openly |
+| [`docs/specs/2026-07-28-glaux-design.md`](docs/specs/2026-07-28-glaux-design.md) | The design specification (v0.5), with a revision list |
+| [`docs/threat-model.md`](docs/threat-model.md) | What is protected, against whom, and the residuals the project declares openly |
 | [`docs/client-guidance.md`](docs/client-guidance.md) | Required reading before integrating: several residuals are closed **only** by a client-side rule |
 | [`docs/static-analysis.md`](docs/static-analysis.md) | Slither triage — every finding fixed, suppressed with reasoning, or accounted for |
 | [`docs/deployments.md`](docs/deployments.md) | Deterministic addresses and the end-to-end birth proof |

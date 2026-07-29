@@ -2,7 +2,7 @@
 
 ## Local two-chain end-to-end (verified)
 
-Date: 2026-07-29. Commit: `2f2f94b761bd73b95cdd4516ad6ac7004c650596`, the final Phase 1
+Date: 2026-07-29. Commit: `80ceff6d9d9a5a00eb2fae4810272ba1a9eda63b`, the final Phase 1
 state. The whole run below was repeated from scratch each time the contracts changed:
 changing them changes their bytecode, and therefore every deterministic address and code
 hash recorded here.
@@ -21,8 +21,8 @@ default account 0 (`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`).
 
 | Chain id | GlauxAccount (impl)                          | GlauxDelegate (router)                       |
 |----------|-----------------------------------------------|-----------------------------------------------|
-| 31337    | `0x30a664AdA6EF71F7B6062e9b67d46Fd965664E0B`  | `0x2b7B0fA0AAa192A1E4168f9249DBa4DF80843248`  |
-| 31338    | `0x30a664AdA6EF71F7B6062e9b67d46Fd965664E0B`  | `0x2b7B0fA0AAa192A1E4168f9249DBa4DF80843248`  |
+| 31337    | `0x55cbf6f799670E574BAb0C328F60eB0031238068`  | `0xf23eBaBa7aF8fa6fdB9618489FDf881d3b0EF89D`  |
+| 31338    | `0x55cbf6f799670E574BAb0C328F60eB0031238068`  | `0xf23eBaBa7aF8fa6fdB9618489FDf881d3b0EF89D`  |
 
 **Addresses are identical on both chains** — the CREATE2 determinism claim, confirmed by
 running the same salted-bytecode deployment through the canonical CREATE2 deployer
@@ -31,10 +31,17 @@ running the same salted-bytecode deployment through the canonical CREATE2 deploy
 Implementation runtime code hash (`address(impl).codehash`, printed by `Deploy.s.sol`):
 
 ```
-0x639807630766e45548ef82545f35a53bf2630ca57ea815be0c6fd3dfd138011a
+0x1f10c7af471b8d7e21e1130f1fea8312f78cf5498eb50e9f1deeef5fbf39c882
 ```
 
 ### 2. Birth blob (one blob, generated once)
+
+Each factor first produced a **possession proof** with `scripts/prove_possession.py`,
+run separately per key — the contract refuses to install a key that has not signed the
+registration challenge. Both anvil instances were given the P256VERIFY precompile at
+`0x100` (`anvil_setCode` with the vendored verifier), because verifying the device
+factor's proof needs it; a chain without that precompile cannot host a P-256 factor at
+all, and birth there fails cleanly rather than installing an unusable one.
 
 Generated with `scripts/birth.py` using throwaway factor keys: the paper and cloud secp256k1
 factors are anvil's well-known default accounts 1 and 2
@@ -46,7 +53,7 @@ memory and was discarded on exit; it was never written to disk or logged.
 Born account address (recovered from the EIP-7702 authorization signed by the birth key):
 
 ```
-0x668b787945733052B7106Dd73e7B54c1F7B16B46
+0x4498aAE82C7684E1AA6F001A71986362b91851ED
 ```
 
 ### 3. Submission — the SAME blob to BOTH chains
@@ -56,15 +63,15 @@ default account 0 acting as an ordinary, unprivileged relayer (`GLAUX_RELAYER_KE
 
 | Chain id | Tx hash                                                              | Status | Gas used |
 |----------|-----------------------------------------------------------------------|--------|----------|
-| 31337    | `0xc06bc26e68732721f67706b181d702fd50b9672a1a648ed11f1c05cf838451e2`  | 1      | 324671   |
-| 31338    | `0x65bdaccb2dedfebbaec5dba9e344af7585d8087fae42c458b6918d8ea83a9838`  | 1      | 324671   |
+| 31337    | `0xcfcfd9a4427cebb223e9d7f47a6465cf09666717bec6753bc2369dc34ce69eb4`  | 1      | 687651   |
+| 31338    | `0x9b35373d8536b30523d3d917e253b7f4472526552502a30681b76505f3d03a10`  | 1      | 687651   |
 
 Both transactions succeeded (status 1) with identical gas usage.
 
 ### 4. Post-birth verification — identical on BOTH chains
 
 ```
-cast code 0x668b787945733052B7106Dd73e7B54c1F7B16B46 --rpc-url <rpc>
+cast code 0x4498aAE82C7684E1AA6F001A71986362b91851ED --rpc-url <rpc>
   -> 0xef01002b7b0fa0aaa192a1e4168f9249dba4df80843248   (EIP-7702 delegation indicator to the router)
 
 cast call <account> "updateNonce()(uint64)" --rpc-url <rpc>
@@ -83,7 +90,7 @@ cast call <account> "getSlot(uint8)(uint8,bytes)" 2 --rpc-url <rpc>
 # left untouched, so nothing is exported to whatever wallet the account is
 # re-delegated to next.
 cast call <account> "implementation()(address)" --rpc-url <rpc>
-  -> 0x30a664AdA6EF71F7B6062e9b67d46Fd965664E0B
+  -> 0x55cbf6f799670E574BAb0C328F60eB0031238068
 cast storage <account> 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url <rpc>
   -> 0x0000...0000   (ERC-1967: never written by Glaux)
 ```

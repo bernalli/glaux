@@ -2,3 +2,4 @@ eth-account==0.13.7
 web3==7.16.0
 eth-abi==5.2.0
 eth-utils==6.0.0
+cryptography==49.0.0

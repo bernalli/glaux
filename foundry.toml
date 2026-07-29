@@ -5,6 +5,14 @@ libs = ["lib"]
 evm_version = "prague"
 optimizer = true
 optimizer_runs = 10000
+# Deployed bytecode must be reproducible from source alone. Foundry's default
+# appends a CBOR metadata hash covering compiler settings, source unit NAMES and
+# the keccak of every source file including its comments — and that hash feeds
+# both the CREATE2 address and the runtime code hash every birth blob signs. With
+# it, editing a comment moves the canonical address and silently invalidates
+# every unspent blob; a chain the account has not reached yet could then never be
+# born on. "none" strips it.
+bytecode_hash = "none"
 
 [fuzz]
 runs = 512

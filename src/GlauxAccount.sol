@@ -15,6 +15,7 @@ import {
     InvalidImplementation,
     InvalidSignature,
     InvalidSlot,
+    PossessionNotProven,
     InvalidVerifierType,
     DuplicateSlot,
     NotEntryPoint,
@@ -54,9 +55,11 @@ contract GlauxAccount {
             installed := sload(implementationSlot)
         }
         if (installed != address(0)) revert AlreadyInitialized();
-        FactorSlot[3] memory slots = abi.decode(initData, (FactorSlot[3]));
-        for (uint256 i = 0; i < 3; i++) {
+        (FactorSlot[3] memory slots, bytes[3] memory proofs) =
+            abi.decode(initData, (FactorSlot[3], bytes[3]));
+        for (uint8 i = 0; i < 3; i++) {
             _validateSlot(slots[i]);
+            _requirePossession(i, slots[i], proofs[i]);
         }
         for (uint256 i = 0; i < 3; i++) {
             for (uint256 j = i + 1; j < 3; j++) {
@@ -77,6 +80,39 @@ contract GlauxAccount {
             revert InvalidVerifierType();
         }
         if (!SignatureVerify.isValidKey(s.verifierType, s.data)) revert InvalidSlot();
+    }
+
+    /// @dev A slot's key must prove it EXISTS before it is installed. Shape checks
+    ///      cannot do this: ECDSA verifies by recovery, so an adversary can pick a
+    ///      signature first and derive the address it is valid under, yielding a
+    ///      well-formed slot whose private key never existed and which only they can
+    ///      sign for — enough, with two such slots, to meet the 2-of-3 threshold with
+    ///      no keys at all. The challenge commits to the key material itself, so
+    ///      deriving a key from a signature no longer helps: an attacker would need a
+    ///      signature valid under a key that a digest committing to that same key
+    ///      recovers to, which is a hash preimage search rather than a curve
+    ///      computation.
+    /// @dev Deliberately binds neither a chain id nor the account address. The proof
+    ///      rides inside the birth blob and the update payload, both of which replay
+    ///      on every chain; and a factor must be able to produce its proof BEFORE the
+    ///      account exists — the paper factor is generated on an air-gapped machine
+    ///      and never comes back online. That makes a proof a portable, reusable
+    ///      artifact per key, which is harmless: it authorizes nothing. Installing
+    ///      someone else's proven public key into your own account grants you no
+    ///      ability to sign with it.
+    /// @dev No EIP-191 prefix here for the same reason — there is no validator to
+    ///      bind, and a possession proof confers no authority, so raw-hash exposure
+    ///      buys an attacker nothing.
+    function _requirePossession(uint8 index, FactorSlot memory s, bytes memory proof)
+        internal
+        view
+    {
+        bytes32 digest = keccak256(
+            abi.encode(GlauxStorage.REG_DOMAIN, index, s.verifierType, keccak256(s.data))
+        );
+        if (!SignatureVerify.verify(s.verifierType, s.data, digest, proof)) {
+            revert PossessionNotProven();
+        }
     }
 
     function _isDuplicateSlot(FactorSlot memory a, FactorSlot memory b)
@@ -120,20 +156,28 @@ contract GlauxAccount {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) revert NotInitialized();
         if (u.nonce != l.updateNonce + 1) revert BadUpdateNonce(l.updateNonce + 1, u.nonce);
-        bytes32 digest = keccak256(
-            abi.encode(
-                GlauxStorage.UPDATE_DOMAIN, address(this), u.nonce, u.action, keccak256(u.payload)
+        bytes32 digest = GlauxStorage.eip191(
+            address(this),
+            keccak256(
+                abi.encode(
+                    GlauxStorage.UPDATE_DOMAIN,
+                    address(this),
+                    u.nonce,
+                    u.action,
+                    keccak256(u.payload)
+                )
             )
         );
         _requireTwoSigs(digest, [sigs[0], sigs[1]]);
         l.updateNonce = u.nonce;
 
         if (u.action == GlauxStorage.ACTION_SET_SLOT) {
-            (uint8 index, uint8 verifierType, bytes memory data) =
-                abi.decode(u.payload, (uint8, uint8, bytes));
+            (uint8 index, uint8 verifierType, bytes memory data, bytes memory proof) =
+                abi.decode(u.payload, (uint8, uint8, bytes, bytes));
             if (index > 2) revert InvalidSlot();
             FactorSlot memory s = FactorSlot(verifierType, data);
             _validateSlot(s);
+            _requirePossession(index, s, proof);
             for (uint8 i = 0; i < 3; i++) {
                 if (i != index && _isDuplicateSlot(s, l.slots[i])) revert DuplicateSlot();
             }
@@ -157,13 +201,16 @@ contract GlauxAccount {
     function executeWithSigs(Call[] calldata calls, SlotSig[2] calldata sigs) external payable {
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) revert NotInitialized();
-        bytes32 digest = keccak256(
-            abi.encode(
-                GlauxStorage.EXEC_DOMAIN,
-                block.chainid,
-                address(this),
-                l.execNonce,
-                keccak256(abi.encode(calls))
+        bytes32 digest = GlauxStorage.eip191(
+            address(this),
+            keccak256(
+                abi.encode(
+                    GlauxStorage.EXEC_DOMAIN,
+                    block.chainid,
+                    address(this),
+                    l.execNonce,
+                    keccak256(abi.encode(calls))
+                )
             )
         );
         _requireTwoSigs(digest, [sigs[0], sigs[1]]);
@@ -277,10 +324,11 @@ contract GlauxAccount {
         // distinct and well-formed. Two independent signers cannot collide on
         // (r, s) over the same digest, so requiring them to differ costs nothing.
         //
-        // This closes signature REUSE, not the whole class: an attacker can also
-        // manufacture a signature first and register the address it recovers to,
-        // which yields two different (r, s). Only proof of possession at slot
-        // registration closes that, and it is a declared residual.
+        // This closes signature REUSE only. The wider class — manufacturing a
+        // signature and registering the address it recovers to, which yields two
+        // different (r, s) — is closed at registration by `_requirePossession`.
+        // With that in place this check is defence in depth rather than the
+        // load-bearing control, and it costs nothing to keep.
         if (_sameRS(sigs[0].signature, sigs[1].signature)) return false;
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) return false;

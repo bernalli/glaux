@@ -118,8 +118,10 @@ one of the supported backends.
 
 ## Prove possession of every factor before installing it
 
-**This is not hygiene. It is the integrity control the 2-of-3 threshold rests
-on, and no on-chain check can substitute for it.**
+**The contract now enforces this.** It was client discipline in an earlier
+draft; review showed it is the integrity control the whole threshold rests on,
+so it moved on chain. You still have to *produce* the proofs — this section
+tells you how and why.
 
 `GlauxAccount._validateSlot` checks a candidate key's *shape*, never possession:
 `SignatureVerify.isValidKey` confirms a secp256k1 slot holds a clean non-zero
@@ -144,17 +146,28 @@ well-formed.
 
 So, before birth and before every rotation:
 
-> Require a **registration challenge**: the candidate factor signs a digest that
-> commits to the key itself, e.g.
-> `keccak256(abi.encode(REG_DOMAIN, account, slotIndex, verifierType, keyData))`.
-> Verify that signature locally under exactly the contract's rules (see wire
-> formats below). **Never install a factor that has not signed.** Committing the
-> key material into the challenge is what stops pre-arming — an attacker would
-> have to satisfy the digest and the key it commits to simultaneously, which is
-> a hash-preimage search rather than a curve computation.
+> Every slot, at birth and on every rotation, must carry a signature by its own
+> key over
+> `keccak256(abi.encode(REG_DOMAIN, slotIndex, verifierType, keccak256(keyData)))`.
+> `scripts/prove_possession.py` computes it. Committing the key material into
+> the challenge is what stops pre-arming: an attacker would have to satisfy the
+> digest and the key it commits to at once, which is a hash-preimage search
+> rather than a curve computation.
 
-After a rotation, re-run the challenge against the slot data read back *from the
-chain*, not against the value you intended to store.
+The challenge binds neither chain nor account, and that is deliberate: a factor
+must be able to sign it **before the account exists**, so an air-gapped paper
+factor signs once, at generation time, and never comes back online. The proof is
+public data and valid on every chain. It authorizes nothing, so its portability
+costs nothing.
+
+For a hardware-backed device key the private half is not exportable: use
+`--digest-only` to obtain the 32-byte challenge, have the platform's signing API
+sign it, and encode the resulting `(r, s)` as two padded 32-byte words.
+
+**A P-256 factor can only be installed on a chain that has the P256VERIFY
+precompile**, because the proof is verified with it. Birth fails cleanly on a
+chain without it rather than installing an unusable factor — the blob stays
+valid and retryable there if the precompile arrives later.
 
 Treat any slot address proposed by a counterparty — a vendor-supplied recovery
 factor, a co-signing service — as unverified until it has answered a challenge
@@ -344,7 +357,7 @@ Then, before proposing it to signers:
   `keccak256("glaux.account.v1.storage")` (a layout change silently
   corrupts live accounts); **preservation of `applyUpdate` itself**, since
   installing logic that cannot upgrade is terminal — the birth path can
-  never re-run once the ERC-1967 pointer is non-zero; the **immutable
+  never re-run once the implementation pointer is non-zero; the **immutable
   `ENTRYPOINT`** baked into the candidate's constructor; and any
   **external dependency** whose address or behaviour differs per chain.
 - Test against the exact deployed bytecode from current production state,
@@ -365,7 +378,10 @@ independently and present the result honestly. Compare **all four** of:
 
 1. `updateNonce`;
 2. the three `FactorSlot` entries via `getSlot`;
-3. **the ERC-1967 implementation pointer and its live code hash**;
+3. **the implementation pointer and its live code hash** — read the raw
+   namespaced slot `keccak256("glaux.account.v1.implementation")` with
+   `eth_getStorageAt`, NOT the ERC-1967 slot, which Glaux never writes and which
+   on a migrated account may still hold a stale foreign value;
 4. **the delegation target** (the account's code should be the EIP-7702
    indicator `0xef0100` followed by the router address).
 
@@ -448,6 +464,10 @@ deposit are zero at *every* step — not merely before and after — while
 asserting the paymaster's own deposit was debited by exactly the
 `actualGasCost` reported in the `UserOperationEvent`. Signatures authorize;
 the relayer or paymaster pays.
+
+Note the 4337 path gives no deadline either: `validateUserOp` returns `0`, which
+the EntryPoint reads as a `validUntil` of `type(uint48).max`. A signed user
+operation is valid forever, exactly like a signed direct batch.
 
 A P-256 factor is compatible with the 4337 path: **ERC-7562 rule OP-062**
 explicitly permits the `P256VERIFY` precompile of EIP-7951 during validation,
