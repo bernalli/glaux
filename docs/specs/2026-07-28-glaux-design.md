@@ -1,11 +1,12 @@
 # Glaux — Design Specification
 
-- **Version**: v0.8
-- **Date**: 2026-07-28, revised 2026-07-29
+- **Version**: v0.9
+- **Date**: 2026-07-28, revised 2026-07-30
 - **Status**: v0.1 was ratified before implementation. v0.2 to v0.5 fold in the
-  design changes that security review forced during Phase 1; v0.6 and v0.7 are
-  Phase 2 changes; v0.8 adds the field survey and the EIP-8164 risk in §9 and
-  changes no behaviour. Each is marked in place and all are listed in §11.
+  design changes that security review forced during Phase 1; v0.6, v0.7 and
+  v0.9 are Phase 2 changes; v0.8 adds the field survey and the EIP-8164 risk
+  in §9 and changes no behaviour. Each is marked in place and all are listed
+  in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
   (cross-chain keystore state of the art) and 12 (post-quantum EVM state of
   the art). In the founding documents the project is referred to by its
@@ -351,7 +352,7 @@ needs no bundler at all.
 
 ## 11. Revision history
 
-- **v0.8 (2026-07-30, Phase 2)** — **account surface and reconciliation
+- **v0.9 (2026-07-30, Phase 2)** — **account surface and reconciliation
   ordering**, specified in full in
   `2026-07-29-glaux-phase2-account-surface-design.md` (an increment on this
   document, which remains the protocol spec). ERC-721/1155 receiver hooks and
