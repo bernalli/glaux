@@ -550,16 +550,32 @@ not this one's.
   every 4337 execution logs the same value and an indexer cannot distinguish
   them by nonce alone.
 
-## Not implemented in v1 (scope, not oversight)
+### 16. ERC-1271: authorized movement leaves no nonce trace
 
-- **No ERC-721/ERC-1155 receiver hooks.** `safeTransferFrom` of an NFT to a
-  Glaux account reverts. Any unknown selector reverts through the router.
-- **No ERC-1271.** The account cannot produce contract signatures, so it cannot
-  be used with Permit2, Seaport, or other signature-consuming protocols.
+With the message channel live, `execNonce` is no longer a complete record of
+authorized value movement: the quorum can sign a Permit2 witness or a Seaport
+order and funds move when a THIRD party consumes the signature, with no Glaux
+nonce advancing and no on-chain trace beforehand. The deadline inside the blob
+bounds the window; nothing restores the record. Client rule: a request to sign
+a message IS a request to authorize an action, and must be presented as one —
+see `client-guidance.md`.
 
-Both live in the upgradeable implementation and are additive. They are called
-out here because a reference smart account is expected to have them, and their
-absence should be a stated decision rather than a surprise.
+What the channel does enforce: the consumer's hash is wrapped under
+`MSG_DOMAIN` with `block.chainid`, the account address and the deadline, so a
+message signature is useless on any other channel, any other chain, and any
+other account, and expires. Failure is the `0xffffffff` sentinel, never a
+revert — except on an account never born, where the ROUTER reverts
+`NotInitialized` before implementation code runs.
+
+## Formerly out of scope, shipped in Phase 2
+
+The receiver hooks (ERC-721/ERC-1155), ERC-165 and ERC-1271 were v1's two
+"scope, not oversight" exclusions. Both shipped in the upgradeable
+implementation — see
+`docs/specs/2026-07-29-glaux-phase2-account-surface-design.md`. The receiver
+hooks deliberately do not take the reentrancy guard: the common case is the
+account moving a token in a batch and the token calling back in while
+`_execute` holds it.
 
 ## Resolved: EIP-191 version 0x00, not EIP-712 typed data
 

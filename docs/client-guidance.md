@@ -393,7 +393,37 @@ guarantee the same *behaviour* — see the threat model.
 
 Because the update channel carries no chain-id and replays "in order" on
 each chain at first touch, a client must query every chain it cares about
-independently and present the result honestly. Compare **all four** of:
+independently and present the result honestly.
+
+**Read raw storage first. The order below is normative.** The getters —
+`getSlot`, `updateNonce`, `execNonce`, `implementation()` — are answered by
+the implementation whose identity is the thing reconciliation verifies: an
+implementation that is hostile, or merely an unexpected build, can report a
+nonce and a slot set that do not exist in storage. Per chain:
+
+1. `eth_getCode(account)` — expect exactly the EIP-7702 designator,
+   `0xef0100 ‖ router` (23 bytes). Anything else, including empty code, means
+   the account is not a Glaux account on this chain and nothing below is
+   meaningful.
+2. `eth_getStorageAt(account, keccak256("glaux.account.v1.implementation"))` —
+   the authoritative implementation pointer.
+3. `eth_getCode(pointer)` → `keccak256` — the live code hash of the logic
+   actually installed.
+4. The raw namespaced state: the packed header word at
+   `keccak256("glaux.account.v1.storage")` (`initialized` byte 0,
+   `updateNonce` bytes 1-8, `execNonce` bytes 9-16), then the three factor
+   slots.
+5. **Only now** the getters — and only to compare against steps 2-4. A
+   mismatch is a finding about the implementation, reported as such; it is
+   never resolved in favour of the getter.
+
+`scripts/reconcile.py` implements exactly this order (exit codes: 0
+consistent, 1 chains diverge, 2 raw-vs-getter mismatch — 2 outranks 1), and
+its storage arithmetic is pinned against the compiler by
+`test/StorageParity.t.sol` and `scripts/test_reconcile.py` over a shared
+committed fixture.
+
+Across chains, compare **all four** of:
 
 1. `updateNonce`;
 2. the three `FactorSlot` entries via `getSlot`;
@@ -436,6 +466,19 @@ installed logic that broke `applyUpdate`, that branch cannot be recovered
 at all. Plan for reconciliation to be a supervised operation, and prefer
 never needing it.
 
+## Signing a message is authorizing an action
+
+With ERC-1271 live, the account can sign for protocols that move funds on a
+signature alone — a Permit2 witness IS a transfer authorization, a Seaport
+order IS a listing. None of that advances `execNonce` or leaves any on-chain
+trace before a third party consumes the signature (threat model, residual 16).
+So a client must present a message-signing request exactly as it would present
+a transaction: show what the hash commits to, from which protocol, with which
+deadline — and never as a harmless "sign this to continue". The deadline is
+the signers' only bound on the exposure: for an order meant to stay open for
+months, set `validUntil` months out, knowingly; for everything else keep it
+short.
+
 ## Wire formats
 
 These trip integrations more than anything else in this document.
@@ -462,6 +505,19 @@ These trip integrations more than anything else in this document.
   timestamp so the signers can see what they are agreeing to.
 - **ERC-4337 signature blob**: `abi.encode(uint48 validUntil, SlotSig[2] sigs)`,
   bounded at 576 bytes. Note the deadline comes *first*, ahead of the array.
+- **ERC-1271 signature blob**: the same shape and the same 576-byte bound,
+  `abi.encode(uint48 validUntil, SlotSig[2] sigs)`. The factors do NOT sign the
+  hash the consumer presents; they sign
+  `eip191(account, keccak256(abi.encode(MSG_DOMAIN, block.chainid, account,
+  hash, validUntil)))` with
+  `MSG_DOMAIN = keccak256("GLAUX_MSG_V1")`. This is the only Glaux digest that
+  binds the chain id — the account and Permit2 hold the same address on every
+  chain, so an unbound message signature would authorize the identical action
+  everywhere at once. `validUntil == 0` is rejected; an expired, malformed or
+  under-quorum blob answers with the `0xffffffff` sentinel rather than a
+  revert. On an account not yet born the ROUTER reverts `NotInitialized`
+  before implementation code runs — consumers that treat a revert as invalid
+  handle this correctly.
 
 Hardware and WebAuthn APIs typically return **DER-encoded** ECDSA
 signatures and SEC1 or COSE-encoded public keys. Converting them is the
