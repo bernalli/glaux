@@ -30,13 +30,18 @@ import {
 import {SignatureVerify} from "./lib/SignatureVerify.sol";
 import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 
 /// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
-contract GlauxAccount {
+contract GlauxAccount is IERC721Receiver, IERC1155Receiver, IERC1271 {
     // Two 65-byte secp256k1 signatures encode as SlotSig[2] in 480 bytes, and the
     // deadline the factors signed rides in front of them. 576 bytes leaves room for the
     // added words plus one trailing one, while still bounding the self-call copy.
-    uint256 internal constant MAX_USEROP_SIGNATURE_LENGTH = 576;
+    // Shared by the ERC-4337 and ERC-1271 paths: their blobs have the same shape.
+    uint256 internal constant MAX_SIGNATURE_BLOB_LENGTH = 576;
 
     address public immutable ENTRYPOINT;
     bool private transient executing;
@@ -297,7 +302,7 @@ contract GlauxAccount {
         view
         returns (bool ok, uint48 validUntil, SlotSig[2] memory sigs)
     {
-        if (signature.length > MAX_USEROP_SIGNATURE_LENGTH) {
+        if (signature.length > MAX_SIGNATURE_BLOB_LENGTH) {
             return (false, 0, sigs);
         }
         try this.decodeSlotSigs(signature) returns (uint48 until, SlotSig[2] memory decoded) {
@@ -385,5 +390,72 @@ contract GlauxAccount {
         FactorSlot storage b = l.slots[sigs[1].slotIndex];
         return SignatureVerify.verify(a.verifierType, a.data, digest, sigs[0].signature)
             && SignatureVerify.verify(b.verifierType, b.data, digest, sigs[1].signature);
+    }
+
+    /// @notice Checked-transfer hooks. Unconditional accept: which assets arrive is
+    ///         not an authorization question, and taking the reentrancy guard here
+    ///         would make receiving-while-executing impossible — the common case is
+    ///         this account moving a token in a batch and the token calling back in.
+    function onERC721Received(address, address, uint256, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        return IERC1155Receiver.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return IERC1155Receiver.onERC1155BatchReceived.selector;
+    }
+
+    /// @notice ERC-165. Advertises ERC-1271 too: not required by the standard, but
+    ///         some integrations probe for it and advertising costs nothing.
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IERC165).interfaceId
+            || interfaceId == type(IERC721Receiver).interfaceId
+            || interfaceId == type(IERC1155Receiver).interfaceId
+            || interfaceId == type(IERC1271).interfaceId;
+    }
+
+    /// @notice ERC-1271. The consumer's `hash` is never verified directly: it is
+    ///         wrapped under MSG_DOMAIN with the chain id, the account address and a
+    ///         deadline, then EIP-191-prefixed like every Glaux digest. Direct
+    ///         verification would make this an oracle for every other channel's
+    ///         digests and would let one chain's message authorize all chains.
+    /// @dev The deadline is the signers': a message signature can move funds through
+    ///      Permit2 with no Glaux nonce advancing, so it must not live forever. Zero
+    ///      is a deadline in the past, as on the direct execution path.
+    /// @dev Never reverts once the account exists: some consumers handle a revert,
+    ///      all of them handle the sentinel. (An account never born has no
+    ///      implementation pointer, so the ROUTER reverts NotInitialized before this
+    ///      code can run — that boundary is the router's, not this function's.)
+    function isValidSignature(bytes32 hash, bytes calldata signature)
+        external
+        view
+        returns (bytes4)
+    {
+        (bool decoded, uint48 validUntil, SlotSig[2] memory sigs) = _tryDecodeSigs(signature);
+        if (!decoded || block.timestamp > validUntil) return bytes4(0xffffffff);
+        bytes32 digest = GlauxStorage.eip191(
+            address(this),
+            keccak256(
+                abi.encode(GlauxStorage.MSG_DOMAIN, block.chainid, address(this), hash, validUntil)
+            )
+        );
+        return _checkTwoSigs(digest, sigs) ? IERC1271.isValidSignature.selector : bytes4(0xffffffff);
     }
 }

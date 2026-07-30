@@ -8,3 +8,5 @@ cache/
 broadcast/**/dry-run/
 __pycache__/
 *.pyc
+
+.venv/

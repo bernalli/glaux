@@ -2,14 +2,19 @@
 
 ## Local two-chain end-to-end (verified)
 
-Date: 2026-07-29. Contracts: the P-256 verifier probe and execution deadlines (Phase 2),
-on top of the final Phase 1 state. The whole run below is repeated from scratch each time
-the contracts change: changing them changes their bytecode, and therefore every
-deterministic address and code hash recorded here.
+Date: 2026-07-30. Contracts: the Phase 2 account surface (ERC-721/1155 receiver hooks,
+ERC-165, ERC-1271) on top of the verifier probe and execution deadlines. The whole run
+below is repeated from scratch each time the contracts change: changing them changes
+their bytecode, and therefore every deterministic address and code hash recorded here.
 
 `GlauxDelegate` keeps the same address across these re-runs while `GlauxAccount` moves,
 which is the expected signal rather than a coincidence: the router is the immutable half
 and Phase 2 has not touched it. Every change so far has landed in the implementation.
+Before this run the router's build was checked directly:
+`cast keccak "$(forge inspect src/GlauxDelegate.sol:GlauxDelegate deployedBytecode)"`
+gives `0x6f90a8ec1d718d787bb3a3cdf0887caf750f65958a2b6e9cfef3cf103da8335c`, and the
+CREATE2 address below matching every previous run is the on-chain form of the same
+proof — same salt + same initcode is the only way to land on the same address.
 
 Two local `anvil` instances with EIP-7702 (Prague) support, on different chain ids:
 
@@ -25,17 +30,19 @@ default account 0 (`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`).
 
 | Chain id | GlauxAccount (impl)                          | GlauxDelegate (router)                       |
 |----------|-----------------------------------------------|-----------------------------------------------|
-| 31337    | `0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
-| 31338    | `0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
+| 31337    | `0x927ed5700518a8A053367da1EaFDFBdE061E73F2`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
+| 31338    | `0x927ed5700518a8A053367da1EaFDFBdE061E73F2`  | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`  |
 
 **Addresses are identical on both chains** — the CREATE2 determinism claim, confirmed by
 running the same salted-bytecode deployment through the canonical CREATE2 deployer
-(`0x4e59b44847b379578588920cA78FbF26c0B4956C`) on two independent chains.
+(`0x4e59b44847b379578588920cA78FbF26c0B4956C`) on two independent chains. The router's
+address is unchanged from every previous run (immutability check passed); the
+implementation moved from `0x6E7210C5…57ae3`, as adding the account surface must make it.
 
 Implementation runtime code hash (`address(impl).codehash`, printed by `Deploy.s.sol`):
 
 ```
-0x0dece52d0ef5c20a6c2a0360375534af0de56fcbe51f7c3496c9a26c70686b4d
+0x2c271f5a9e823360ad27431f2245570417fc1dc687b144eda63f8bf875b97c4c
 ```
 
 ### 2. Birth blob (one blob, generated once)
@@ -59,7 +66,7 @@ memory and was discarded on exit; it was never written to disk or logged.
 Born account address (recovered from the EIP-7702 authorization signed by the birth key):
 
 ```
-0xfD7969dB90258e91d414B0d40e1C113Bf83D3f6F
+0x5b4c472093C0fa61158b68C6f378cb02b500c405
 ```
 
 ### 3. Submission — the SAME blob to BOTH chains
@@ -69,12 +76,12 @@ default account 0 acting as an ordinary, unprivileged relayer (`GLAUX_RELAYER_KE
 
 | Chain id | Tx hash                                                              | Status | Gas used |
 |----------|-----------------------------------------------------------------------|--------|----------|
-| 31337    | `0x16fd595dcbc5f450e13f39516a9eddcb3590defd8b142f56833d60ada608fd08`  | 1      | 1356339  |
-| 31338    | `0xf9d929ab6a6aa20983f076bf0a746025964545bcd8f32152eb9b6ed5e5c83313`  | 1      | 1356339  |
+| 31337    | `0x10cdc0044223ef2caa91635521f22b723beac3a512ba2111040cebc707eeb66e`  | 1      | 1345155  |
+| 31338    | `0xe7454f799267f6a003778c80ea136e9746c2b5f6014ebad793580f69cbb16449`  | 1      | 1345155  |
 
 Both transactions succeeded (status 1) with identical gas usage.
 
-Birth cost 687,651 gas before the probe and 1,356,339 after, but almost none of that
+Birth cost 687,651 gas before the probe and ~1.35M after, but almost none of that
 difference is the probe's price on a real chain. These anvil instances answer P-256 with
 the vendored **Solidity** verifier, which costs on the order of 330k gas per
 verification, and the probe makes two calls; where `0x100` is the actual precompile the
@@ -93,7 +100,7 @@ ignored it rather than as a cheap birth.
 ### 4. Post-birth verification — identical on BOTH chains
 
 ```
-cast code 0xfD7969dB90258e91d414B0d40e1C113Bf83D3f6F --rpc-url <rpc>
+cast code 0x5b4c472093C0fa61158b68C6f378cb02b500c405 --rpc-url <rpc>
   -> 0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9   (EIP-7702 delegation indicator to the router)
 
 cast call <account> "updateNonce()(uint64)" --rpc-url <rpc>
@@ -112,7 +119,7 @@ cast call <account> "getSlot(uint8)(uint8,bytes)" 2 --rpc-url <rpc>
 # left untouched, so nothing is exported to whatever wallet the account is
 # re-delegated to next.
 cast call <account> "implementation()(address)" --rpc-url <rpc>
-  -> 0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3
+  -> 0x927ed5700518a8A053367da1EaFDFBdE061E73F2
 cast storage <account> 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url <rpc>
   -> 0x0000...0000   (ERC-1967: never written by Glaux)
 ```
@@ -122,6 +129,31 @@ id 31338: one authorization tuple, one init blob, two different chain ids, same 
 address, same configuration. That is the specification's chain-agnostic replay claim,
 demonstrated live rather than assumed.
 
+### 4b. The Phase 2 surface, exercised on the born account
+
+ERC-165 answers on both chains: `supportsInterface` is `true` for `0x1626ba7e`
+(ERC-1271) and `0x150b7a02` (ERC-721 receiver), `false` for `0xffffffff` as the
+standard requires.
+
+ERC-1271, with a real 2-of-3 blob (paper + cloud factors signing the wrapped digest
+for chain id 31337):
+
+```
+cast call <account> "isValidSignature(bytes32,bytes)(bytes4)" <hash> <blob> --rpc-url http://127.0.0.1:8545
+  -> 0x1626ba7e   (the chain the signature was produced for)
+
+cast call <account> "isValidSignature(bytes32,bytes)(bytes4)" <hash> <blob> --rpc-url http://127.0.0.1:8546
+  -> 0xffffffff   (the SAME signature on the other chain: rejected)
+```
+
+The second line is the chain binding doing its job on a live chain, not in a unit
+test: same account address, same blob, different `block.chainid`, sentinel.
+
+`scripts/reconcile.py` — its first real multi-chain run — read both chains raw-first
+(designator, `IMPL_SLOT`, live code hash at the pointer, packed header, three factor
+slots, then the getters as cross-check) and reported both consistent, exit 0, with
+the raw side and the getters agreeing on every field.
+
 ### 5. Refusal on a chain that cannot verify P-256
 
 The same run, with the verifier removed from chain 31338 only
@@ -130,14 +162,17 @@ carrying the same three factors — one of them the P-256 device key:
 
 ```
 python3 scripts/submit_birth.py --rpc http://127.0.0.1:8546 --blob blob.json
-  -> status 0, gas used 72657   (candidate account 0xc309f1fcd9040CA5AcfC2bDdF29Ab4C523A898bf)
-
-cast call <candidate> "initialize(address,bytes32,bytes,bytes)" <impl> <codehash> <initData> <birthSig>
-  -> execution reverted: custom error 0x2d07aedf   (P256VerifierUnavailable)
+  -> status 0, gas used 72699   (candidate account 0x3CAb8361F4b3dCcD474A62935488BF16c2762936)
 
 cast call <candidate> "getSlot(uint8)(uint8,bytes)" 0
   -> execution reverted: custom error 0x87138d5c   (NotInitialized — nothing was installed)
 ```
+
+`scripts/reconcile.py` pointed at the half-born candidate shows why the raw-first
+order exists: the raw side reads the truth directly — pointer zero, `initialized`
+false, empty slots — while every getter reverts (`NotInitialized` through the router
+fallback), and the tool reports the disagreement and exits 2. An account state that
+the getters cannot describe at all is still fully legible from storage.
 
 The account is not configured on that chain: no slots, implementation pointer still
 zero (`cast storage <candidate> $(cast keccak 'glaux.account.v1.implementation')` reads
