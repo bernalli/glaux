@@ -352,3 +352,53 @@ GLAUX_RELAYER_KEY="$GLAUX_RELAYER_KEY" python3 scripts/submit_birth.py --rpc "$G
 cast code <account> --rpc-url "$GLAUX_RPC_SEPOLIA"
 cast code <account> --rpc-url "$GLAUX_RPC_BASE_SEPOLIA"
 ```
+
+## Public testnet — Base Sepolia (2026-07-31)
+
+The first half of the public deployment is done. Base Sepolia (chain id 84532)
+carries the canonical pair, at exactly the addresses the two anvils and the
+simulation predicted:
+
+| Contract | Address |
+|---|---|
+| `GlauxAccount` (impl) | `0x927ed5700518a8A053367da1EaFDFBdE061E73F2` |
+| `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` |
+
+`keccak256` of the deployed implementation's runtime code, read back from the
+chain, is `0x2c271f5a9e823360ad27431f2245570417fc1dc687b144eda63f8bf875b97c4c` —
+the same hash the local proof produced and the same one every birth blob signs.
+Determinism now holds against a real chain and not only between two local nodes.
+The deployment cost **3,738,908 gas** across its two transactions (3,078,079 for
+the implementation, 660,829 for the router), well under the 5,164,364 the
+pre-flight estimated; Foundry's estimate is conservative by roughly a third, which
+is worth knowing before funding the Sepolia side.
+
+### The first birth on a public chain
+
+One blob, submitted once, produced account
+`0x3c8D09d23E2d854E670A3C7ba6D59858E3BEFE93` in transaction
+`0x094f06e015056e37d370ebec7bcdbf7a3daee27ad360f5cc963e51190bca26be` at block
+44842376, status 1, **376,557 gas**.
+
+The transaction is a genuine **type `0x4`** — `eth_getTransactionByHash` reports
+`"type": "0x4"` and carries the authorization tuple with `chainId: 0x0` and
+`address` set to the router, which is the chain-agnostic form the whole design
+rests on. The relayer that paid was not the account and never held the birth key.
+Read back from the chain afterwards:
+
+- `eth_getCode` on the account returns `0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9`,
+  the EIP-7702 delegation indicator pointing at the router.
+- `updateNonce()` and `execNonce()` are both `0`.
+- Slot 0 holds verifier type 1 with the paper address, slot 1 type 2 with the
+  P-256 `qx‖qy`, slot 2 type 1 with the cloud address — the configuration the
+  blob committed to, installed intact.
+
+The factor keys used here are the **publicly known anvil keys** carried over from
+the local proof, so this account is controllable by anyone and must never hold
+anything. It exists to prove the birth path on a public chain, nothing else.
+
+### Still pending
+
+Sepolia has not been deployed: the relayer was funded on Base Sepolia only. The
+same blob is designed to replay there unmodified once the pair is deployed, which
+is the claim that still has to be demonstrated rather than argued.
