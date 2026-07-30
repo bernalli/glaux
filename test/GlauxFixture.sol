@@ -227,4 +227,20 @@ abstract contract GlauxFixture is Test {
     {
         return abi.encode(validUntil, _twoSigs(_userOpDigest(userOpHash, validUntil)));
     }
+
+    /// @notice The digest the factors sign for an ERC-1271 message. Unlike birth and
+    ///         update digests this one binds `block.chainid` on purpose: the account
+    ///         and the protocols that consume these signatures (Permit2) hold the
+    ///         same address on every chain, so an unbound message signature would
+    ///         authorize the identical action everywhere at once.
+    function _msgDigest(bytes32 hash, uint48 validUntil) internal view returns (bytes32) {
+        return GlauxStorage.eip191(
+            account,
+            keccak256(abi.encode(GlauxStorage.MSG_DOMAIN, block.chainid, account, hash, validUntil))
+        );
+    }
+
+    function _msgSignature(bytes32 hash, uint48 validUntil) internal view returns (bytes memory) {
+        return abi.encode(validUntil, _twoSigs(_msgDigest(hash, validUntil)));
+    }
 }

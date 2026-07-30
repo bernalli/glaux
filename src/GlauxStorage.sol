@@ -62,6 +62,13 @@ library GlauxStorage {
     /// @dev Domain for the possession proof a key must produce before it can be
     ///      installed into a factor slot. See `GlauxAccount._requirePossession`.
     bytes32 internal constant REG_DOMAIN = keccak256("GLAUX_REG_V1");
+    /// @dev Domain for ERC-1271 message signatures. The only Glaux digest that binds
+    ///      `block.chainid`: birth and update blobs must replay on every chain, but a
+    ///      message signature is consumed by a protocol that already lives at one
+    ///      address on one chain — and the account holds the SAME address everywhere,
+    ///      so an unbound signature would authorize the identical action on every
+    ///      chain at once. See `GlauxAccount.isValidSignature`.
+    bytes32 internal constant MSG_DOMAIN = keccak256("GLAUX_MSG_V1");
 
     /// @notice Wraps a structured hash as EIP-191 version `0x00` signed data:
     ///         `0x19 ‖ 0x00 ‖ validator ‖ structHash`.

@@ -25,3 +25,15 @@ jobs:
       - uses: crytic/slither-action@v0.4.0
         if: hashFiles('src/**/*.sol') != ''
         with: { target: ".", fail-on: high, slither-config: "slither.config.json" }
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      # The scripts sign the blobs the contracts verify: they are first-party
+      # code and get the same gate the Solidity does. The pytest asserts the
+      # committed storage-parity fixture from the Python side.
+      - run: pip install -r scripts/requirements.txt ruff pytest
+      - run: ruff check scripts
+      - run: python -m pytest scripts -q

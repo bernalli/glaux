@@ -5,6 +5,15 @@ libs = ["lib"]
 evm_version = "prague"
 optimizer = true
 optimizer_runs = 10000
+# Test-only: lets StorageParity.t.sol read and (re)generate the committed parity
+# fixture that scripts/test_reconcile.py asserts from the Python side. Declaring
+# fs_permissions makes the list EXCLUSIVE, so out/ must be re-granted or
+# vm.getDeployedCode (the P-256 oracle etch in every test) loses read access.
+# No effect on compiled bytecode.
+fs_permissions = [
+    { access = "read", path = "./out" },
+    { access = "read-write", path = "./test/fixtures" },
+]
 # Deployed bytecode must be reproducible from source alone. Foundry's default
 # appends a CBOR metadata hash covering compiler settings, source unit NAMES and
 # the keccak of every source file including its comments — and that hash feeds
