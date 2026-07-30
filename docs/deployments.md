@@ -253,16 +253,24 @@ Read-only checks against both networks, all passing:
 
 - The canonical CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C` is present
   on both, so the deterministic deployment has its factory.
-- Neither `0x6E7210C5baB9c27F107cD184c8DB6dD2A2c57ae3` (impl) nor
+- Neither `0x927ed5700518a8A053367da1EaFDFBdE061E73F2` (impl, Phase 2) nor
   `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (router) is occupied on either chain.
 - ERC-4337 EntryPoint v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032` is deployed on
   both, so the 4337 path has a real EntryPoint to meet.
 - `forge script Deploy.s.sol` simulated against live state on both chains reproduces
-  exactly the addresses and code hash recorded for the local run
-  (`0x0dece52d0ef5c20a6c2a0360375534af0de56fcbe51f7c3496c9a26c70686b4d`) — the CREATE2
-  determinism claim now also holds against the real chains, not only between two anvils.
-  Deployment cost 4,937,011 gas: ~0.0098 ETH on Sepolia at 1.99 gwei, ~0.000054 ETH on
-  Base Sepolia at 0.011 gwei, at the moment of measurement.
+  exactly the addresses of the local Phase 2 run — impl
+  `0x927ed5700518a8A053367da1EaFDFBdE061E73F2`, router unchanged — and a CREATE2
+  address commits to the initcode, so the runtime code hash the birth blobs sign
+  (`0x2c271f5a9e823360ad27431f2245570417fc1dc687b144eda63f8bf875b97c4c`) is pinned by
+  the same match. The determinism claim holds against the real chains, not only
+  between two anvils. Estimated deployment cost 5,164,364 gas — up from 4,937,011
+  pre-surface, the implementation grew — ~0.0106 ETH on Sepolia at 2.04 gwei,
+  ~0.000057 ETH on Base Sepolia at 0.011 gwei, at the moment of measurement.
+- This whole pre-flight was first run 2026-07-29 against the pre-surface build and
+  re-run 2026-07-30 after Phase 2 moved the implementation: the fork probe passed
+  unchanged on both networks (`GLAUX_REQUIRE_FORK_CHECKS=1 forge test
+  --match-contract P256ForkProbe --evm-version osaka`), and every value above is
+  from the re-run.
 
 ### Transaction type 4, which birth depends on
 
