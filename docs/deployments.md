@@ -254,7 +254,8 @@ Read-only checks against both networks, all passing:
 - The canonical CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C` is present
   on both, so the deterministic deployment has its factory.
 - Neither `0x927ed5700518a8A053367da1EaFDFBdE061E73F2` (impl, Phase 2) nor
-  `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (router) is occupied on either chain.
+  `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (router) is occupied on either chain —
+  `eth_getCode` still returns `0x` for both on both, re-checked 2026-07-31.
 - ERC-4337 EntryPoint v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032` is deployed on
   both, so the 4337 path has a real EntryPoint to meet.
 - `forge script Deploy.s.sol` simulated against live state on both chains reproduces
@@ -297,11 +298,22 @@ weaker claim than it may look. The public keyless endpoints above answered every
 this section, and they expose all the methods `submit_birth.py` needs — `eth_chainId`,
 `eth_getBlockByNumber`, `eth_maxPriorityFeePerGas`, `eth_getTransactionCount`,
 `eth_estimateGas`, `eth_sendRawTransaction`, `eth_getTransactionReceipt`, with no archive
-or `debug`/`trace` namespace required. What no read-only check can establish is how those
-unauthenticated endpoints behave on the broadcast path: whether they accept the raw
-transaction, honour the authorization list in `eth_estimateGas`, and survive their own
-rate limits. Treat them as usable at the time of this check, with a private endpoint as
-the fallback the moment a broadcast misbehaves. `--verify` additionally needs an
+or `debug`/`trace` namespace required. Two of the three broadcast-path doubts this section
+used to leave open were closed on 2026-07-31, still without spending anything. Both nodes
+parse and *account for* an authorization list in `eth_estimateGas`: the same call costs
+`0x52e9` (21,225 gas) bare and `0xb56a` (46,442 gas) with one authorization attached, an
+identical +25,217 on each chain, which is the per-authorization charge and not a field
+they quietly ignore. Both also apply EIP-7702 semantics rather than merely tolerating the
+key — an empty list is rejected on its own terms (Sepolia: *EIP-7702 transaction with
+empty auth list*; Base Sepolia: *authorization list has invalid fields*). And
+`eth_sendRawTransaction` is exposed on both and reaches the typed-transaction decoder,
+which is where a type-4 payload has to land: fed a deliberately undecodable body it
+answers *typed transaction too short* (Sepolia) and *failed to decode signed transaction*
+(Base Sepolia), never *method not found*. What still cannot be settled without the key is
+the last step — whether a well-formed, signed type-4 transaction is accepted for
+propagation — and whether the rate limits hold up under a real deploy. Treat the
+endpoints as usable at the time of this check, with a private endpoint as the fallback
+the moment a broadcast misbehaves. `--verify` additionally needs an
 `ETHERSCAN_API_KEY`; drop the flag to deploy without source verification.
 
 Once the key exists, run (from the repository root):
