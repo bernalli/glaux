@@ -186,22 +186,139 @@ call, with no new authorization to sign. Chain 31337, which kept its verifier, w
 unaffected — the same blob, the same factors, two different answers, each correct for
 its chain.
 
-## Public testnet deployment: NOT DONE
+## Public testnet: preconditions verified, broadcast NOT DONE
 
-Sepolia and Base Sepolia broadcast has **not** been performed. It is blocked on three
-environment variables that only the repository owner can supply:
+Date: 2026-07-29. No transaction has been broadcast to Sepolia or Base Sepolia. The
+local two-chain run above remains the only end-to-end evidence. What follows is
+everything about those two networks that could be checked *without* spending anything —
+all of it read-only — so that the one remaining blocker is isolated and the first real
+deployment has no open questions left in front of it.
 
-- `GLAUX_RPC_SEPOLIA` — a funded Sepolia RPC endpoint
-- `GLAUX_RPC_BASE_SEPOLIA` — a funded Base Sepolia RPC endpoint
-- `GLAUX_RELAYER_KEY` — a relayer private key funded with testnet ETH on both networks
+### The P-256 precompile is live on both, and this was the open question
 
-No claim is made here that this happened; the local two-chain proof above is the only
-end-to-end evidence currently available in this environment.
+Birth carrying a P-256 device factor probes `0x100` and reverts `P256VerifierUnavailable`
+rather than producing an account that can never reach its own threshold. Until now that
+probe had only ever met the vendored Solidity verifier etched onto anvil, never a real
+precompile, so whether the target chains could host the device factor at all was unknown.
+They can. Both arms of `p256VerifierAvailable()` answer correctly on both networks:
 
-Once those variables exist, run (from the repository root):
+| Chain (id)              | valid signature | same signature, `digest ^ 1` | probe verdict |
+|-------------------------|-----------------|------------------------------|---------------|
+| Sepolia (11155111)      | `0x…01`         | `0x` (empty)                 | installable   |
+| Base Sepolia (84532)    | `0x…01`         | `0x` (empty)                 | installable   |
+
+Sepolia has it via **EIP-7951**, which shipped in Fusaka and activated there on
+2025-10-14; Base Sepolia via **RIP-7212**, added in Fjord. The two price it differently:
+6900 gas per verification under EIP-7951, 3450 under RIP-7212, against the ~330k the
+Solidity stand-in charges on anvil. The probe makes two such calls, so on a real chain
+it costs roughly 14k on Sepolia and 7k on Base Sepolia plus the surrounding call and
+memory gas — not a figure to quote precisely until a real birth is measured, but three
+orders of magnitude away from the anvil run either way. The 1,356,339-gas birth recorded
+above is therefore the pessimistic end of the range and is not what these networks will
+bill. The probe runs once per P-256 slot installation — at birth and at rotation — never
+on the signing path.
+
+Verified two independent ways. First, `eth_call` to `0x100` executed by the nodes
+themselves, agreeing across three unrelated providers (`ethereum-sepolia-rpc.publicnode.com`,
+`1rpc.io/sepolia`, `sepolia.base.org` / `base-sepolia-rpc.publicnode.com`) — so the answer
+is not one endpoint's quirk. Second, `test/P256ForkProbe.t.sol`, which forks each chain
+and runs the shipped `SignatureVerify.p256VerifierAvailable()` against it, unchanged. That
+test is skipped unless `GLAUX_RPC_*` is set and **must** be run with `--evm-version osaka`:
+a fork supplies the chain's state while calls still execute in the local EVM at the
+configured spec, and this repo builds for `prague`, which predates EIP-7951 — under it
+`0x100` is not a precompile and every chain looks broken. Without the flag the test fails
+against healthy chains, which is how this was found.
+
+The flag does not reach the compiler, and that is precisely why it is safe. `foundry.toml`
+pins `src`/`script` to solc 0.8.28, which has no `osaka` target, so Foundry clamps the
+compiler input to `prague` and raises only the executor spec — read directly out of the
+solc standard-json, which records `evmVersion=prague` under both invocations. Build info
+is off by default, so reproducing that evidence takes
+`forge build --evm-version osaka --build-info --force` and then reading
+`input.settings.evmVersion` in `out/build-info/*.json`. Both contract addresses and the
+implementation code hash are consequently
+byte-identical with and without the flag, and nothing a birth blob signs moves. That
+guarantee is tied to the pinned compiler: moving `src` to solc >= 0.8.29 would let `osaka`
+reach the compiler for real, and the test would then need its own compilation profile
+instead of a global flag.
+
+One related trap, checked and not applicable: RIP-7212 on OP-stack chains has been
+reported returning empty data when reached by a plain `CALL` from a state-changing
+context. Every P-256 call in Glaux goes through `SignatureVerify._p256Verify`, which is
+`staticcall` inside a `view` function, on both the probe and the signing path.
+
+### The rest of the preconditions
+
+Read-only checks against both networks, all passing:
+
+- The canonical CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C` is present
+  on both, so the deterministic deployment has its factory.
+- Neither `0x927ed5700518a8A053367da1EaFDFBdE061E73F2` (impl, Phase 2) nor
+  `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (router) is occupied on either chain.
+- ERC-4337 EntryPoint v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032` is deployed on
+  both, so the 4337 path has a real EntryPoint to meet.
+- `forge script Deploy.s.sol` simulated against live state on both chains reproduces
+  exactly the addresses of the local Phase 2 run — impl
+  `0x927ed5700518a8A053367da1EaFDFBdE061E73F2`, router unchanged — and a CREATE2
+  address commits to the initcode, so the runtime code hash the birth blobs sign
+  (`0x2c271f5a9e823360ad27431f2245570417fc1dc687b144eda63f8bf875b97c4c`) is pinned by
+  the same match. The determinism claim holds against the real chains, not only
+  between two anvils. Estimated deployment cost 5,164,364 gas — up from 4,937,011
+  pre-surface, the implementation grew — ~0.0106 ETH on Sepolia at 2.04 gwei,
+  ~0.000057 ETH on Base Sepolia at 0.011 gwei, at the moment of measurement.
+- This whole pre-flight was first run 2026-07-29 against the pre-surface build and
+  re-run 2026-07-30 after Phase 2 moved the implementation: the fork probe passed
+  unchanged on both networks (`GLAUX_REQUIRE_FORK_CHECKS=1 forge test
+  --match-contract P256ForkProbe --evm-version osaka`), and every value above is
+  from the re-run.
+
+### Transaction type 4, which birth depends on
+
+Birth rides an EIP-7702 authorization, so the networks must accept type-4 transactions.
+Sepolia demonstrably does: `eth_sendRawTransaction` with a truncated `0x04` payload is
+answered `rlp: too few elements for types.SetCodeTx` — the node recognises the type and
+tries to decode it — while unknown types `0x05` and `0x63` are refused outright as
+`transaction type not supported`. Base Sepolia returns the same generic decode error for
+all three, so that probe does not discriminate there; what stands in for it is the
+EIP-2935 history contract at `0x0000F90827F1C53a10cb7A02335B175320002935`, present with
+83 bytes of code on both chains. On L1 that shipped with Pectra and on OP-stack with
+Isthmus, in each case the same fork that brought EIP-7702. Base Sepolia's type-4 support
+is therefore inferred rather than directly observed — no type-4 transaction appeared in a
+scan of its last 300 blocks (2,734 transactions), which says they are rare there, not that
+they are rejected. The first birth is what settles it.
+
+### The one remaining blocker
+
+`GLAUX_RELAYER_KEY` — a private key funded with testnet ETH on both networks. Only the
+repository owner can obtain it, from the faucets.
+
+The other two variables are no longer blockers *for the read-only work*, and that is a
+weaker claim than it may look. The public keyless endpoints above answered every check in
+this section, and they expose all the methods `submit_birth.py` needs — `eth_chainId`,
+`eth_getBlockByNumber`, `eth_maxPriorityFeePerGas`, `eth_getTransactionCount`,
+`eth_estimateGas`, `eth_sendRawTransaction`, `eth_getTransactionReceipt`, with no archive
+or `debug`/`trace` namespace required. What no read-only check can establish is how those
+unauthenticated endpoints behave on the broadcast path: whether they accept the raw
+transaction, honour the authorization list in `eth_estimateGas`, and survive their own
+rate limits. Treat them as usable at the time of this check, with a private endpoint as
+the fallback the moment a broadcast misbehaves. `--verify` additionally needs an
+`ETHERSCAN_API_KEY`; drop the flag to deploy without source verification.
+
+Once the key exists, run (from the repository root):
 
 ```bash
-# Deploy deterministically on both testnets.
+# The endpoints every check in the section above was run against. Substitute a
+# private one if rate limits bite.
+export GLAUX_RPC_SEPOLIA=https://ethereum-sepolia-rpc.publicnode.com
+export GLAUX_RPC_BASE_SEPOLIA=https://base-sepolia-rpc.publicnode.com
+export GLAUX_RELAYER_KEY=<funded testnet key>
+
+# Pre-flight: re-confirm both chains still verify P-256 before spending anything.
+# GLAUX_REQUIRE_FORK_CHECKS makes a missing endpoint fail rather than skip — without
+# it this command is green when it has checked nothing.
+GLAUX_REQUIRE_FORK_CHECKS=1 forge test --match-contract P256ForkProbe --evm-version osaka -vv
+
+# Deploy deterministically on both testnets. Drop --verify without an ETHERSCAN_API_KEY.
 forge script script/Deploy.s.sol:Deploy --rpc-url "$GLAUX_RPC_SEPOLIA" --private-key "$GLAUX_RELAYER_KEY" --broadcast --verify
 forge script script/Deploy.s.sol:Deploy --rpc-url "$GLAUX_RPC_BASE_SEPOLIA" --private-key "$GLAUX_RELAYER_KEY" --broadcast --verify
 
