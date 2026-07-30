@@ -30,9 +30,12 @@ import {
 import {SignatureVerify} from "./lib/SignatureVerify.sol";
 import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 
 /// @notice Glaux account logic. Reached only by delegatecall from GlauxDelegate.
-contract GlauxAccount {
+contract GlauxAccount is IERC721Receiver, IERC1155Receiver {
     // Two 65-byte secp256k1 signatures encode as SlotSig[2] in 480 bytes, and the
     // deadline the factors signed rides in front of them. 576 bytes leaves room for the
     // added words plus one trailing one, while still bounding the self-call copy.
@@ -385,5 +388,46 @@ contract GlauxAccount {
         FactorSlot storage b = l.slots[sigs[1].slotIndex];
         return SignatureVerify.verify(a.verifierType, a.data, digest, sigs[0].signature)
             && SignatureVerify.verify(b.verifierType, b.data, digest, sigs[1].signature);
+    }
+
+    /// @notice Checked-transfer hooks. Unconditional accept: which assets arrive is
+    ///         not an authorization question, and taking the reentrancy guard here
+    ///         would make receiving-while-executing impossible — the common case is
+    ///         this account moving a token in a batch and the token calling back in.
+    function onERC721Received(address, address, uint256, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        return IERC1155Receiver.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return IERC1155Receiver.onERC1155BatchReceived.selector;
+    }
+
+    /// @notice ERC-165. Advertises ERC-1271 too: not required by the standard, but
+    ///         some integrations probe for it and advertising costs nothing.
+    ///         (0x1626ba7e is a literal until the interface arrives with
+    ///         `isValidSignature` itself.)
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IERC165).interfaceId
+            || interfaceId == type(IERC721Receiver).interfaceId
+            || interfaceId == type(IERC1155Receiver).interfaceId
+            || interfaceId == bytes4(0x1626ba7e);
     }
 }
