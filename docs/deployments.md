@@ -397,8 +397,78 @@ The factor keys used here are the **publicly known anvil keys** carried over fro
 the local proof, so this account is controllable by anyone and must never hold
 anything. It exists to prove the birth path on a public chain, nothing else.
 
-### Still pending
+### A second birth, from the blob held for the cross-chain replay (2026-07-31)
 
-Sepolia has not been deployed: the relayer was funded on Base Sepolia only. The
-same blob is designed to replay there unmodified once the pair is deployed, which
-is the claim that still has to be demonstrated rather than argued.
+The blob that will carry the cross-chain replay claim was generated and spent
+once, on Base Sepolia, while Sepolia waits for gas. It binds the same router,
+the same implementation and the same `expectedCodeHash` read back from the
+chain, and its authorization tuple is the chain-agnostic form: `chainId 0`,
+`nonce 0`, `address` = router.
+
+| | |
+|---|---|
+| Account | `0xB17d55188e3c982df12c99e466a8971872746822` |
+| Blob | `~/.local/state/glaux-birth-blob-2026-07-31.json` (outside the repo, survives the session) |
+| Base Sepolia tx | `0xddbc25f16bb07fefe2b73425497b4b9716e168fd4f8e6a9aa3ce65635042517a` |
+| Block / status / gas | 44859249 / 1 / **376,569** |
+
+Before submission the address was empty on *both* chains — `eth_getCode` `0x`
+and nonce `0` on Sepolia and Base Sepolia alike. Afterwards Base Sepolia
+returns the delegation indicator `0xef0100b8270e…ccbe9`, `updateNonce()` and
+`execNonce()` both `0`, and the three slots exactly as committed: type 1 with
+the paper address, type 2 with the P-256 `qx‖qy`, type 1 with the cloud
+address. The transaction is again a genuine `type: 0x4` carrying
+`chainId: 0x0`, and the relayer that paid is neither the account nor a holder
+of the birth key. Gas came in at 376,569 against the 376,557 of the first
+birth — the twelve-gas spread is calldata zero-bytes, not a behavioural
+difference.
+
+Sepolia still reports `0x` and nonce `0` for this account, which is the point:
+**the blob is unspent there.** Because EIP-7702 increments the authority's
+nonce only on the chain that applied the authorization, the `nonce 0`
+authorization stays valid on Sepolia indefinitely. Nothing about this blob
+expires — a birth blob carries no deadline — so the replay does not have to
+happen in the same session, or the same week.
+
+### Still pending — the Sepolia half
+
+Sepolia has never been deployed and the relayer has never transacted there
+(balance `0`, nonce `0`, checked against two independent endpoints on
+2026-07-31). The faucet run that was meant to fund it landed on Base Sepolia
+instead, whose balance rose rather than Sepolia's. **Fund
+`0x72BdD02AFF70DD7937C2F5b9c388D75646d9a9Dc` from an Ethereum Sepolia faucet,
+not a Base one.**
+
+How much: at a 1.01 gwei base fee the two transactions *reserve* 5,829,217 gas
+(Foundry's conservative 5,164,364 deploy estimate plus the 664,853 limit
+`submit_birth.py` computes), so the balance has to cover about **0.0176 ETH**
+even though the real spend is nearer **0.0083 ETH**. Ask the faucet for
+**0.05 ETH** and the margin covers a gas spike. The earlier note of "≥0.03 ETH"
+was a guess made before the deploy gas was measured; this figure replaces it.
+
+Then, from the repository root, the replay is two commands and a re-read:
+
+```bash
+export GLAUX_RPC_SEPOLIA=https://ethereum-sepolia-rpc.publicnode.com
+export GLAUX_RELAYER_KEY="$(tr -d '\n' < ~/.local/state/glaux-relayer.key)"
+
+# 1. Deploy the pair. It must reproduce the SAME two addresses as Base Sepolia:
+#    impl 0x927ed5700518a8A053367da1EaFDFBdE061E73F2,
+#    router 0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9.
+forge script script/Deploy.s.sol:Deploy --rpc-url "$GLAUX_RPC_SEPOLIA" \
+  --private-key "$GLAUX_RELAYER_KEY" --broadcast
+
+# 2. Submit the SAME blob, unmodified. Same account address, different chain.
+.venv/bin/python scripts/submit_birth.py --rpc "$GLAUX_RPC_SEPOLIA" \
+  --blob ~/.local/state/glaux-birth-blob-2026-07-31.json
+
+# 3. Re-read, and compare against the Base Sepolia column above.
+cast code 0xB17d55188e3c982df12c99e466a8971872746822 --rpc-url "$GLAUX_RPC_SEPOLIA"
+```
+
+Delete `cache/Deploy.s.sol/11155111/run-latest.json` afterwards: Foundry writes
+the private key into it in the clear, exactly as it did for chain 84532.
+
+Only when step 3 shows the same account, the same delegation indicator and the
+same three slots on a second public chain is the cross-chain replay claim
+demonstrated rather than argued.
