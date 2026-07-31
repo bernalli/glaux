@@ -91,13 +91,37 @@ one.
 | Storage Array Edited with Memory | `GlauxAccount._applyUpdate`, `GlauxAccount.sol:206` | **False positive.** The detector fires on the shape — a storage reference handed to a `memory` parameter — without checking whether anything is written through it. `_isDuplicateSlot(FactorSlot memory, FactorSlot memory)` is `pure` and only compares; the copy it receives is meant to be a copy. The real write is the storage assignment two lines later, `l.slots[index] = s`, which does update state. The same shape appears on the birth path at line 75 and is read-only there too. |
 | Yul block contains `return` | `GlauxDelegate.fallback`, `GlauxDelegate.sol:112` | **False positive: it is the mandatory proxy idiom.** Forwarding the delegatecall's raw returndata with `return(0, returndatasize())` — and halting there — is what a proxy fallback *is*; the detector's warning that nothing after it executes is the intended semantics, and there is nothing after it. The `revert(0, returndatasize())` on the failure branch is the same idiom for the mirror case. Expressing this in high-level Solidity is not possible without corrupting the returned data. |
 
-### CI wiring — not done yet
+### CI wiring — done (2026-07-31)
 
 Aderyn **always exits 0**, verified in its own `driver.rs`: an exit-code gate would
-be green forever. The gate has to parse `report.json` and fail on a non-empty
-`high_issues.issues`. Two things must land before that gate is switched on, in
-this order: the four `// aderyn-fp-next-line` markers above, then the job itself.
-Slither stays the authoritative gate either way.
+be green forever, including on a run that found real bugs. So the gate is
+`scripts/aderyn_gate.py`, which parses the report and fails on a non-empty
+`high_issues.issues`.
+
+It also fails **closed**. A missing, malformed, or unexpectedly shaped report exits
+2, because an analysis that did not run is not the same as an analysis that found
+nothing — and those two must never look alike to CI. That behaviour is covered by
+`scripts/test_aderyn_gate.py`, which runs in the existing `python` job.
+
+The four suppressions above landed first, each recorded at the code it describes
+with `// aderyn-fp-next-line` and the reasoning beside it. Suppressing inside the
+gate instead would have hidden them from anyone reading the source. Verified end to
+end before the job was switched on: the pre-marker report (4 Highs) exits 1, the
+current report exits 0, an absent report exits 2, and aderyn runs correctly against
+a checkout with no `out/` — the state a fresh CI job is in.
+
+The job pins aderyn to `aderyn-v0.6.8` by release URL and verifies the tarball
+against `ffd6ca658962e211a3ac821c646f69c8e14bf1b1001cbfe091bcd4535a691e46`. The pin
+is not ceremony: a floating version changes both the detector set and which of the
+four suppressions still line up with a real finding, so a bump is a deliberate act
+that re-runs this triage.
+
+Slither stays the authoritative gate.
+
+Note for a later pass: the `python` job installs `ruff` unpinned and the repository
+carries no ruff configuration, so that lint gate is whatever the current release
+defaults to on the day it runs. The code here is clean under a much broader
+ruleset than those defaults, but the gate itself should be pinned and configured.
 
 ### What neither analyzer covers
 

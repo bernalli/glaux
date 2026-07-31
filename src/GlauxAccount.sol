@@ -203,6 +203,10 @@ contract GlauxAccount is IERC721Receiver, IERC1155Receiver, IERC1271 {
             _validateSlot(s);
             _requirePossession(index, s, proof);
             for (uint8 i = 0; i < 3; i++) {
+                // `_isDuplicateSlot` is `pure` and only compares: the memory copy it
+                // receives is meant to be a copy, nothing is written through it. The
+                // real write is `l.slots[index] = s` two lines below.
+                // aderyn-fp-next-line
                 if (i != index && _isDuplicateSlot(s, l.slots[i])) revert DuplicateSlot();
             }
             l.slots[index] = s;

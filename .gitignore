@@ -11,3 +11,8 @@ __pycache__/
 
 .venv/
 .local/*.local.md
+
+# Aderyn writes its report next to the project; the triage that matters is
+# committed in docs/static-analysis.md, the raw report is a build artifact.
+report.json
+aderyn-report.json

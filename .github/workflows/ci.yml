@@ -25,6 +25,29 @@ jobs:
       - uses: crytic/slither-action@v0.4.0
         if: hashFiles('src/**/*.sol') != ''
         with: { target: ".", fail-on: high, slither-config: "slither.config.json" }
+  aderyn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      # Pinned to the exact release the false-positive triage in
+      # docs/static-analysis.md was carried out against, and verified by digest.
+      # A floating version would change both the detector set and which of the
+      # `// aderyn-fp-next-line` suppressions still line up with a real finding.
+      - name: Install aderyn (pinned)
+        run: |
+          curl -sSLo aderyn.tar.xz \
+            https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-x86_64-unknown-linux-gnu.tar.xz
+          echo "ffd6ca658962e211a3ac821c646f69c8e14bf1b1001cbfe091bcd4535a691e46  aderyn.tar.xz" | sha256sum -c -
+          tar -xJf aderyn.tar.xz
+          echo "$PWD/aderyn-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+      - run: aderyn --src src --path-excludes lib,test,script -o aderyn-report.json --highs-only
+      # Aderyn ALWAYS exits 0 — verified in its own driver.rs — so `run:` alone
+      # would be a gate that is green forever, including on a run that found real
+      # bugs. The gate is the report parser, which also fails closed when the
+      # report is missing or malformed. Slither stays the authoritative gate.
+      - run: python scripts/aderyn_gate.py --report aderyn-report.json
   python:
     runs-on: ubuntu-latest
     steps:
