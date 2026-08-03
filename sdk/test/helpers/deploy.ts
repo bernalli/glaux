@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   concat,
   encodeAbiParameters,
+  encodeFunctionData,
   getContractAddress,
   type Address,
   type Hex,
@@ -16,6 +19,7 @@ import { privateKeyToAddress, signTransaction } from "viem/accounts";
 import { CREATE2_DEPLOYER, ENTRYPOINT, IMPL, ROUTER, SALT } from "../../src/core/constants.js";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+const DEFAULT_OUT_DIR = join(REPO_ROOT, "out");
 
 interface ForgeArtifact {
   readonly bytecode: { readonly object: Hex };
@@ -23,26 +27,27 @@ interface ForgeArtifact {
 }
 
 /**
- * Reads a contract's creation bytecode from `out/`, produced by `forge
- * build` (this repo's development.md sandbox notes explain why that build has to
- * happen outside the sandbox). Mirrors the artifact-reading pattern already
- * used by `sdk/test/eligibility.test.ts`'s `loadP256OracleBytecode`.
+ * Reads a contract's creation bytecode from a `forge build` output directory
+ * (this repo's development.md sandbox notes explain why that build has to happen
+ * outside the sandbox). Mirrors the artifact-reading pattern already used by
+ * `sdk/test/eligibility.test.ts`'s `loadP256OracleBytecode`. `outDir`
+ * defaults to the project's tracked `out/`; `deployVerifyingPaymaster` below
+ * passes an out-of-tree one instead (see {@link compileVerifyingPaymaster}).
  */
-function loadCreationBytecode(sourceFile: string, contractName: string): Hex {
-  const artifactPath = join(REPO_ROOT, "out", `${sourceFile}.sol`, `${contractName}.json`);
+function loadCreationBytecode(sourceFile: string, contractName: string, outDir: string = DEFAULT_OUT_DIR): Hex {
+  const artifactPath = join(outDir, `${sourceFile}.sol`, `${contractName}.json`);
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as ForgeArtifact;
   return artifact.bytecode.object;
 }
 
 /**
- * Reads a contract's DEPLOYED (runtime) bytecode from `out/` — the shape
- * `anvil_setCode`/`TestClient.setCode` wants, as opposed to
- * `loadCreationBytecode`'s constructor-prefixed initcode. Same artifact-file
- * convention as `loadCreationBytecode` and `sdk/test/eligibility.test.ts`'s
- * `loadP256OracleBytecode`.
+ * Reads a contract's DEPLOYED (runtime) bytecode from a `forge build` output
+ * directory — the shape `anvil_setCode`/`TestClient.setCode` wants, as
+ * opposed to `loadCreationBytecode`'s constructor-prefixed initcode. Same
+ * artifact-file convention and `outDir` default as `loadCreationBytecode`.
  */
-function loadDeployedBytecode(sourceFile: string, contractName: string): Hex {
-  const artifactPath = join(REPO_ROOT, "out", `${sourceFile}.sol`, `${contractName}.json`);
+function loadDeployedBytecode(sourceFile: string, contractName: string, outDir: string = DEFAULT_OUT_DIR): Hex {
+  const artifactPath = join(outDir, `${sourceFile}.sol`, `${contractName}.json`);
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as ForgeArtifact;
   return artifact.deployedBytecode.object;
 }
@@ -143,4 +148,150 @@ export async function deployCanonical(
   assert.strictEqual(router, ROUTER, `deployed GlauxDelegate at ${router}, expected canonical ${ROUTER}.`);
 
   return { router, impl };
+}
+
+/**
+ * On-demand, out-of-tree compilation of the vendored `VerifyingPaymaster`
+ * sample paymaster
+ * (`lib/account-abstraction/contracts/samples/VerifyingPaymaster.sol`).
+ * Nothing under `src/`, `test/`, or `script/` imports it, so `forge build`'s
+ * normal dependency-graph compilation never produces an
+ * `out/VerifyingPaymaster.sol/VerifyingPaymaster.json` artifact for it — and
+ * this task must not add an import there to manufacture one (no
+ * modifications to the Solidity surface). `forge build <path> --out
+ * <tmp> --cache-path <tmp>` still reads this project's `foundry.toml`
+ * (remappings, the pinned solc/`bytecode_hash = "none"` settings) exactly as
+ * a normal build would; it just writes the result somewhere temporary
+ * instead of the tracked `out/`, so nothing in the repo changes.
+ */
+function compileVerifyingPaymaster(): { readonly outDir: string } {
+  const outDir = mkdtempSync(join(tmpdir(), "glaux-verifying-paymaster-out-"));
+  const cacheDir = mkdtempSync(join(tmpdir(), "glaux-verifying-paymaster-cache-"));
+  const result = spawnSync(
+    "forge",
+    ["build", "lib/account-abstraction/contracts/samples/VerifyingPaymaster.sol", "--out", outDir, "--cache-path", cacheDir],
+    { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString("utf8") ?? "";
+    throw new Error(`forge build of VerifyingPaymaster.sol failed (exit ${String(result.status)}): ${stderr}`);
+  }
+  return { outDir };
+}
+
+export interface DeployedVerifyingPaymaster {
+  readonly address: Address;
+}
+
+/**
+ * Deploys the vendored `VerifyingPaymaster` via a plain CREATE from
+ * `deployerPrivateKey`, whose address becomes both the contract's `Ownable`
+ * owner (`BasePaymaster`'s constructor: `Ownable(msg.sender)`) and, when the
+ * caller passes the same address as `verifyingSigner`, the key the mock
+ * ERC-7677 provider signs `paymasterData` with — the task brief's "owner = a
+ * test key" / "the mock server signs paymasterData with the owner key".
+ * Not CREATE2: unlike `deployCanonical`, this test paymaster has no
+ * cross-chain-identical-address requirement.
+ */
+export async function deployVerifyingPaymaster(
+  client: PublicClient,
+  deployerPrivateKey: Hex,
+  verifyingSigner: Address,
+): Promise<DeployedVerifyingPaymaster> {
+  const { outDir } = compileVerifyingPaymaster();
+  const bytecode = loadCreationBytecode("VerifyingPaymaster", "VerifyingPaymaster", outDir);
+  const deployerAddress = privateKeyToAddress(deployerPrivateKey);
+  const initcode = concat([
+    bytecode,
+    encodeAbiParameters([{ type: "address" }, { type: "address" }], [ENTRYPOINT, verifyingSigner]),
+  ]);
+
+  const [chainId, nonce, gasPrice] = await Promise.all([
+    client.getChainId(),
+    client.getTransactionCount({ address: deployerAddress }),
+    client.getGasPrice(),
+  ]);
+  const gas = await client.estimateGas({ account: deployerAddress, data: initcode });
+  const signedTransaction = await signTransaction({
+    privateKey: deployerPrivateKey,
+    transaction: { chainId, nonce, value: 0n, gas, gasPrice, data: initcode },
+  });
+  const hash = await sendRawTransaction(client, { serializedTransaction: signedTransaction });
+  const receipt = await client.waitForTransactionReceipt({ hash });
+  assert.strictEqual(receipt.status, "success", `VerifyingPaymaster deployment reverted (tx ${hash}).`);
+  assert.ok(receipt.contractAddress, "VerifyingPaymaster deployment receipt carried no contractAddress");
+  return { address: receipt.contractAddress };
+}
+
+const VERIFYING_PAYMASTER_ABI = [
+  {
+    type: "function",
+    name: "addStake",
+    stateMutability: "payable",
+    inputs: [{ name: "unstakeDelaySec", type: "uint32" }],
+    outputs: [],
+  },
+] as const;
+
+const ENTRYPOINT_DEPOSIT_ABI = [
+  {
+    type: "function",
+    name: "depositTo",
+    stateMutability: "payable",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [],
+  },
+] as const;
+
+/** Sends one plain legacy value+data call from `privateKey` and requires it to succeed. */
+async function sendCall(client: PublicClient, privateKey: Hex, to: Address, value: bigint, data: Hex): Promise<Hex> {
+  const from = privateKeyToAddress(privateKey);
+  const [chainId, nonce, gasPrice] = await Promise.all([
+    client.getChainId(),
+    client.getTransactionCount({ address: from }),
+    client.getGasPrice(),
+  ]);
+  const gas = await client.estimateGas({ account: from, to, value, data });
+  const signedTransaction = await signTransaction({
+    privateKey,
+    transaction: { chainId, nonce, to, value, gas, gasPrice, data },
+  });
+  const hash = await sendRawTransaction(client, { serializedTransaction: signedTransaction });
+  const receipt = await client.waitForTransactionReceipt({ hash });
+  assert.strictEqual(receipt.status, "success", `call to ${to} reverted (tx ${hash}).`);
+  return hash;
+}
+
+/**
+ * Calls `VerifyingPaymaster.addStake(unstakeDelaySec)` as the paymaster's
+ * owner (`onlyOwner`), staking `stakeWei` of the EntryPoint's stake
+ * requirement — mirroring `test/EntryPoint4337.t.sol`'s
+ * `test_userOp_sponsoredExecutionWithZeroBalanceAccount`, which stakes its
+ * own `TestPaymasterAcceptAll` before use.
+ */
+export async function stakeVerifyingPaymaster(
+  client: PublicClient,
+  paymaster: Address,
+  ownerPrivateKey: Hex,
+  stakeWei: bigint,
+  unstakeDelaySec = 1,
+): Promise<void> {
+  const data = encodeFunctionData({ abi: VERIFYING_PAYMASTER_ABI, functionName: "addStake", args: [unstakeDelaySec] });
+  await sendCall(client, ownerPrivateKey, paymaster, stakeWei, data);
+}
+
+/**
+ * Deposits `amountWei` into `paymaster`'s EntryPoint balance via
+ * `EntryPoint.depositTo` — permissionless (any funded key may top up any
+ * paymaster's deposit), same call `test/EntryPoint4337.t.sol`'s sponsored-
+ * execution test uses (`ep.depositTo{value}(address(paymaster))`).
+ */
+export async function depositForPaymaster(
+  client: PublicClient,
+  funderPrivateKey: Hex,
+  paymaster: Address,
+  amountWei: bigint,
+): Promise<void> {
+  const data = encodeFunctionData({ abi: ENTRYPOINT_DEPOSIT_ABI, functionName: "depositTo", args: [paymaster] });
+  await sendCall(client, funderPrivateKey, ENTRYPOINT, amountWei, data);
 }

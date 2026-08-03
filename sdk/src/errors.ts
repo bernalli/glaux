@@ -488,3 +488,72 @@ export class UserOpEventNotFoundError extends Error {
     this.txHash = txHash;
   }
 }
+
+/**
+ * Thrown by `../gas/erc7677.js`'s `Erc7677Client` whenever an ERC-7677
+ * paymaster-service call cannot be trusted: a transport failure, a non-2xx
+ * HTTP status, a JSON-RPC `error` field, or a response that does not
+ * validate against the expected shape (a missing/malformed `paymaster`
+ * address or `paymasterData`). All four collapse into this one error
+ * deliberately: per the design's threat model (`docs/threat-model.md`, the
+ * paymaster entry), a paymaster can at worst DENY sponsorship, so an
+ * ambiguous or malformed response is treated exactly like an explicit
+ * denial — never retried, never coerced into a best-effort guess at what
+ * the provider "probably" meant. `../gas/policy.js`'s `GasPolicy` catches
+ * this (by name, via `.name`) to drive its sponsored → self-funded
+ * fallback, and surfaces the transition as an observable event rather than
+ * silently degrading (spec `docs/specs/2026-08-03-glaux-phase4-sdk-design.md`
+ * §7).
+ */
+export class PaymasterUnavailableError extends Error {
+  readonly method: "pm_getPaymasterStubData" | "pm_getPaymasterData";
+
+  constructor(method: "pm_getPaymasterStubData" | "pm_getPaymasterData", reason: string) {
+    super(`ERC-7677 ${method} failed: ${reason}`);
+    this.name = "PaymasterUnavailableError";
+    this.method = method;
+  }
+}
+
+/**
+ * Thrown (as the fallback event's `cause`, never actually thrown to a
+ * caller — see `../gas/policy.js`'s `GasPolicy.plan`) when no ERC-7677
+ * provider is configured at all: `GLAUX_PAYMASTER_URL` is unset, or the
+ * caller explicitly passed `paymasterClient: null`.
+ *
+ * Deliberately distinct from `PaymasterUnavailableError`: that error means a
+ * configured provider was asked and failed to answer trustworthily; this one
+ * means sponsorship was never attempted in the first place. Collapsing the
+ * two into one cause would let an integrator's missing configuration masquerade
+ * as "the provider happened to be down today" — exactly the silent-fallback
+ * failure mode spec §7 forbids.
+ */
+export class PaymasterNotConfiguredError extends Error {
+  constructor() {
+    super("no ERC-7677 paymaster provider is configured (GLAUX_PAYMASTER_URL is unset).");
+    this.name = "PaymasterNotConfiguredError";
+  }
+}
+
+/**
+ * Used (as the fallback event's `cause`, never actually thrown — see
+ * `../gas/policy.js`'s `GasPolicy.plan`) when neither sponsorship nor
+ * self-funded ERC-4337 is viable: the account's own native balance cannot
+ * cover the self-funded path's required prefund. `GasPolicy` degrades to
+ * `selfRelay` at that point — the structural fallback the design (§2) treats
+ * as always available, because direct execution (`../execute/direct.js`) is
+ * permissionless and needs no prefund from the account at all.
+ */
+export class SelfFundingUnavailableError extends Error {
+  readonly required: bigint;
+  readonly available: bigint;
+
+  constructor(required: bigint, available: bigint) {
+    super(
+      `account balance ${available} is insufficient for the self-funded ERC-4337 path's required prefund ${required}.`,
+    );
+    this.name = "SelfFundingUnavailableError";
+    this.required = required;
+    this.available = available;
+  }
+}
