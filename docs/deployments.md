@@ -1,5 +1,28 @@
 # Deployments
 
+> **⚠️ SUPERSEDED by the H-1 fix (2026-08-03).** The internal audit
+> (`docs/internal-audit-2026-08-03.md`) added an on-chain birth-guard check to
+> `GlauxAccount.initializeAccount`, which changes the implementation bytecode.
+> Every `GlauxAccount` (impl) address and implementation code hash recorded below
+> — `0x927ed570…` / `0x2c271f5a…` — is therefore **stale**. The router is
+> unchanged (`0xB8270e4B…`, runtime hash `0x6f90a8ec…`): the immutable half did
+> not move, as required. The new local two-chain proof (2026-08-03, re-run after
+> the fix) gives:
+>
+> | Artifact | New value (post-H-1-fix) | Old (pre-fix) |
+> |---|---|---|
+> | `GlauxAccount` (impl) CREATE2 | `0x3d5ACEfEDEB64d09F2F2D1934559BB3F4e6673ef` | `0x927ed570…` |
+> | impl runtime code hash | `0x7a799e7767e89756009d7b9f6c251a2a37f1a2eabe7a4856f0105731447daf3f` | `0x2c271f5a…` |
+> | `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (unchanged) | same |
+> | born account (local proof) | `0x75caB71418D2614970C2531B33719B40594Cd102` | `0xB17d5518…` |
+>
+> `reconcile.py` across both local chains: `verdict: consistent (exit 0)`; the
+> refusal path still reverts as designed. **The public testnet deployments below
+> (Base Sepolia, Sepolia) must be redeployed at the new impl address** before any
+> further birth — the unspent blobs signed against `0x2c271f5a…` are invalid.
+> That redeploy is still gated on a funded `GLAUX_RELAYER_KEY` (the maintainer). History
+> below is kept intact, not rewritten.
+
 ## Local two-chain end-to-end (verified)
 
 Date: 2026-07-30. Contracts: the Phase 2 account surface (ERC-721/1155 receiver hooks,

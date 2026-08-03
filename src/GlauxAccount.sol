@@ -9,6 +9,7 @@ import {
     Call,
     AlreadyInitialized,
     NotInitialized,
+    NotDuringBirth,
     BadUpdateNonce,
     CallFailed,
     InvalidAction,
@@ -55,7 +56,20 @@ contract GlauxAccount is IERC721Receiver, IERC1155Receiver, IERC1271 {
         GlauxStorage.layout().initialized = true;
     }
 
+    /// @dev `initializeAccount` is reachable only by delegatecall from the router
+    ///      during birth, which sets `DELEGATE_BIRTH_GUARD_SLOT` for the duration of
+    ///      that delegatecall. Without this check, an EOA whose EIP-7702 delegation
+    ///      points DIRECTLY at the implementation (skipping the router) would be an
+    ///      unclaimed account that `l.initialized == false` and `IMPL_SLOT == 0` both
+    ///      describe as fresh — anyone could call it and install their own keys,
+    ///      then drain the account (finding H-1).
     function initializeAccount(bytes calldata initData) external {
+        bytes32 birthGuard = GlauxStorage.DELEGATE_BIRTH_GUARD_SLOT;
+        uint256 inBirth;
+        assembly {
+            inBirth := tload(birthGuard)
+        }
+        if (inBirth == 0) revert NotDuringBirth();
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (l.initialized) revert AlreadyInitialized();
         bytes32 implementationSlot = GlauxStorage.IMPL_SLOT;

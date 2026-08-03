@@ -13,6 +13,7 @@ import {
     InvalidSignature,
     AlreadyInitialized,
     NotInitialized,
+    NotDuringBirth,
     InvalidImplementation,
     InvalidBirthSignature,
     DuplicateSlot,
@@ -368,8 +369,24 @@ contract BirthTest is GlauxFixture {
         assertEq(vm.load(account, GlauxStorage.IMPL_SLOT), bytes32(0));
     }
 
+    /// @notice H-1: an EOA whose EIP-7702 delegation points straight at the
+    ///         implementation (skipping the router) never has the router's
+    ///         `initialize` set `DELEGATE_BIRTH_GUARD_SLOT`, so it must not be able
+    ///         to reach `initializeAccount` at all — even though, from fresh
+    ///         storage, both `l.initialized == false` and `IMPL_SLOT == 0` look
+    ///         exactly like an unborn Glaux account.
+    function test_initializeAccountRevertsWhenNotDuringBirth() public {
+        // EOA delegated straight to the implementation instead of the router.
+        uint256 victimPk = 0xC0FFEE;
+        address victim = vm.addr(victimPk);
+        vm.signAndAttachDelegation(address(impl), victimPk);
+        // Any initData at all — the guard fires before it is even decoded.
+        vm.expectRevert(NotDuringBirth.selector);
+        GlauxAccount(payable(victim)).initializeAccount(hex"");
+    }
+
     function test_initializeAccountDirectlyOnImplementationReverts() public {
-        vm.expectRevert(AlreadyInitialized.selector);
+        vm.expectRevert(NotDuringBirth.selector);
         impl.initializeAccount(_initDataUnproven(_slots()));
     }
 
@@ -388,7 +405,7 @@ contract BirthTest is GlauxFixture {
         vm.store(account, GlauxStorage.IMPL_SLOT, bytes32(uint256(uint160(address(impl)))));
 
         vm.prank(address(0xA77AC));
-        vm.expectRevert(AlreadyInitialized.selector);
+        vm.expectRevert(NotDuringBirth.selector);
         GlauxAccount(payable(account)).initializeAccount(_initDataUnproven(attackerSlots));
     }
 
@@ -463,7 +480,7 @@ contract BirthTest is GlauxFixture {
     function test_initializeAccountDirectlyOnBornAccountReverts() public {
         _birthAccount();
 
-        vm.expectRevert(AlreadyInitialized.selector);
+        vm.expectRevert(NotDuringBirth.selector);
         GlauxAccount(payable(account)).initializeAccount(_initDataUnproven(_slots()));
     }
 
@@ -473,7 +490,7 @@ contract BirthTest is GlauxFixture {
         attackerSlots[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0xBAD)));
 
         vm.prank(address(0xA77AC));
-        vm.expectRevert(AlreadyInitialized.selector);
+        vm.expectRevert(NotDuringBirth.selector);
         GlauxAccount(payable(account)).initializeAccount(_initDataUnproven(attackerSlots));
 
         (, bytes memory paperData) = GlauxAccount(payable(account)).getSlot(0);
