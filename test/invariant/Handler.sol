@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import "forge-std/Test.sol";
 import {GlauxAccount} from "../../src/GlauxAccount.sol";
-import {GlauxStorage, SlotSig, Update} from "../../src/GlauxStorage.sol";
+import {GlauxStorage, SlotSig, Update, Call} from "../../src/GlauxStorage.sol";
 import {
     BadUpdateNonce,
     DuplicateSlot,
@@ -23,6 +23,7 @@ contract Handler is Test {
     address public ghostImplementation;
     address public immutable compatibleImplementation;
     address public immutable noMarkerImplementation;
+    address public immutable executionSink;
 
     uint256 public successfulRotations;
     uint256 public actualSlotChanges;
@@ -44,6 +45,12 @@ contract Handler is Test {
     uint256 public rejectedNoMarkerAttempts;
     uint256 public acceptedNoMarkerAttacks;
     uint256 public wrongErrorNoMarkerAttempts;
+    uint64 public ghostExecNonce;
+    uint256 public successfulExecs;
+    uint256 public failedExecs;
+    uint256 public acceptedExecForgeAttacks;
+    uint256 public rejectedExecForgeries;
+    uint256 public wrongErrorExecForgeries;
 
     constructor(
         address account_,
@@ -52,13 +59,15 @@ contract Handler is Test {
         address noMarkerImplementation_,
         uint256 k0,
         uint256 k1,
-        uint256 k2
+        uint256 k2,
+        address executionSink_
     ) {
         account = account_;
         keys = [k0, k1, k2];
         ghostImplementation = implementation_;
         compatibleImplementation = compatibleImplementation_;
         noMarkerImplementation = noMarkerImplementation_;
+        executionSink = executionSink_;
     }
 
     function _sig65(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {
@@ -72,6 +81,32 @@ contract Handler is Test {
             keccak256(
                 abi.encode(
                     GlauxStorage.UPDATE_DOMAIN, account, u.nonce, u.action, keccak256(u.payload)
+                )
+            )
+        );
+    }
+
+    /// @dev Mirrors `_digest` but for the EXEC_DOMAIN channel. Reads the `ghostExecNonce`
+    ///      rather than the account's on-chain `execNonce()`, keeping the model fully
+    ///      independent of the contract under test: the account is otherwise reached
+    ///      only through low-level `.call`, and this was the sole plain external call
+    ///      left in the handler, a false-fail risk under `fail_on_revert = true`. If
+    ///      on-chain and ghost nonces ever diverged, signing with the ghost's value
+    ///      would make `executeWithSigs` reject the digest (nonce mismatch), which
+    ///      surfaces as a `failedExecs` bump and trips
+    ///      `invariant_authorizedUpdatesSucceed` -- the divergence gets DETECTED
+    ///      instead of silently masked by reading the chain's own value back.
+    function _execDigest(Call[] memory calls, uint48 validUntil) internal view returns (bytes32) {
+        return GlauxStorage.eip191(
+            account,
+            keccak256(
+                abi.encode(
+                    GlauxStorage.EXEC_DOMAIN,
+                    block.chainid,
+                    account,
+                    ghostExecNonce,
+                    keccak256(abi.encode(calls)),
+                    validUntil
                 )
             )
         );
@@ -308,6 +343,68 @@ contract Handler is Test {
             rejectedNoMarkerAttempts++;
         } else {
             wrongErrorNoMarkerAttempts++;
+        }
+    }
+
+    /// @notice An authorized 2-of-3 execution of a single zero-value call to the
+    ///         fixed execution sink, which always accepts it, so a failure here can
+    ///         only mean the authorized path itself is broken -- never that the
+    ///         fuzzer picked an unreceptive destination.
+    function execute() public {
+        Call[] memory calls = new Call[](1);
+        calls[0] = Call({to: executionSink, value: 0, data: ""});
+        uint48 validUntil = type(uint48).max;
+        bytes32 d = _execDigest(calls, validUntil);
+        SlotSig[2] memory sigs;
+        sigs[0] = SlotSig(0, _sig65(keys[0], d));
+        sigs[1] = SlotSig(1, _sig65(keys[1], d));
+
+        (bool ok,) =
+            account.call(abi.encodeCall(GlauxAccount.executeWithSigs, (calls, validUntil, sigs)));
+        if (!ok) {
+            failedExecs++;
+            return;
+        }
+        ghostExecNonce++;
+        successfulExecs++;
+    }
+
+    /// @notice An attacker who does not hold any of the three real factor keys tries
+    ///         to authorize an execution, signing with TWO DISTINCT attacker keys
+    ///         over two randomized slot indices -- unlike a single repeated key,
+    ///         this actually reaches `SignatureVerify.verify` instead of being
+    ///         turned away earlier by the `_sameRS` anti-replay check. Must always
+    ///         revert.
+    function tryExecuteForge(uint256 attackerPkSeed, uint8 slotSeed) public {
+        uint8 slot = uint8(slotSeed % 3);
+        uint8 a = uint8((uint256(slot) + 1) % 3);
+        uint8 b = uint8((uint256(slot) + 2) % 3);
+
+        uint256 ak0 = bound(attackerPkSeed, 1, type(uint128).max);
+        while (ak0 == keys[0] || ak0 == keys[1] || ak0 == keys[2]) {
+            ak0++;
+        }
+        uint256 ak1 = ak0 + 1;
+        while (ak1 == keys[0] || ak1 == keys[1] || ak1 == keys[2]) {
+            ak1++;
+        }
+
+        Call[] memory calls = new Call[](1);
+        calls[0] = Call({to: executionSink, value: 0, data: ""});
+        uint48 validUntil = type(uint48).max;
+        bytes32 d = _execDigest(calls, validUntil);
+        SlotSig[2] memory sigs;
+        sigs[0] = SlotSig(a, _sig65(ak0, d));
+        sigs[1] = SlotSig(b, _sig65(ak1, d));
+
+        (bool ok, bytes memory ret) =
+            account.call(abi.encodeCall(GlauxAccount.executeWithSigs, (calls, validUntil, sigs)));
+        if (ok) {
+            acceptedExecForgeAttacks++;
+        } else if (_hasSelector(ret, InvalidSignature.selector)) {
+            rejectedExecForgeries++;
+        } else {
+            wrongErrorExecForgeries++;
         }
     }
 }

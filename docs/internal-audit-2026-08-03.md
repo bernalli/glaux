@@ -102,7 +102,16 @@ invalidates every unspent birth/update blob → the two-chain proof and the
 testnet deployment tables must be redone (roadmap Phase 3 discipline). No real
 funds are at stake (testnet only), so fixing now is the correct trade.
 
-### H-2 — MEDIUM — CONFIRMED — Storage pre-poisoned by a prior hostile delegate (undeclared residual)
+### H-2 — MEDIUM — ADDRESSED (2026-08-03, documental + tooling) — Storage pre-poisoned by a prior hostile delegate (undeclared residual)
+
+**Remedy shipped**: declared as threat-model residual 17; client-guidance gains a
+pre-birth rule (account must have no code and zero Glaux namespaced slots, and
+"never migrate an already-delegated EOA") and now names the ROUTER in the
+signing step; `scripts/submit_birth.py` enforces it with `preflight_fresh_account`
+(reads code + `IMPL_SLOT` + header word, aborts before broadcasting), covered by
+`scripts/test_submit_birth_preflight.py` (8 cases, network-free). No on-chain fix
+is possible by design.
+
 
 **Files**: `src/GlauxStorage.sol:29-35`, `src/GlauxDelegate.sol:106-115`,
 `src/GlauxAccount.sol:59-66`.
@@ -111,8 +120,10 @@ The threat model reasons only about *accidental* occupation of the shared
 ERC-1967 slot by a previous wallet. But an EIP-7702 re-delegation does not clear
 storage and Glaux's slot constants are public, so a hostile prior delegate can
 deliberately write `glaux.account.v1.implementation` and
-`glaux.account.v1.storage`. Two outcomes, both reproduced
-(`AuditPoC2.t.sol`, 2/2 pass):
+`glaux.account.v1.storage`. Two outcomes, both reproduced by permanent
+regression tests in `test/Birth.t.sol`
+(`test_residual17_plantedImplPointerBricksBirthAndIsExecuted`,
+`test_residual17_plantedFullStateMakesAccountAttackerOwned`):
 
 - **Brick + hostile execution**: plant only `IMPL_SLOT` → birth reverts
   `AlreadyInitialized` forever, and the router's `fallback` delegatecalls the
@@ -136,7 +147,15 @@ that `IMPL_SLOT` and the namespaced header word are zero"), and discourage
 migrating an already-delegated EOA. The reconciliation step catches it only
 *after* the fact.
 
-### L-1 — LOW — CONFIRMED — `applyUpdate` does not converge on the `executing` guard
+### L-1 — LOW — FIXED (2026-08-03) — `applyUpdate` does not converge on the `executing` guard
+
+**Fix**: `applyUpdate` now reverts `ReentrantCall()` if `executing` is set, so a
+callee reached mid-batch can no longer land a quorum-signed update inside a
+running `_execute`. Changes bytecode (impl moved to `0x21b5D576…`). The existing
+`test_executeCannotRouteApplyUpdateWithoutUpdateSigs` now asserts `ReentrantCall`
+(signature-validation coverage for `applyUpdate` is retained by five direct
+`UpdateChannel.t.sol` tests and the `tryForgeUpdate` invariant).
+
 
 **File**: `src/GlauxAccount.sol:179` vs `:339-347`. `_execute` takes the transient
 guard; `applyUpdate` does not, so a callee reached by a signed batch can land a
@@ -147,7 +166,21 @@ residual 10 grants the relayer only "whether and when", not "interleaved within
 one transaction". Close by extending the guard to `applyUpdate` (which makes no
 external call, so the cost is only semantics) or declare it.
 
-### L-2 — LOW — CONFIRMED — Invariant coverage is single-channel, with `fail_on_revert = false`
+### L-2 — LOW — FIXED (2026-08-03) — Invariant coverage is single-channel, with `fail_on_revert = false`
+
+**Fix**: the invariant handler gains stateful coverage of `executeWithSigs` (a
+valid `execute()` action against a benign sink + a `tryExecuteForge` attack, an
+`execNonce` ghost, and `invariant_execNonceMatchesGhost`), and `foundry.toml`
+sets `fail_on_revert = true`. `validateUserOp`/`executeFromEntryPoint` and
+`isValidSignature` are not driven statefully because all three channels funnel
+through the single `_checkTwoSigs` → live `l.slots[]` read
+(`GlauxAccount.sol:409-414`): with one shared choke point a per-channel
+divergence after a rotation is implausible, so the stateful campaign on the
+update/exec channels already exercises the authorization logic they share. The
+narrower gap — no test today rotates a factor and then re-checks the 4337 or
+1271 path with the old/new key — is tracked as a follow-up. Reinforced campaign
+512×128 (65536 calls/invariant) green.
+
 
 **Files**: `test/invariant/Handler.sol`, `foundry.toml`. The handler drives only
 `applyUpdate`. `executeWithSigs`, `validateUserOp`/`executeFromEntryPoint` and
@@ -190,8 +223,11 @@ namespaced transient guard.
 
 ## Verdict
 
-**Not merge-ready for real funds.** H-1 (HIGH) **fixed 2026-08-03** (on-chain
-birth-guard). Still open: H-2 (MEDIUM) requires threat-model + client-guidance
-updates; L-1/L-2 to close before the external audit; the public testnet
-redeploy at the new impl address is pending a funded key. `forge test` baseline
-at audit time: 202 passed; post-fix: 203 passed, 0 failed, 2 skipped.
+**All internal findings closed (2026-08-03).** H-1 (HIGH) fixed on-chain
+(birth-guard); L-1 (LOW) fixed on-chain (applyUpdate reentrancy guard); L-2 (LOW)
+fixed (invariant coverage + `fail_on_revert = true`); H-2 (MEDIUM) addressed by
+threat-model residual 17 + client-guidance + a `submit_birth.py` pre-birth check
+(no on-chain fix possible). Remaining before real funds is out of scope for the
+internal audit: the external audit itself, and the public testnet redeploy at the
+new impl address (`0x21b5D576…`), pending a funded key. `forge test`: 202 at
+audit time → **207 passed, 0 failed, 2 skipped** post-batch.

@@ -1,20 +1,21 @@
 # Deployments
 
-> **⚠️ SUPERSEDED by the H-1 fix (2026-08-03).** The internal audit
-> (`docs/internal-audit-2026-08-03.md`) added an on-chain birth-guard check to
-> `GlauxAccount.initializeAccount`, which changes the implementation bytecode.
-> Every `GlauxAccount` (impl) address and implementation code hash recorded below
-> — `0x927ed570…` / `0x2c271f5a…` — is therefore **stale**. The router is
-> unchanged (`0xB8270e4B…`, runtime hash `0x6f90a8ec…`): the immutable half did
-> not move, as required. The new local two-chain proof (2026-08-03, re-run after
-> the fix) gives:
+> **⚠️ SUPERSEDED by the 2026-08-03 internal-audit fixes (H-1 + L-1).** The audit
+> (`docs/internal-audit-2026-08-03.md`) added two on-chain checks to
+> `GlauxAccount` — the birth-guard on `initializeAccount` (H-1) and the
+> reentrancy guard on `applyUpdate` (L-1) — both of which change the
+> implementation bytecode. Every `GlauxAccount` (impl) address and code hash
+> recorded below — `0x927ed570…` / `0x2c271f5a…` — is therefore **stale**. The
+> router is unchanged (`0xB8270e4B…`, runtime hash `0x6f90a8ec…`): the immutable
+> half did not move, as required. The local two-chain proof re-run after the full
+> batch gives:
 >
-> | Artifact | New value (post-H-1-fix) | Old (pre-fix) |
+> | Artifact | Current value (post H-1+L-1) | Original (pre-audit) |
 > |---|---|---|
-> | `GlauxAccount` (impl) CREATE2 | `0x3d5ACEfEDEB64d09F2F2D1934559BB3F4e6673ef` | `0x927ed570…` |
-> | impl runtime code hash | `0x7a799e7767e89756009d7b9f6c251a2a37f1a2eabe7a4856f0105731447daf3f` | `0x2c271f5a…` |
+> | `GlauxAccount` (impl) CREATE2 | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` | `0x927ed570…` |
+> | impl runtime code hash | `0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106` | `0x2c271f5a…` |
 > | `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (unchanged) | same |
-> | born account (local proof) | `0x75caB71418D2614970C2531B33719B40594Cd102` | `0xB17d5518…` |
+> | born account (local proof) | `0xFb0fCAc39E521AE4b1333983Dd178670B934EE3E` | `0xB17d5518…` |
 >
 > `reconcile.py` across both local chains: `verdict: consistent (exit 0)`; the
 > refusal path still reverts as designed. **The public testnet deployments below

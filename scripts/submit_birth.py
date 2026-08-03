@@ -29,6 +29,18 @@ from web3 import Web3
 
 INITIALIZE_SELECTOR = keccak(text="initialize(address,bytes32,bytes,bytes)")[:4]
 
+# The namespaced slots GlauxStorage owns (same derivation as reconcile.py's BASE_SLOT /
+# IMPL_SLOT). A birth blob must only ever be broadcast to an address that has never been
+# an EIP-7702 delegate: re-delegation does not clear storage, so a prior hostile delegate
+# could have pre-planted these slots and made the account an attacker-owned Glaux account
+# the instant it delegates to the router (threat-model residual 17). No on-chain check
+# can catch this; this is the client-side gate. The layout is a header word at
+# STORAGE_SLOT followed by three `FactorSlot` entries (verifierType, then the `bytes
+# data` head) at STORAGE_SLOT+1..STORAGE_SLOT+6 — the preflight below checks IMPL_SLOT
+# plus all seven of these words, not just the header.
+STORAGE_SLOT = int.from_bytes(keccak(text="glaux.account.v1.storage"), "big")
+IMPL_SLOT = int.from_bytes(keccak(text="glaux.account.v1.implementation"), "big")
+
 # Any real birth runs three possession-proof verifications and, when a P-256 factor
 # is present, the verifier probe on top. Nothing that does the job fits in this, so
 # an estimate below it means the node priced a call to an account that is not
@@ -75,6 +87,54 @@ def build_initialize_calldata(blob: dict[str, Any]) -> bytes:
     return INITIALIZE_SELECTOR + encoded_args
 
 
+def preflight_fresh_account(
+    w3: Web3, account_address: str, router_address: str
+) -> None:
+    """Abort before broadcasting if the target account is not a pristine EOA.
+
+    An EIP-7702 re-delegation does not clear storage, so a birth blob must only be
+    sent to an address whose code is either empty or the delegation designator this
+    same blob would install (`0xef0100 ‖ router_address` — the retry of a birth whose
+    initialize() call reverted, e.g. InvalidImplementation, which EIP-7702 still
+    applies the authorization for), and whose Glaux namespaced words — IMPL_SLOT and
+    the header plus all three FactorSlot entries at STORAGE_SLOT..STORAGE_SLOT+6 — are
+    zero. See docs/client-guidance.md (Birth) and threat-model residual 17. Read-only;
+    raises SystemExit on any violation.
+    """
+    expected_designator = bytes.fromhex("ef0100") + to_bytes(
+        hexstr=to_checksum_address(router_address)
+    )
+    code = bytes(w3.eth.get_code(account_address))
+    if len(code) != 0 and code != expected_designator:
+        sys.exit(
+            f"refusing to submit: {account_address} already has code "
+            f"({len(code)} bytes) that is not the EIP-7702 designator for this blob's "
+            f"router ({router_address}) — it must be a fresh EOA that was never an "
+            "EIP-7702 delegate, or the retry of a birth that reverted while already "
+            "delegated to this router (threat-model residual 17). Never migrate an "
+            "EOA delegated to a different target."
+        )
+    impl = w3.eth.get_storage_at(account_address, IMPL_SLOT)
+    if int.from_bytes(impl, "big") != 0:
+        sys.exit(
+            f"refusing to submit: {account_address} has a non-zero Glaux implementation "
+            "slot — its storage was pre-planted (threat-model residual 17)."
+        )
+    for offset in range(7):
+        slot = STORAGE_SLOT + offset
+        word = w3.eth.get_storage_at(account_address, slot)
+        if int.from_bytes(word, "big") != 0:
+            kind = (
+                "storage header word"
+                if offset == 0
+                else f"FactorSlot word (STORAGE_SLOT+{offset})"
+            )
+            sys.exit(
+                f"refusing to submit: {account_address} has a non-zero Glaux {kind} "
+                f"at slot {slot} — its storage was pre-planted (threat-model residual 17)."
+            )
+
+
 def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, Any]:
     """Build, sign, send, and wait for the type-4 birth transaction.
 
@@ -82,6 +142,7 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
     """
     relayer = Account.from_key(relayer_key)
     account_address = to_checksum_address(blob["account"])
+    preflight_fresh_account(w3, account_address, blob["authorization"]["address"])
     chain_id = w3.eth.chain_id
     latest_block = w3.eth.get_block("latest")
     base_fee = latest_block.get("baseFeePerGas", w3.eth.gas_price)

@@ -10,6 +10,12 @@ import {Handler} from "./Handler.sol";
 
 contract NoMarkerImplementation {}
 
+/// @dev A benign call target that always accepts a zero-value call, so an
+///      authorized execution never fails for a reason unrelated to authorization.
+contract ExecutionSink {
+    receive() external payable {}
+}
+
 /// @notice Property-based defence for the update channel: no sequence of authorized
 ///         rotations and rejected forgeries may ever move the account somewhere the
 ///         independent ghost model in `Handler` does not predict.
@@ -60,8 +66,17 @@ contract GlauxInvariants is Test {
         GlauxDelegate(payable(account))
             .initialize(address(impl), address(impl).codehash, initData, birthSig);
 
+        ExecutionSink sink = new ExecutionSink();
+
         handler = new Handler(
-            account, address(impl), address(compatibleImpl), address(noMarkerImpl), K0, K1, K2
+            account,
+            address(impl),
+            address(compatibleImpl),
+            address(noMarkerImpl),
+            K0,
+            K1,
+            K2,
+            address(sink)
         );
 
         // Only the handler's own entry points may act as the account/attacker; the
@@ -71,10 +86,10 @@ contract GlauxInvariants is Test {
         // fuzzer is free to explore every ordering and interleaving -- upgrade
         // before any rotation, consecutive rotations, consecutive upgrades, attacks
         // interleaved anywhere, etc. Reachability of each individual action is
-        // proven separately and deterministically by test_allSevenActionsReachable
+        // proven separately and deterministically by test_allNineActionsReachable
         // below, so this campaign never needs a seed-dependent liveness check.
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](7);
+        bytes4[] memory selectors = new bytes4[](9);
         selectors[0] = Handler.rotate.selector;
         selectors[1] = Handler.tryForgeUpdate.selector;
         selectors[2] = Handler.tryDuplicateSlot.selector;
@@ -82,6 +97,8 @@ contract GlauxInvariants is Test {
         selectors[4] = Handler.tryUpgradeValid.selector;
         selectors[5] = Handler.tryUpgradeWrongCodeHash.selector;
         selectors[6] = Handler.tryUpgradeNoMarker.selector;
+        selectors[7] = Handler.execute.selector;
+        selectors[8] = Handler.tryExecuteForge.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -162,6 +179,12 @@ contract GlauxInvariants is Test {
         );
     }
 
+    /// On-chain execNonce always equals the ghost: executeWithSigs advances it
+    /// exactly once per authorized execution and never under a forged signature.
+    function invariant_execNonceMatchesGhost() public view {
+        assertEq(GlauxAccount(payable(account)).execNonce(), handler.ghostExecNonce());
+    }
+
     /// Rejected attack calls must never be accepted or fail with a different error.
     /// This runs after every fuzzed step, so fail_on_revert cannot hide a regression.
     function invariant_attacksRejectWithExpectedErrors() public view {
@@ -175,15 +198,18 @@ contract GlauxInvariants is Test {
         assertEq(handler.wrongErrorWrongCodeHashAttempts(), 0);
         assertEq(handler.acceptedNoMarkerAttacks(), 0);
         assertEq(handler.wrongErrorNoMarkerAttempts(), 0);
+        assertEq(handler.acceptedExecForgeAttacks(), 0);
+        assertEq(handler.wrongErrorExecForgeries(), 0);
     }
 
     /// Correctly authorized updates are never allowed to fail silently.
     function invariant_authorizedUpdatesSucceed() public view {
         assertEq(handler.failedRotations(), 0);
         assertEq(handler.failedValidUpgrades(), 0);
+        assertEq(handler.failedExecs(), 0);
     }
 
-    /// @notice Deterministic reachability proof for every one of the seven handler
+    /// @notice Deterministic reachability proof for every one of the nine handler
     ///         actions, run once each in a fixed order. This is a plain unit test,
     ///         not an invariant: it never depends on what the fuzzer decided to
     ///         explore, so it cannot flake on any seed. It is the sole place where
@@ -191,7 +217,7 @@ contract GlauxInvariants is Test {
     ///         invariant campaign above only ever asserts that nothing bad happened,
     ///         never that something specific ran, which is what keeps it
     ///         seed-independent while still being free to explore every ordering.
-    function test_allSevenActionsReachable() public {
+    function test_allNineActionsReachable() public {
         // 1. rotate(): authorized 2-of-3 rotation of slot 0 to a fresh key. Must
         //    succeed and really move the on-chain slot to the new key.
         uint64 nonceBeforeRotate = handler.ghostUpdateNonce();
@@ -251,5 +277,20 @@ contract GlauxInvariants is Test {
         assertEq(handler.rejectedNoMarkerAttempts(), 1);
         assertEq(handler.acceptedNoMarkerAttacks(), 0);
         assertEq(handler.wrongErrorNoMarkerAttempts(), 0);
+
+        // 8. execute(): an authorized 2-of-3 execution of a single zero-value call.
+        //    Must succeed and really advance the on-chain execNonce.
+        handler.execute();
+        assertEq(handler.successfulExecs(), 1);
+        assertEq(handler.failedExecs(), 0);
+        assertEq(GlauxAccount(payable(account)).execNonce(), 1);
+
+        // 9. tryExecuteForge(): an attacker holding none of the real keys signs an
+        //    execution with their own key instead of a real quorum. Must revert
+        //    InvalidSignature.
+        handler.tryExecuteForge(0x9999, 1);
+        assertEq(handler.rejectedExecForgeries(), 1);
+        assertEq(handler.acceptedExecForgeAttacks(), 0);
+        assertEq(handler.wrongErrorExecForgeries(), 0);
     }
 }

@@ -190,7 +190,11 @@ contract GlauxAccount is IERC721Receiver, IERC1155Receiver, IERC1271 {
         }
     }
 
+    /// @dev Converges on the same reentrancy guard as `_execute`: without this check,
+    ///      a callee reached by a signed batch mid-`_execute` could call back in and
+    ///      land a quorum-signed update in the middle of that batch (finding L-1).
     function applyUpdate(Update calldata u, SlotSig[2] calldata sigs) external {
+        if (executing) revert ReentrantCall();
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) revert NotInitialized();
         if (u.nonce != l.updateNonce + 1) revert BadUpdateNonce(l.updateNonce + 1, u.nonce);

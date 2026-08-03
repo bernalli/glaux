@@ -567,6 +567,60 @@ other account, and expires. Failure is the `0xffffffff` sentinel, never a
 revert — except on an account never born, where the ROUTER reverts
 `NotInitialized` before implementation code runs.
 
+### 17. Storage pre-poisoned by a prior hostile delegate
+
+**No on-chain mitigation. Closed only by a client-side pre-birth check.**
+Found in the 2026-08-03 internal audit (`docs/internal-audit-2026-08-03.md`).
+
+An EIP-7702 re-delegation does **not** clear the account's storage, and Glaux's
+slot constants are public. So if an EOA was ever delegated to hostile code on a
+chain, that code could have deliberately written Glaux's own namespaced slots —
+`keccak256("glaux.account.v1.implementation")` and
+`keccak256("glaux.account.v1.storage")` — before the user ever chose Glaux. Two
+outcomes, both reproduced by passing regression tests in `test/Birth.t.sol`
+(`test_residual17_plantedImplPointerBricksBirthAndIsExecuted`,
+`test_residual17_plantedFullStateMakesAccountAttackerOwned`):
+
+- **Brick plus hostile execution.** Plant only the implementation pointer: the
+  user's later birth through the router reverts `AlreadyInitialized` forever
+  (the router reads a non-zero pointer), while the router's `fallback`
+  delegatecalls the planted address on every call in the meantime.
+- **Full takeover.** Plant the implementation pointer at the real
+  `GlauxAccount`, the header word with `initialized = 1`, and three attacker
+  factor slots: the instant the user delegates to the correct router, the
+  account is a fully working Glaux account owned by the attacker —
+  `implementation()` and `getSlot()` all answer plausibly, and two attacker
+  signatures are a quorum.
+
+Note what this is **not**: it is not the direct-delegation-to-implementation
+seizure (residual-free after the H-1 fix — `initializeAccount` now refuses to
+run outside a router birth). This residual never passes through
+`initializeAccount` at all; the state is pre-planted, so the birth-guard cannot
+see it.
+
+**Precondition**: the EOA carried a hostile delegation designator on that chain
+at some earlier point. Unreachable in the canonical flow, where the birth key is
+an ephemeral EOA generated for the purpose. But it is squarely on the migration
+path this project plans, where the birth key *is* a long-lived user key — the
+same population residual 1 and the EIP-191 section already flag as the dangerous
+case. There is no honest on-chain fix: whoever can write one namespaced slot can
+write them all, so no in-contract check can distinguish planted state from
+genuine state. The defence is client-side and normative — see the pre-birth
+verification and the "never migrate an already-delegated EOA" rule in
+`client-guidance.md`. The reconciliation step catches a mismatch only *after*
+birth, which for the takeover case is already too late.
+
+A sharper third variant, found in the fix re-review: instead of planting a
+pointer, a prior delegate plants a **fabricated `bytes` length** in a factor
+slot's data-head word (`BASE + 2 + 2i`). At birth, the memory→storage struct
+copy `l.slots[i] = s` must zero the old array's tail, and an enormous planted
+length turns that into an unbounded loop — birth runs out of gas and can never
+succeed on that chain, with the birth key already destroyed. Because
+`IMPL_SLOT` and the header word both stay zero, a check that reads only those
+two would pass. The pre-birth verification therefore reads **all** namespaced
+words (the implementation pointer, the header, and the six slot words
+`BASE+1..BASE+6`) and requires every one to be zero.
+
 ## Formerly out of scope, shipped in Phase 2
 
 The receiver hooks (ERC-721/ERC-1155), ERC-165 and ERC-1271 were v1's two

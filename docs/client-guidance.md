@@ -211,10 +211,37 @@ installs an attacker's implementation and an attacker's slots.
 Birth follows the sequence in `GlauxDelegate.initialize` and the
 `GLAUX_INIT_V1` domain it checks:
 
+**Before anything else — two preconditions that no on-chain check can enforce:**
+
+- **The account must be a fresh address that has never carried a delegation
+  designator — or, exactly once, be retrying a birth whose `initialize()`
+  call reverted.** An EIP-7702 re-delegation does not clear storage, and
+  Glaux's slot constants are public, so an EOA previously delegated to
+  hostile code may arrive with Glaux's own namespaced slots pre-planted —
+  either bricking birth or, worse, presenting as an attacker-owned Glaux
+  account the moment you delegate to the router (threat-model residual 17).
+  Before submitting a birth blob on a chain, verify with raw reads that the
+  account's code is either empty, or exactly the EIP-7702 designator this
+  same blob would install (`0xef0100 ‖ router`, 23 bytes) — never any other
+  non-empty code — and that **every** Glaux namespaced word is zero: both
+  `keccak256("glaux.account.v1.implementation")` and, at the header word
+  `keccak256("glaux.account.v1.storage")` (call it `BASE`), all seven words
+  `BASE`..`BASE+6` — the header plus the `verifierType` and `bytes data` head
+  of each of the three `FactorSlot` entries. Checking only the first two of
+  these eight words lets a hostile delegate plant a forged `bytes data`
+  length in one of the six slot words and pass undetected. **Never migrate an
+  EOA whose code is non-empty and is not this blob's own designator.**
+  `scripts/submit_birth.py` performs this check before broadcasting.
+- **The authorization tuple names the ROUTER.** The address you sign into it is
+  `GlauxDelegate`, never the implementation. Delegating straight to the
+  implementation used to hand the account to anyone; the H-1 fix now makes that
+  configuration fail-closed (`initializeAccount` reverts `NotDuringBirth`), but a
+  bricked account is still a lost one — get the address right.
+
 1. Generate the ephemeral birth EOA client-side.
-2. Sign the single EIP-7702 authorization tuple with `chainId = 0` — this
-   is what makes the same tuple valid on every chain the account is later
-   delegated on, present or future.
+2. Sign the single EIP-7702 authorization tuple naming the **router**
+   (`GlauxDelegate`) with `chainId = 0` — this is what makes the same tuple
+   valid on every chain the account is later delegated on, present or future.
 3. Sign the initialization blob. The digest is
 
    ```
@@ -247,10 +274,16 @@ One blob now installs byte-identical logic everywhere, or fails cleanly.
 **Deploy before you submit.** `initialize` reverts with
 `InvalidImplementation()` when the implementation has no code on the target
 chain, when its code hash differs from the signed one, or when the marker
-is missing. This fails safely — no state is written, and the same blob
-stays valid and resubmittable on that chain once the correct implementation
-is deployed there. That is the ordinary case, not an error: a birth blob is
-expected to outrun deployment on chains the account has not reached yet.
+is missing. This fails safely — under EIP-7702 the authorization is applied
+before the transaction executes and is not undone by a revert, so the
+delegation designator is written and stays on the account, but no Glaux
+namespaced state is: `initialize` reverts before touching storage, so the
+same blob stays valid and resubmittable on that chain once the correct
+implementation is deployed there. That is the ordinary case, not an error: a
+birth blob is expected to outrun deployment on chains the account has not
+reached yet. `scripts/submit_birth.py`'s preflight accounts for exactly this:
+a retry against an account already carrying this blob's own router
+designator is accepted, not mistaken for a poisoned account.
 Still, verify the implementation is deployed *and* that its live code hash
 equals the one in the blob before broadcasting, rather than discovering it
 at submission time.
