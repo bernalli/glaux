@@ -536,6 +536,35 @@ export class PaymasterNotConfiguredError extends Error {
 }
 
 /**
+ * Thrown by `../reconcile/reconcile.js` when a raw code/storage read, or
+ * issuing a getter call at all, fails for a reason that is not itself an EVM
+ * revert.
+ *
+ * `scripts/reconcile.py`'s single `except Exception` around its getter reads
+ * deliberately folds a genuine transport failure (the RPC call never
+ * completed) into the same "getter call failed" finding as a getter that
+ * reverts because the implementation cannot answer for its own state. This
+ * SDK keeps the two apart: an implementation that cannot describe its own
+ * state IS a reconciliation finding (the `"unreadable"` verdict), but a
+ * dropped connection or malformed JSON-RPC response is not evidence about
+ * the chain's state at all — it is evidence about nothing, and reporting any
+ * verdict from it would be silently treating unknown state as reconciled.
+ */
+export class ReconciliationReadError extends Error {
+  readonly chain: string;
+  readonly target: "account code" | "storage word" | "implementation code" | "getter call";
+
+  constructor(chain: string, target: ReconciliationReadError["target"]) {
+    super(
+      `reconciliation on chain "${chain}" could not read ${target}: the RPC response was absent, malformed, or the transport failed. Chain state is unknown, not reconciled.`,
+    );
+    this.name = "ReconciliationReadError";
+    this.chain = chain;
+    this.target = target;
+  }
+}
+
+/**
  * Used (as the fallback event's `cause`, never actually thrown — see
  * `../gas/policy.js`'s `GasPolicy.plan`) when neither sponsorship nor
  * self-funded ERC-4337 is viable: the account's own native balance cannot
