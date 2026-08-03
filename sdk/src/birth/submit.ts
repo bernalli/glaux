@@ -2,6 +2,7 @@ import { encodeFunctionData, type Address, type Hex, type PublicClient } from "v
 import { sendRawTransaction } from "viem/actions";
 import { privateKeyToAddress, signTransaction } from "viem/accounts";
 import type { BirthBlob } from "../core/types.js";
+import { BirthGasEstimationError, BirthTransactionRevertedError } from "../errors.js";
 import { preflightFreshAccount } from "./preflight.js";
 
 const INITIALIZE_ABI = [
@@ -30,14 +31,6 @@ const INITIALIZE_ABI = [
  * Ported from `scripts/submit_birth.py`'s `MIN_PLAUSIBLE_BIRTH_GAS`.
  */
 const MIN_PLAUSIBLE_BIRTH_GAS = 200_000n;
-
-/**
- * Enough for the worst case observed: a chain that answers P-256 with a
- * Solidity verifier at 0x100 rather than a precompile, where birth costs
- * ~1.4M gas. Unused gas is refunded; only the relayer's balance has to cover
- * the limit. Ported from `scripts/submit_birth.py`'s `FALLBACK_BIRTH_GAS`.
- */
-const FALLBACK_BIRTH_GAS = 3_000_000n;
 
 function buildInitializeCalldata(blob: BirthBlob): Hex {
   return encodeFunctionData({
@@ -77,11 +70,15 @@ export interface SubmitBirthResult {
  * Gas is estimated WITH the authorization list attached — see
  * `MIN_PLAUSIBLE_BIRTH_GAS`'s documentation for why an estimate taken
  * without it is not trustworthy for a type-4 transaction against an
- * undelegated account — and an implausibly cheap answer (or an estimate that
- * throws outright, which some nodes do pre-delegation) is treated as a node
- * that ignored the field rather than as a cheap birth.
+ * undelegated account. An implausibly cheap answer or an estimation failure
+ * means the node may have ignored the authorization list, so this function
+ * refuses to broadcast rather than silently substituting a fixed gas limit.
  *
  * @throws {BirthPreflightError} if `blob.account` is not a pristine EOA.
+ * @throws {BirthGasEstimationError} if the authorization-aware estimate is
+ * unavailable or implausibly low.
+ * @throws {BirthTransactionRevertedError} if the transaction is mined but
+ * initialization reverts.
  */
 export async function submitBirth(
   client: PublicClient,
@@ -104,7 +101,7 @@ export async function submitBirth(
   const baseFee = latestBlock.baseFeePerGas ?? gasPrice;
   const maxFeePerGas = baseFee * 2n + priorityFee;
 
-  let estimate = 0n;
+  let estimate: bigint;
   try {
     estimate = await client.estimateGas({
       account: relayerAddress,
@@ -113,9 +110,12 @@ export async function submitBirth(
       authorizationList,
     });
   } catch {
-    estimate = 0n;
+    throw new BirthGasEstimationError();
   }
-  const gas = estimate >= MIN_PLAUSIBLE_BIRTH_GAS ? (estimate * 3n) / 2n + 100_000n : FALLBACK_BIRTH_GAS;
+  if (typeof estimate !== "bigint" || estimate < MIN_PLAUSIBLE_BIRTH_GAS) {
+    throw new BirthGasEstimationError();
+  }
+  const gas = (estimate * 3n) / 2n + 100_000n;
 
   const signedTransaction = await signTransaction({
     privateKey: relayer,
@@ -133,7 +133,8 @@ export async function submitBirth(
   });
 
   const txHash = await sendRawTransaction(client, { serializedTransaction: signedTransaction });
-  await client.waitForTransactionReceipt({ hash: txHash });
+  const receipt = await client.waitForTransactionReceipt({ hash: txHash });
+  if (receipt.status !== "success") throw new BirthTransactionRevertedError(txHash);
 
   return { account: blob.account, txHash };
 }

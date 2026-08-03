@@ -1,4 +1,4 @@
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 
 /**
  * Thrown when a caller supplies `validUntil === 0` to an operation digest or
@@ -96,5 +96,57 @@ export class BirthPreflightError extends Error {
   constructor(reason: string) {
     super(`refusing to submit birth blob: ${reason}`);
     this.name = "BirthPreflightError";
+  }
+}
+
+/**
+ * Thrown when the birth preflight cannot obtain a well-formed code or storage
+ * value from its RPC client.
+ *
+ * This is intentionally distinct from `BirthPreflightError`: the latter means
+ * the account was read successfully and is unsafe to birth, whereas this
+ * error means the account's safety is unknown. An unknown account must never
+ * be treated as an empty EOA, because the one-shot birth key is already gone
+ * by the time an erroneous preflight can be discovered.
+ */
+export class BirthPreflightReadError extends Error {
+  readonly account: Address;
+  readonly target: "code" | "storage";
+  readonly slot: Hex | undefined;
+
+  constructor(account: Address, target: "code" | "storage", slot?: Hex) {
+    const location = target === "code" ? "account code" : `storage word at ${slot}`;
+    super(
+      `refusing to submit birth blob: could not read ${location} for ${account}; ` +
+        "the RPC response was absent, malformed, or failed. Account cleanliness is unknown.",
+    );
+    this.name = "BirthPreflightReadError";
+    this.account = account;
+    this.target = target;
+    this.slot = slot;
+  }
+}
+
+/**
+ * Thrown when an EIP-7702 birth cannot be priced with an authorization-aware,
+ * plausible gas estimate. Nothing has been broadcast when this is thrown.
+ */
+export class BirthGasEstimationError extends Error {
+  constructor() {
+    super(
+      "unable to obtain a plausible gas estimate for the EIP-7702 birth transaction; refusing to broadcast.",
+    );
+    this.name = "BirthGasEstimationError";
+  }
+}
+
+/** Thrown when the type-4 transaction was mined but its initialization reverted. */
+export class BirthTransactionRevertedError extends Error {
+  readonly txHash: Hex;
+
+  constructor(txHash: Hex) {
+    super(`birth transaction ${txHash} was mined but initialization reverted; birth did not succeed.`);
+    this.name = "BirthTransactionRevertedError";
+    this.txHash = txHash;
   }
 }

@@ -7,6 +7,10 @@ import type { BirthBlob, FactorSlot } from "../core/types.js";
 import { ImplementationNotDeployedError } from "../errors.js";
 import { registrationProof, type Signer } from "../signers/signer.js";
 
+// Task 6's public naming contract calls this helper `buildInitDigest`; retain
+// the pre-existing core name as well, with one implementation and no drift.
+export { initDigest as buildInitDigest } from "../core/digests.js";
+
 /**
  * Builds the three pairwise-distinct factor slots — paper (secp256k1),
  * device (P-256), cloud (secp256k1), in that fixed order — from their

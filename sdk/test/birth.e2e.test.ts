@@ -2,18 +2,21 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { Address, Hex } from "viem";
+import { keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
 import { ROUTER, designator } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { preflightFreshAccount } from "../src/birth/preflight.js";
 import { submitBirth } from "../src/birth/submit.js";
-import { BirthPreflightError } from "../src/errors.js";
+import { BirthPreflightError, BirthTransactionRevertedError } from "../src/errors.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import { deployCanonical } from "./helpers/deploy.js";
 
 const P256_VERIFIER: Address = "0x0000000000000000000000000000000000000100";
+const STORAGE_SLOT = BigInt(keccak256(stringToBytes("glaux.account.v1.storage")));
+const IMPL_SLOT = keccak256(stringToBytes("glaux.account.v1.implementation"));
+const NON_ZERO_WORD = `0x${"01".padStart(64, "0")}` as Hex;
 
 /**
  * Anvil's well-known default accounts #0/#1/#2 (mnemonic "test test test
@@ -145,6 +148,58 @@ describe("birth e2e", () => {
       await expect(submitBirth(client, DEPLOYER_PK, blob)).rejects.toThrow(BirthPreflightError);
     },
     90_000,
+  );
+
+  it("rejects every independently poisoned Glaux namespaced word", async () => {
+    const { url } = await spawnAnvil();
+    const { client, test } = clientsFor(url);
+    const slots = [
+      IMPL_SLOT,
+      ...Array.from({ length: 7 }, (_, offset) => toHex(STORAGE_SLOT + BigInt(offset), { size: 32 })),
+    ];
+
+    for (const [index, slot] of slots.entries()) {
+      // A different no-code address per case keeps every account otherwise
+      // fresh, so each assertion proves this exact word is checked.
+      const account = `0x${(index + 1).toString(16).padStart(40, "0")}` as Address;
+      await test.setStorageAt({ address: account, index: slot, value: NON_ZERO_WORD });
+      await expect(preflightFreshAccount(client, account)).rejects.toThrow(BirthPreflightError);
+    }
+  });
+
+  it(
+    "does not report a reverted initialization as a successful birth",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client } = clientsFor(url);
+      await deployCanonical(client, DEPLOYER_PK);
+
+      const paper = new LocalSecp256k1Signer(PAPER_PK);
+      const device = new LocalP256Signer(DEVICE_PK);
+      const cloud = new LocalSecp256k1Signer(CLOUD_PK);
+      const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
+
+      // An invalid birth signature reverts before factor validation. Force a
+      // plausible estimate so the test reaches a mined reverted receipt,
+      // rather than stopping at the node's correct simulation failure.
+      const clientWithForcedEstimate = Object.create(client) as PublicClient;
+      clientWithForcedEstimate.estimateGas = async () => 300_000n;
+      const revertedBlob = { ...blob, birthSig: "0x00" as Hex };
+
+      let thrown: unknown;
+      try {
+        await submitBirth(clientWithForcedEstimate, DEPLOYER_PK, revertedBlob);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(BirthTransactionRevertedError);
+      expect((thrown as BirthTransactionRevertedError).txHash).toMatch(/^0x[0-9a-f]{64}$/u);
+      // EIP-7702 applies the authorization even though initialize reverted:
+      // the SDK must therefore not return a success result for this state.
+      expect(await client.getCode({ address: blob.account })).toBe(designator());
+    },
+    30_000,
   );
 });
 

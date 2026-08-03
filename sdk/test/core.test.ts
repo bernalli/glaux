@@ -9,6 +9,7 @@ import {
 } from "../src/core/digests.js";
 import { encodeInitData, encodeSlotSig, encodeUserOpSignature } from "../src/core/encoding.js";
 import type { Call, FactorSlot, SlotSig } from "../src/core/types.js";
+import { buildInitDigest } from "../src/birth/blob.js";
 import { OperationExpiredError } from "../src/errors.js";
 import fixtures from "../../test/fixtures/sdk_parity.json" with { type: "json" };
 
@@ -36,6 +37,18 @@ it("initDigest matches the fixture vector", () => {
       d.initData as Hex,
     ),
   ).toBe(d.digest);
+});
+
+it("exports buildInitDigest as the existing initDigest implementation", () => {
+  const d = fixtures.initDigest;
+  expect(
+    buildInitDigest(
+      d.router as Address,
+      d.implementation as Address,
+      d.expectedCodeHash as Hex,
+      d.initData as Hex,
+    ),
+  ).toBe(initDigest(d.router as Address, d.implementation as Address, d.expectedCodeHash as Hex, d.initData as Hex));
 });
 
 it("execDigest matches the fixture vector", () => {
