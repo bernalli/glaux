@@ -10,9 +10,9 @@ into a wallet.
 > **Status: unaudited reference implementation.** Nothing in this repository
 > has been audited. **Do not use with real funds.**
 
-This package is not yet published (`"private": true` in `package.json`); it
-is consumed from within this repository via relative imports (see the
-Quickstart). Node.js >= 20.19.
+This package is not yet published (`"private": true` in `package.json`), but
+its built subpaths are exported as `@glaux/sdk/...` after `npm run build`.
+Node.js >= 20.19.
 
 ## Two facts to read before anything else
 
@@ -20,10 +20,13 @@ Quickstart). Node.js >= 20.19.
 
 Glaux's account address is an ordinary EOA that has been delegated via
 EIP-7702 to the Glaux router; the private key that produced that delegation
-(the "birth key") is discarded the moment birth succeeds. That address is
-identical on every EVM chain by construction — nothing about Glaux prevents
-someone from sending funds to it on a chain where the account has never been
-born.
+(the "birth key") is destroyed immediately after it produces the
+authorization and birth signatures, before any submission or on-chain
+success. The `BirthBlob` is the only thing that survives: preserve that blob,
+not the birth key, to birth the same account later on another chain. That
+address is identical on every EVM chain by construction — nothing about Glaux
+prevents someone from sending funds to it on a chain where the account has
+never been born.
 
 If that happens, the funds are **frozen**: there is no key left to move
 them, and the account cannot execute anything until it is born on that exact
@@ -79,10 +82,13 @@ The e2e tests reuse the same setup via `sdk/test/helpers/{anvil,deploy}.ts`;
 this is the shell-level equivalent:
 
 ```bash
+forge build
 anvil --hardfork prague &
+until cast block-number --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; do sleep 0.1; done
 forge script script/Deploy.s.sol:Deploy \
   --rpc-url http://127.0.0.1:8545 \
-  --private-key <funded local key> --broadcast
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  --broadcast
 cast rpc anvil_setCode 0x0000000071727De22E5E9d8BAf0edAc6f37da032 \
   "$(jq -r .deployedBytecode.object out/EntryPoint.sol/EntryPoint.json)" \
   --rpc-url http://127.0.0.1:8545
@@ -91,10 +97,14 @@ cast rpc anvil_setCode 0x0000000000000000000000000000000000000100 \
   --rpc-url http://127.0.0.1:8545
 ```
 
-The SDK part — checked eligibility, then birth (verified against the setup
-above; see this task's report for the transcript):
+Then build the package and run this complete example from `sdk/`. The four
+keys are the repository's well-known public Anvil test keys; they hold no
+real value and must never be reused outside this local node.
 
-```ts
+```bash
+cd sdk
+npm run build
+node --input-type=module <<'NODE'
 import { createPublicClient, http } from "viem";
 import { checkChain } from "@glaux/sdk/eligibility/verdict";
 import { LocalSecp256k1Signer } from "@glaux/sdk/signers/secp256k1";
@@ -105,6 +115,10 @@ import { submitBirth } from "@glaux/sdk/birth/submit";
 
 const rpc = "http://127.0.0.1:8545";
 const client = createPublicClient({ transport: http(rpc) });
+const relayerPrivateKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const paperPrivateKey = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const devicePrivateKey = "0x7459e13afd9158a379ee75ca9e80a328916dba1473c863f800f51ee5f46eb3ab";
+const cloudPrivateKey = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 
 // SAFETY GATE — see above. Never show a receive address before this.
 const eligibility = await checkChain(client);
@@ -119,19 +133,21 @@ await preflightFreshAccount(client, blob.account); // refuses to re-birth an occ
 const result = await submitBirth(client, relayerPrivateKey, blob);
 
 console.log("born account:", result.account);
+console.log("birth transaction:", result.txHash);
+NODE
 ```
 
-`@glaux/sdk/...` above stands for this package's compiled `dist/` (or `src/`
-under a TS-aware loader) once it is consumed from outside this repository;
-inside this repo, import the relative `.js`/`.ts` paths shown in
-`sdk/test/*.test.ts` (e.g. `../src/eligibility/verdict.js`).
+The exports map resolves each `@glaux/sdk/...` subpath above to its built
+`dist/...` JavaScript and declarations. It intentionally exposes no package
+root import because the SDK has no root entry point; import the module you
+need by subpath.
 
 ## Module map
 
 | Module | What it does |
 |---|---|
 | `core/constants.ts` | Canonical addresses (`ROUTER`, `IMPL`, `ENTRYPOINT`, `CREATE2_DEPLOYER`), the CREATE2 `SALT`, domain separators, and `designator()` (the EIP-7702 `0xef0100‖router` bytecode). |
-| `core/digests.ts` | Every EIP-191-wrapped digest the contract verifies: registration (possession proof), init (birth), execution, ERC-4337 user operation, and arbitrary-message digests. |
+| `core/digests.ts` | Digest builders the contract verifies: the registration/possession-proof digest is deliberately raw (not EIP-191-wrapped); init (birth), execution, ERC-4337 user operation, and arbitrary-message digests use EIP-191 v0 wrapping. |
 | `core/encoding.ts` | ABI encodes the wire blobs the contract expects: init data, a single `SlotSig`, and the ERC-4337 signature blob (`validUntil` + two `SlotSig`s). |
 | `core/types.ts` | Shared value types: `FactorSlot`, `SlotSig`, `Call`, `BirthBlob`, and the two verifier-type constants. |
 | `signers/signer.ts` | The pluggable `Signer` interface every factor implements, plus `registrationProof` (the possession-proof signer). |
@@ -145,7 +161,7 @@ inside this repo, import the relative `.js`/`.ts` paths shown in
 | `gas/erc7677.ts` | ERC-7677 paymaster-web-service client (`pm_getPaymasterStubData`/`pm_getPaymasterData`) and the RPC-shape conversion a UserOperation needs to speak it. |
 | `gas/policy.ts` | `GasPolicy` — the sponsored → self-funded → self-relay fallback ladder, with every degradation reported as an explicit event, never silent. |
 | `reconcile/reconcile.ts` | Cross-chain reconciliation: raw storage first, the account's own getters only as a cross-check — the TypeScript port of `scripts/reconcile.py`, same verdict semantics. |
-| `errors.ts` | Every typed error the modules above throw, one per distinct failure mode — never a generic `Error`. |
+| `errors.ts` | Typed errors for the SDK's operational failure modes; invalid caller-supplied constructor arguments may instead throw a standard JavaScript error (for example, `RangeError` for an invalid ERC-7677 timeout). |
 
 ## The bundler limitation (Alto 0.0.20, discovered in Task 11)
 
@@ -205,8 +221,7 @@ import("viem").then(async ({ createPublicClient, http }) => {
 '
 ```
 
-**Measured 2026-08-03** (endpoints: `ethereum-sepolia-rpc.publicnode.com`,
-`base-sepolia-rpc.publicnode.com`):
+**Measured 2026-08-03** against operator-supplied public RPC endpoints:
 
 | Chain | Verdict | p256 | eip7702 | create2Deployer | entryPoint | routerDeployed | implDeployed |
 |---|---|---|---|---|---|---|---|
@@ -216,9 +231,8 @@ import("viem").then(async ({ createPublicClient, http }) => {
 Both chains fail on exactly one probe, for exactly one reason: **the
 testnet redeploy to the post-audit implementation
 (`0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d`, `IMPL` in
-`core/constants.ts`) has not happened yet.** It is blocked on a funded
-`GLAUX_RELAYER_KEY` — see `docs/deployments.md`'s superseded notice. What is
-actually deployed on both public testnets right now is the **old**,
+`core/constants.ts`) has not happened yet.** What is actually deployed on
+both public testnets right now is the **old**,
 pre-audit implementation at `0x927ed5700518a8A053367da1EaFDFBdE061E73F2`
 (confirmed live via `eth_getCode` on both chains on the measurement date);
 `checkChain` correctly reports it as absent because it checks the current

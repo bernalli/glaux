@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js"
+    }
+  },
   "description": "TypeScript client SDK for the Glaux EIP-7702 smart account.",
   "license": "MIT",
   "engines": {
