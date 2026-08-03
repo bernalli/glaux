@@ -113,7 +113,8 @@ export interface SignExecutionParams {
   readonly signers: readonly [Signer, Signer];
 }
 
-interface FactorSlotReadback {
+/** Exported for reuse by `../execute/userop.js`'s own slot reads. */
+export interface FactorSlotReadback {
   readonly verifierType: number;
   readonly data: Hex;
 }
@@ -178,7 +179,8 @@ async function readSnapshotBlockNumber(client: PublicClient): Promise<bigint> {
   }
 }
 
-async function readChainId(client: PublicClient): Promise<number> {
+/** Exported for reuse by `../execute/userop.js`'s own chain-id read on submission. */
+export async function readChainId(client: PublicClient): Promise<number> {
   try {
     const chainId: unknown = await client.getChainId();
     if (!isUint(chainId, Number.MAX_SAFE_INTEGER)) {
@@ -293,7 +295,8 @@ async function readExecutionState(client: PublicClient, account: Address): Promi
   throw new ExecutionStateReadError("execution nonce");
 }
 
-async function readRelayerNonce(client: PublicClient, relayer: Address): Promise<number> {
+/** Exported for reuse by `../execute/userop.js`'s own `handleOps` broadcast. */
+export async function readRelayerNonce(client: PublicClient, relayer: Address): Promise<number> {
   try {
     const nonce: unknown = await client.getTransactionCount({ address: relayer });
     if (!isUint(nonce, Number.MAX_SAFE_INTEGER)) {
@@ -305,11 +308,12 @@ async function readRelayerNonce(client: PublicClient, relayer: Address): Promise
   }
 }
 
-interface LatestBlockReadback {
+/** Exported for reuse by `../execute/userop.js`'s own fee-field estimation. */
+export interface LatestBlockReadback {
   readonly baseFeePerGas: bigint | null;
 }
 
-async function readLatestBlock(client: PublicClient): Promise<LatestBlockReadback> {
+export async function readLatestBlock(client: PublicClient): Promise<LatestBlockReadback> {
   try {
     const block: unknown = await client.getBlock();
     if (
@@ -326,7 +330,8 @@ async function readLatestBlock(client: PublicClient): Promise<LatestBlockReadbac
   }
 }
 
-async function readNonNegativeFee(
+/** Exported for reuse by `../execute/userop.js`'s own fee-field estimation. */
+export async function readNonNegativeFee(
   read: () => Promise<bigint>,
   target: "gas price" | "priority fee",
 ): Promise<bigint> {
@@ -339,7 +344,8 @@ async function readNonNegativeFee(
   }
 }
 
-async function readExecutionReceipt(client: PublicClient, txHash: Hex): Promise<"success" | "reverted"> {
+/** Exported for reuse by `../execute/userop.js`'s own `handleOps` broadcast. */
+export async function readExecutionReceipt(client: PublicClient, txHash: Hex): Promise<"success" | "reverted"> {
   try {
     const receipt: unknown = await client.waitForTransactionReceipt({ hash: txHash });
     if (typeof receipt !== "object" || receipt === null || !("status" in receipt)) {
@@ -355,9 +361,12 @@ async function readExecutionReceipt(client: PublicClient, txHash: Hex): Promise<
 /**
  * Finds which of the account's three installed slots `signer` occupies, by
  * comparing key material rather than trusting a caller-supplied index — see
- * `UnrecognizedSignerError`'s documentation for why.
+ * `UnrecognizedSignerError`'s documentation for why. Exported for reuse by
+ * `../execute/userop.js`'s own quorum-to-slot resolution: the ERC-4337
+ * signature blob carries the identical `SlotSig.slotIndex` wire field, so it
+ * needs the identical never-trust-a-caller-index guarantee.
  */
-function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Signer): number {
+export function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Signer): number {
   const keyData = signer.keyData().toLowerCase();
   const index = slots.findIndex(
     (slot) => slot.verifierType === signer.verifierType && slot.data.toLowerCase() === keyData,

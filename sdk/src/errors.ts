@@ -174,9 +174,14 @@ export class UnrecognizedSignerError extends Error {
 }
 
 /**
- * Thrown when `signExecution` cannot obtain a well-formed value needed to
- * bind a quorum to the account's current state. This is deliberately distinct
- * from a recognized but unsuitable state: unknown state must never be signed.
+ * Thrown when `signExecution` (direct path) or `buildUserOp`/`signUserOp`
+ * (ERC-4337 path, `../execute/userop.js`) cannot obtain a well-formed value
+ * needed to bind a quorum, or a submission, to the account's current state.
+ * This is deliberately distinct from a recognized but unsuitable state:
+ * unknown state must never be signed or submitted. Shared across both
+ * execution paths on purpose: reading a nonce, a factor slot, or a fee field
+ * fails closed the same way regardless of which transport ultimately carries
+ * the operation.
  */
 export class ExecutionStateReadError extends Error {
   readonly target:
@@ -184,12 +189,15 @@ export class ExecutionStateReadError extends Error {
     | "chain id"
     | "account code"
     | "execution nonce"
+    | "entrypoint nonce"
+    | "entrypoint deposit"
     | "factor slot"
     | "relayer transaction nonce"
     | "latest block"
     | "gas price"
     | "priority fee"
-    | "transaction receipt";
+    | "transaction receipt"
+    | "userOp hash";
   readonly slotIndex: number | undefined;
 
   constructor(
@@ -198,7 +206,7 @@ export class ExecutionStateReadError extends Error {
   ) {
     const location = target === "factor slot" ? `factor slot ${slotIndex}` : target;
     super(
-      `could not read ${location} for direct execution; the RPC response was absent, malformed, or failed. ` +
+      `could not read ${location}; the RPC response was absent, malformed, or failed. ` +
         "Refusing to continue with unknown chain state.",
     );
     this.name = "ExecutionStateReadError";
@@ -330,5 +338,107 @@ export class ExecutionTransactionRevertedError extends Error {
     super(`execution transaction ${txHash} was mined but reverted.`);
     this.name = "ExecutionTransactionRevertedError";
     this.txHash = txHash;
+  }
+}
+
+/**
+ * Thrown when a plausible gas estimate for the ERC-4337 path (either
+ * `executeFromEntryPoint`'s call gas in `buildUserOp`, or `handleOps`' own
+ * transaction gas in `submitUserOpDirect`) cannot be obtained. Nothing has
+ * been broadcast when this is thrown.
+ */
+export class UserOpGasEstimationError extends Error {
+  constructor() {
+    super(
+      "unable to obtain a gas estimate for the ERC-4337 user operation; refusing to broadcast.",
+    );
+    this.name = "UserOpGasEstimationError";
+  }
+}
+
+/**
+ * Thrown when `submitUserOpDirect`'s pre-flight simulation of `handleOps`
+ * could not be confirmed because simulation failed without a decodable
+ * revert, or returned no usable result. Distinct from `UserOpFailedError`:
+ * that error proves the EntryPoint evaluated the operation and rejected it;
+ * this one means that is unknown.
+ */
+export class UserOpSimulationError extends Error {
+  constructor() {
+    super(
+      "could not confirm the handleOps pre-flight simulation; the RPC response was absent, malformed, or failed. Refusing to broadcast.",
+    );
+    this.name = "UserOpSimulationError";
+  }
+}
+
+/**
+ * Thrown when `submitUserOpDirect`'s pre-flight simulation of `handleOps`
+ * reverts with the EntryPoint's own `FailedOp(uint256 opIndex, string reason)`
+ * (or `FailedOpWithRevert`) custom error, decoded from the real revert data
+ * rather than inferred. `reason` carries the EntryPoint's exact diagnostic
+ * string (for example `"AA24 signature error"` or `"AA22 expired or not
+ * due"`, both defined in the vendored
+ * `lib/account-abstraction/contracts/core/EntryPoint.sol`), so a caller can
+ * distinguish a bad quorum from an expired window from an unauthorized
+ * caller rather than seeing only "it reverted".
+ */
+export class UserOpFailedError extends Error {
+  readonly opIndex: bigint;
+  readonly reason: string;
+
+  constructor(opIndex: bigint, reason: string) {
+    super(`handleOps reverted FailedOp(${opIndex}): ${reason}`);
+    this.name = "UserOpFailedError";
+    this.opIndex = opIndex;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Thrown when `submitUserOpDirect`'s pre-flight simulation of `handleOps`
+ * reverts for a reason that could not be decoded as `FailedOp`/
+ * `FailedOpWithRevert` against the EntryPoint's own ABI.
+ */
+export class UserOpSubmissionRevertedError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`handleOps simulation reverted: ${reason}`);
+    this.name = "UserOpSubmissionRevertedError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Thrown when the `handleOps` transaction was mined but its receipt reports
+ * failure — despite a successful pre-flight simulation (for example a state
+ * change between simulation and inclusion). Never silently treated as success.
+ */
+export class UserOpTransactionRevertedError extends Error {
+  readonly txHash: Hex;
+
+  constructor(txHash: Hex) {
+    super(`handleOps transaction ${txHash} was mined but reverted.`);
+    this.name = "UserOpTransactionRevertedError";
+    this.txHash = txHash;
+  }
+}
+
+/**
+ * Thrown when a mined `handleOps` transaction's receipt reports success but
+ * no `UserOperationEvent` for the expected `userOpHash` can be found in its
+ * logs. `submitUserOpDirect` and its callers must read the real cost the
+ * EntryPoint reports, never infer it from the transaction receipt's own gas
+ * fields (which include EVERY operation in the bundle, not just this one) —
+ * an absent event means that real cost is unknown, not zero.
+ */
+export class UserOpEventNotFoundError extends Error {
+  readonly userOpHash: Hex;
+
+  constructor(userOpHash: Hex) {
+    super(`no UserOperationEvent found for userOpHash ${userOpHash} in the transaction's logs.`);
+    this.name = "UserOpEventNotFoundError";
+    this.userOpHash = userOpHash;
   }
 }
