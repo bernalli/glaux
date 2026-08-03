@@ -43,6 +43,17 @@ export interface AnvilHandle {
 
 const LISTENING_RE = /Listening on 127\.0\.0\.1:(\d+)/;
 
+export interface SpawnAnvilOptions {
+  /**
+   * Overrides anvil's default chain id (31337). Added for
+   * `sdk/test/replay.e2e.test.ts`, which needs two anvils with genuinely
+   * different chain ids to prove the same birth blob replays across chains
+   * rather than merely across two identically-configured nodes. Omitted,
+   * behavior is unchanged from before this option existed.
+   */
+  readonly chainId?: number;
+}
+
 /**
  * Spawns a fresh anvil on an OS-assigned port (`--port 0`, so parallel runs
  * never collide) pinned to `--hardfork prague`. Pinning matters: a bare
@@ -56,8 +67,10 @@ const LISTENING_RE = /Listening on 127\.0\.0\.1:(\d+)/;
  * P-256 precompile — matching `docs/deployments.md`'s local two-chain proof,
  * which etches the same vendored Solidity verifier for the same reason.
  */
-export async function spawnAnvil(): Promise<AnvilHandle> {
-  const child = spawn("anvil", ["--port", "0", "--hardfork", "prague"], {
+export async function spawnAnvil(options: SpawnAnvilOptions = {}): Promise<AnvilHandle> {
+  const args = ["--port", "0", "--hardfork", "prague"];
+  if (options.chainId !== undefined) args.push("--chain-id", String(options.chainId));
+  const child = spawn("anvil", args, {
     stdio: ["ignore", "pipe", "pipe"],
   });
   runningAnvils.add(child);
