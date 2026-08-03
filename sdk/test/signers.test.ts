@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bytesToBigInt,
+  bytesToHex,
   decodeAbiParameters,
   hexToBytes,
   keccak256,
@@ -12,6 +13,11 @@ import {
 import { p256 } from "@noble/curves/nist.js";
 import { registrationDigest } from "../src/core/digests.js";
 import { VERIFIER_P256, VERIFIER_SECP256K1 } from "../src/core/types.js";
+import {
+  InvalidDigestLengthError,
+  InvalidP256PrivateKeyError,
+  InvalidSlotIndexError,
+} from "../src/errors.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { registrationProof } from "../src/signers/signer.js";
@@ -38,6 +44,9 @@ const UINT256_PAIR = [{ type: "uint256" }, { type: "uint256" }] as const;
 /** Curve order `n` for P-256/secp256r1. */
 const P256_ORDER = p256.Point.Fn.ORDER;
 
+/** Curve order `n` for secp256k1. */
+const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
 /**
  * Reconstructs the uncompressed SEC1 public key (`0x04 || qx || qy`) `@noble/curves`
  * expects, straight from the wire bytes `keyData()` returns — independent of
@@ -49,6 +58,15 @@ function uncompressedPublicKeyFromKeyData(keyData: Hex): Uint8Array {
   uncompressed[0] = 0x04;
   uncompressed.set(raw, 1);
   return uncompressed;
+}
+
+function secp256k1SignatureParts(signature: Hex): { s: bigint; v: number } {
+  const bytes = hexToBytes(signature);
+  expect(bytes).toHaveLength(65);
+  return {
+    s: bytesToBigInt(bytes.slice(32, 64)),
+    v: bytes[64]!,
+  };
 }
 
 describe("LocalSecp256k1Signer", () => {
@@ -65,9 +83,48 @@ describe("LocalSecp256k1Signer", () => {
     const sig = await signer.sign(digest);
 
     expect(sig.length).toBe(2 + 65 * 2);
+    const { s, v } = secp256k1SignatureParts(sig);
+    expect([0x1b, 0x1c]).toContain(v);
+    expect(s <= SECP256K1_ORDER / 2n).toBe(true);
 
     const recovered = await recoverAddress({ hash: digest, signature: sig });
     expect(recovered).toBe(ANVIL_ADDRESS);
+  });
+
+  it("makes the recovery-compatible v=0 corruption visibly contract-invalid", async () => {
+    const signer = new LocalSecp256k1Signer(ANVIL_PK);
+    const digest = registrationDigest(0, VERIFIER_SECP256K1, signer.keyData());
+    const corrupted = hexToBytes(await signer.sign(digest));
+    corrupted[64] = 0;
+    const corruptedSignature = bytesToHex(corrupted);
+
+    // viem can recover this alternate v convention, but Solidity accepts only 27 or 28.
+    expect(await recoverAddress({ hash: digest, signature: corruptedSignature })).toBe(ANVIL_ADDRESS);
+    expect(secp256k1SignatureParts(corruptedSignature).v).toBe(0);
+    expect([0x1b, 0x1c]).not.toContain(secp256k1SignatureParts(corruptedSignature).v);
+  });
+
+  it("makes the recovery-compatible high-s corruption visibly contract-invalid", async () => {
+    const signer = new LocalSecp256k1Signer(ANVIL_PK);
+    const digest = registrationDigest(0, VERIFIER_SECP256K1, signer.keyData());
+    const signature = await signer.sign(digest);
+    const { s, v } = secp256k1SignatureParts(signature);
+    const corrupted = hexToBytes(signature);
+    corrupted.set(hexToBytes(numberToHex(SECP256K1_ORDER - s, { size: 32 })), 32);
+    corrupted[64] = v === 0x1b ? 0x1c : 0x1b;
+    const corruptedSignature = bytesToHex(corrupted);
+
+    // Flipping v preserves recovery, while Solidity rejects the high-s representation.
+    expect(await recoverAddress({ hash: digest, signature: corruptedSignature })).toBe(ANVIL_ADDRESS);
+    expect(secp256k1SignatureParts(corruptedSignature).s > SECP256K1_ORDER / 2n).toBe(true);
+  });
+
+  it("rejects digests that cannot be passed to Solidity as bytes32", async () => {
+    const signer = new LocalSecp256k1Signer(ANVIL_PK);
+    const digest = registrationDigest(0, VERIFIER_SECP256K1, signer.keyData());
+
+    await expect(signer.sign(digest.slice(0, -2) as Hex)).rejects.toThrow(InvalidDigestLengthError);
+    await expect(signer.sign(`${digest}00` as Hex)).rejects.toThrow(InvalidDigestLengthError);
   });
 
   it("registrationProof signs registrationDigest and recovers to the signer's address", async () => {
@@ -77,6 +134,12 @@ describe("LocalSecp256k1Signer", () => {
 
     const recovered = await recoverAddress({ hash: digest, signature: proof });
     expect(recovered).toBe(ANVIL_ADDRESS);
+  });
+
+  it("rejects registration proofs for slots the contract does not have", async () => {
+    const signer = new LocalSecp256k1Signer(ANVIL_PK);
+
+    await expect(registrationProof(signer, 3)).rejects.toThrow(InvalidSlotIndexError);
   });
 });
 
@@ -94,6 +157,10 @@ describe("LocalP256Signer", () => {
     const [qx, qy] = decodeAbiParameters(UINT256_PAIR, keyData);
     expect(qx).toBe(BigInt(d.qx));
     expect(qy).toBe(BigInt(d.qy));
+  });
+
+  it("rejects malformed private-key lengths at construction", () => {
+    expect(() => new LocalP256Signer(P256_PK.slice(0, -2) as Hex)).toThrow(InvalidP256PrivateKeyError);
   });
 
   it("sign() reproduces the sdk_parity fixture's proven-accepted P-256 signature byte-for-byte", async () => {
@@ -130,6 +197,14 @@ describe("LocalP256Signer", () => {
     const [, s] = decodeAbiParameters(UINT256_PAIR, sig);
 
     expect(s <= P256_ORDER / 2n).toBe(true);
+  });
+
+  it("rejects digests that cannot be passed to Solidity as bytes32", async () => {
+    const signer = new LocalP256Signer(P256_PK);
+    const digest = fixtures.encodedSlotSigP256.digest as Hex;
+
+    await expect(signer.sign(digest.slice(0, -2) as Hex)).rejects.toThrow(InvalidDigestLengthError);
+    await expect(signer.sign(`${digest}00` as Hex)).rejects.toThrow(InvalidDigestLengthError);
   });
 
   it("normalizes a signature whose raw (un-normalized) s falls in the high half of the curve order", async () => {

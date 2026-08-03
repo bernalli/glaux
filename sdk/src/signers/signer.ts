@@ -1,6 +1,7 @@
 import type { Hex } from "viem";
 import { registrationDigest } from "../core/digests.js";
 import type { VerifierType } from "../core/types.js";
+import { InvalidSlotIndexError } from "../errors.js";
 
 /**
  * Pluggable signing interface every Glaux factor key implements: the local
@@ -29,6 +30,9 @@ export interface Signer {
  * must be producible before the account exists.
  */
 export async function registrationProof(signer: Signer, index: number): Promise<Hex> {
+  if (!Number.isInteger(index) || index < 0 || index > 2) {
+    throw new InvalidSlotIndexError();
+  }
   const digest = registrationDigest(index, signer.verifierType, signer.keyData());
   return signer.sign(digest);
 }

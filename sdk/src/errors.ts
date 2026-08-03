@@ -22,3 +22,35 @@ export class OperationExpiredError extends Error {
     this.name = "OperationExpiredError";
   }
 }
+
+/**
+ * Thrown when a signer is asked to sign something other than the `bytes32`
+ * digest the Glaux contracts verify.
+ */
+export class InvalidDigestLengthError extends Error {
+  constructor() {
+    super("digest must be exactly 32 bytes.");
+    this.name = "InvalidDigestLengthError";
+  }
+}
+
+/**
+ * Thrown when a possession proof is requested for a factor slot that Glaux
+ * does not have.
+ */
+export class InvalidSlotIndexError extends Error {
+  constructor() {
+    super("slot index must be an integer from 0 through 2.");
+    this.name = "InvalidSlotIndexError";
+  }
+}
+
+/**
+ * Thrown when local P-256 signer material is not a valid 32-byte scalar.
+ */
+export class InvalidP256PrivateKeyError extends Error {
+  constructor() {
+    super("P-256 private key must be a 32-byte scalar in the curve order.");
+    this.name = "InvalidP256PrivateKeyError";
+  }
+}

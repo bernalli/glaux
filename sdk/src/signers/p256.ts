@@ -1,6 +1,7 @@
 import { bytesToBigInt, encodeAbiParameters, hexToBytes, type Hex } from "viem";
 import { p256 } from "@noble/curves/nist.js";
 import { VERIFIER_P256 } from "../core/types.js";
+import { InvalidDigestLengthError, InvalidP256PrivateKeyError } from "../errors.js";
 import type { Signer } from "./signer.js";
 
 /**
@@ -19,7 +20,14 @@ export class LocalP256Signer implements Signer {
   private readonly privateKeyBytes: Uint8Array;
 
   constructor(privateKey: Hex) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+      throw new InvalidP256PrivateKeyError();
+    }
     this.privateKeyBytes = hexToBytes(privateKey);
+    const scalar = bytesToBigInt(this.privateKeyBytes);
+    if (scalar === 0n || scalar >= p256.Point.Fn.ORDER) {
+      throw new InvalidP256PrivateKeyError();
+    }
   }
 
   keyData(): Hex {
@@ -42,6 +50,9 @@ export class LocalP256Signer implements Signer {
    * normalization — a high-s value must never escape this method.
    */
   async sign(digest: Hex): Promise<Hex> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(digest)) {
+      throw new InvalidDigestLengthError();
+    }
     const signature = p256.sign(hexToBytes(digest), this.privateKeyBytes, {
       lowS: true,
       prehash: false,
