@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
+import { concat, keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
 import { designator } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
@@ -64,6 +64,9 @@ const ZERO_WORD: Hex = toHex(0n, { size: 32 });
 
 const CANDIDATE_ACCOUNT: Address = "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720";
 const VALID_IMPLEMENTATION_WORD: Hex = toHex(1n, { size: 32 });
+const CODELESS_ROUTER: Address = "0x000000000000000000000000000000000000dEaD";
+const CODELESS_DESIGNATOR = concat(["0xef0100", CODELESS_ROUTER]).toLowerCase() as Hex;
+const UPDATE_NONCE_SELECTOR = keccak256(stringToBytes("updateNonce()")).slice(0, 10) as Hex;
 
 /**
  * A complete, readable raw state for testing failures after the raw-first
@@ -330,6 +333,47 @@ describe("reconcile", () => {
     },
     60_000,
   );
+
+  it(
+    "reports unreadable for viem's real empty eth_call normalisation at a codeless designator target, and the Python tool agrees",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+
+      // Anvil follows this EIP-7702 designator to an address with no code.
+      // Its successful eth_call reply is wire `0x`, which viem deliberately
+      // exposes to callers as `{ data: undefined }`.
+      await test.setCode({ address: CANDIDATE_ACCOUNT, bytecode: CODELESS_DESIGNATOR });
+      expect(await client.getCode({ address: CODELESS_ROUTER })).toBeUndefined();
+      expect((await client.call({ to: CANDIDATE_ACCOUNT, data: UPDATE_NONCE_SELECTOR })).data).toBeUndefined();
+
+      const result = await reconcile([{ name: "empty", client }], CANDIDATE_ACCOUNT);
+
+      expect(result.verdict).toBe("unreadable");
+      const [state] = result.perChain as [ActiveChainState];
+      expect(state.active).toBe(true);
+      expect(state.implPointer).toBe("0x0000000000000000000000000000000000000000");
+      expect(state.implCodehash).toBe("no code at pointer");
+      expect(state.getterMismatches).toHaveLength(1);
+      expect(state.getterMismatches[0]).toContain("implementation()");
+
+      const pythonRun = runPythonReconcile(CANDIDATE_ACCOUNT, [{ name: "empty", url }]);
+      expect(pythonRun.exitCode, `python stderr: ${pythonRun.stderr}`).toBe(2);
+    },
+    60_000,
+  );
+
+  it("throws ReconciliationReadError, not a verdict, when a raw read genuinely fails at the transport level", async () => {
+    const brokenClient = {
+      getCode: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    } as unknown as PublicClient;
+
+    await expect(reconcile([{ name: "broken", client: brokenClient }], CANDIDATE_ACCOUNT)).rejects.toBeInstanceOf(
+      ReconciliationReadError,
+    );
+  });
 
   it("throws ReconciliationReadError when a getter RPC transport call rejects after valid raw reads", async () => {
     const client = clientWithValidRawState(async () => {

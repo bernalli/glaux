@@ -235,6 +235,14 @@ async function callRaw(client: PublicClient, chain: string, account: Address, da
   try {
     const result = await client.call({ to: account, data });
     const returnData: unknown = result.data;
+    // viem's public `call` API deliberately normalises a successful RPC
+    // response of `0x` to `data: undefined`. It exposes no provenance with
+    // which to distinguish that empty EVM return from a hypothetical client
+    // that omitted `data`, so treat undefined as valid empty bytes. This
+    // matches scripts/reconcile.py, where bytes(w3.eth.call(...)) is b"" and
+    // the subsequent ABI decode records an unreadable getter, rather than a
+    // transport error. Present data remains strictly wire-validated below.
+    if (returnData === undefined) return { kind: "value", value: "0x" };
     if (!isHexBytes(returnData)) throw new ReconciliationReadError(chain, "getter call");
     return { kind: "value", value: returnData };
   } catch (error) {
