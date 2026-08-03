@@ -176,14 +176,14 @@ describe("cross-chain replay, driven from the SDK", () => {
       // cannot be what makes chain B's submission possible.
       await expect(preflightFreshAccount(chainB.client, blob.account)).resolves.toBeUndefined();
 
-      const resultA = await submitBirth(chainA.client, DEPLOYER_PK, blob);
+      const resultA = await submitBirth(chainA.client, DEPLOYER_PK, blob, 31337);
       expect(resultA.account).toBe(blob.account);
 
       const hashBetweenSubmissions = sha256Blob(blob);
       expect(hashBetweenSubmissions).toBe(hashBeforeAnySubmission);
 
       // The SAME blob object, unmodified, submitted to the OTHER chain.
-      const resultB = await submitBirth(chainB.client, DEPLOYER_PK, blob);
+      const resultB = await submitBirth(chainB.client, DEPLOYER_PK, blob, 31338);
       expect(resultB.account).toBe(blob.account);
       expect(resultB.account).toBe(resultA.account);
 
@@ -248,14 +248,14 @@ describe("cross-chain replay, driven from the SDK", () => {
 
       // Submit to B FIRST this time. Chain A must remain untouched by it:
       // still a bare, no-code EOA for this exact account.
-      const resultB = await submitBirth(chainB.client, DEPLOYER_PK, blob);
+      const resultB = await submitBirth(chainB.client, DEPLOYER_PK, blob, 31338);
       expect(await chainA.client.getCode({ address: blob.account })).toBeUndefined();
       await expect(preflightFreshAccount(chainA.client, blob.account)).resolves.toBeUndefined();
 
       const hashBetween = sha256Blob(blob);
       expect(hashBetween).toBe(hashBefore);
 
-      const resultA = await submitBirth(chainA.client, DEPLOYER_PK, blob);
+      const resultA = await submitBirth(chainA.client, DEPLOYER_PK, blob, 31337);
       expect(resultA.account).toBe(resultB.account);
 
       const hashAfter = sha256Blob(blob);

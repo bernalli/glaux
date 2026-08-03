@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Address, Hex, PublicClient } from "viem";
 import { preflightFreshAccount } from "../src/birth/preflight.js";
 import { submitBirth } from "../src/birth/submit.js";
+import { IMPL_CODE_HASH } from "../src/core/constants.js";
 import type { BirthBlob } from "../src/core/types.js";
-import { BirthGasEstimationError, BirthPreflightReadError } from "../src/errors.js";
+import { BirthGasEstimationError, BirthPreflightReadError, ChainIdMismatchError } from "../src/errors.js";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111" as Address;
 const ZERO_WORD = `0x${"00".repeat(32)}` as Hex;
@@ -13,7 +14,7 @@ const BLOB: BirthBlob = {
   account: ACCOUNT,
   router: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
   implementation: "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d",
-  expectedCodeHash: `0x${"11".repeat(32)}`,
+  expectedCodeHash: IMPL_CODE_HASH,
   authorization: {
     chainId: 0,
     address: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
@@ -80,5 +81,19 @@ it("refuses to broadcast when authorization-aware gas estimation fails", async (
     },
   } as unknown as PublicClient;
 
-  await expect(submitBirth(client, RELAYER, BLOB)).rejects.toThrow(BirthGasEstimationError);
+  await expect(submitBirth(client, RELAYER, BLOB, 31337)).rejects.toThrow(BirthGasEstimationError);
+});
+
+it("refuses a submit endpoint that disagrees with the caller-selected chain before any other birth action", async () => {
+  let otherAction = false;
+  const client = {
+    getChainId: async () => 31338,
+    request: async () => {
+      otherAction = true;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+
+  await expect(submitBirth(client, RELAYER, BLOB, 31337)).rejects.toBeInstanceOf(ChainIdMismatchError);
+  expect(otherAction).toBe(false);
 });

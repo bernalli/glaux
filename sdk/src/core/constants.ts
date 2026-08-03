@@ -6,6 +6,9 @@ export const ROUTER: Address = "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9";
 /** Post-audit implementation address behind the router. */
 export const IMPL: Address = "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d";
 
+/** Runtime-code hash of the canonical implementation at {@link IMPL}. */
+export const IMPL_CODE_HASH: Hex = "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106";
+
 /** Canonical CREATE2 deployer used for deterministic deployment. */
 export const CREATE2_DEPLOYER: Address = "0x4e59b44847b379578588920cA78FbF26c0B4956C";
 

@@ -176,8 +176,8 @@ async function birthOnBothChains(chainA: PublicClient, chainB: PublicClient, url
   const device = new LocalP256Signer(DEVICE_PK);
   const cloud = new LocalSecp256k1Signer(CLOUD_PK);
   const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: urlA });
-  await submitBirth(chainA, DEPLOYER_PK, blob);
-  await submitBirth(chainB, DEPLOYER_PK, blob);
+  await submitBirth(chainA, DEPLOYER_PK, blob, 31337);
+  await submitBirth(chainB, DEPLOYER_PK, blob, 31338);
   return { blob, paper, device, cloud };
 }
 
@@ -406,6 +406,27 @@ describe("reconcile", () => {
     expect(state.active).toBe(true);
     expect(state.getterMismatches).toHaveLength(1);
     expect(state.getterMismatches[0]).toContain("implementation()");
+  });
+
+  it("bounds a poisoned long bytes length and reports unreadable without unbounded storage reads", async () => {
+    let storageReads = 0;
+    const poisonedHeader = toHex(2n * 160_000n + 1n, { size: 32 });
+    const client = {
+      getCode: async ({ address }: { address: Address }) =>
+        address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
+      getStorageAt: async ({ slot }: { slot: Hex }) => {
+        storageReads += 1;
+        return slot === toHex(dataHeadSlot(0), { size: 32 }) ? poisonedHeader : ZERO_WORD;
+      },
+      call: async () => ({ data: "0x" }),
+    } as unknown as PublicClient;
+
+    const result = await reconcile([{ name: "poisoned-length", client }], CANDIDATE_ACCOUNT);
+
+    expect(result.verdict).toBe("unreadable");
+    expect(storageReads).toBeLessThanOrEqual(8);
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.getterMismatches).toContainEqual(expect.stringContaining("raw factor data length"));
   });
 
   it.each([

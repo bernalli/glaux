@@ -47,9 +47,12 @@ const result = await checkChain(client, account);
 // result.verdict is "born" | "eligible" | "ineligible"
 ```
 
-`"born"` and `"eligible"` both mean it is safe to receive. `"ineligible"`
-names exactly which probe failed (`result.reasons`) and must block the
-receive flow, not just log a warning.
+`"born"` means the supplied account already has a coherent Glaux deployment.
+`"eligible"` means the environment passes and either no account was supplied
+or the supplied account is a pristine, birthable EOA. `"ineligible"` means
+the environment is unsupported, the account is foreign/pre-planted, or its
+birthability could not be established; `result.reasons` must block the receive
+flow, not just log a warning.
 
 ### Signer compatibility — Secure Enclave yes, browser WebAuthn passkeys no
 
@@ -130,7 +133,7 @@ const cloud = new LocalSecp256k1Signer(cloudPrivateKey);
 
 const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: rpc });
 await preflightFreshAccount(client, blob.account); // refuses to re-birth an occupied address
-const result = await submitBirth(client, relayerPrivateKey, blob);
+const result = await submitBirth(client, relayerPrivateKey, blob, 31337); // caller-selected chain id
 
 console.log("born account:", result.account);
 console.log("birth transaction:", result.txHash);
@@ -154,8 +157,8 @@ need by subpath.
 | `signers/p256.ts`, `signers/secp256k1.ts` | Local (software) reference implementations of `Signer` for P-256 and secp256k1 — for tests and development; production factors implement the same interface against hardware. |
 | `birth/blob.ts` | Builds a `BirthBlob`: the EIP-7702 authorization, init data, and birth signature for a set of three factors. |
 | `birth/preflight.ts` | `preflightFreshAccount` — refuses to attempt a birth against an address that already carries Glaux state. |
-| `birth/submit.ts` | `submitBirth` — sends the birth blob's authorization + `initializeAccount` call and confirms a real (non-reverted) success. |
-| `eligibility/probes.ts`, `eligibility/verdict.ts` | The individual live probes (P-256, EIP-7702, deployment, account-born) and `checkChain`, which combines them into the `"born" \| "eligible" \| "ineligible"` verdict — see the frozen-funds section above. |
+| `birth/submit.ts` | `submitBirth` — requires a caller-selected chain id, validates canonical blob bindings and the live implementation hash, then sends the authorization + `initializeAccount` call and reads back the installed state. |
+| `eligibility/probes.ts`, `eligibility/verdict.ts` | The individual live probes (P-256, EIP-7702, deployment, account-born) and `checkChain`, which combines them into the `"born" \| "eligible" \| "ineligible"` verdict and reuses birth preflight before calling an un-born account safe to receive. |
 | `execute/direct.ts` | The always-available path: sign and submit a 2-of-3 `executeWithSigs` batch through an ordinary relayer, no EntryPoint involved. |
 | `execute/userop.ts` | The self-funded ERC-4337 path: build, sign, and submit a `PackedUserOperation` against EntryPoint v0.7 (`handleOps`, no bundler), including the exact `getUserOpHash` replication. |
 | `gas/erc7677.ts` | ERC-7677 paymaster-web-service client (`pm_getPaymasterStubData`/`pm_getPaymasterData`) and the RPC-shape conversion a UserOperation needs to speak it. |

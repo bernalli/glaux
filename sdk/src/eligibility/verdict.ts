@@ -1,5 +1,7 @@
 import type { Address, PublicClient } from "viem";
+import { freshAccountFailureReason } from "../birth/preflight.js";
 import { CREATE2_DEPLOYER, ENTRYPOINT, IMPL, ROUTER } from "../core/constants.js";
+import { BirthPreflightReadError } from "../errors.js";
 import {
   P256_VERIFIER,
   probeAccountBorn,
@@ -31,7 +33,8 @@ export interface ChainEligibilityProbes {
  * funds sent there arrive but are FROZEN until a birth happens on that same
  * chain — and birth is impossible on a chain that lacks EIP-7702 or the
  * P-256 precompile until that chain upgrades. `"ineligible"` names exactly
- * that hazard; `"born"` and `"eligible"` both mean it is safe to receive.
+ * that hazard. `"born"` is safe to receive; `"eligible"` is safe only when
+ * the supplied account has also passed the same freshness predicate birth uses.
  */
 export interface ChainEligibility {
   verdict: "born" | "eligible" | "ineligible";
@@ -82,16 +85,29 @@ export async function checkChain(client: PublicClient, account?: Address): Promi
   };
 
   const failed = ENVIRONMENT_PROBE_KEYS.filter((key) => !probes[key]);
-  if (failed.length === 0) {
+  const reasons = failed.map((key) =>
+    key === "p256" && p256Result.transportFailure
+      ? `p256: verifier probe transport failure at ${P256_VERIFIER}; eligibility cannot be established.`
+      : REASONS[key],
+  );
+  if (account !== undefined && accountBorn === false) {
+    try {
+      const reason = await freshAccountFailureReason(client, account);
+      if (reason !== undefined) reasons.push(`account: not birthable — ${reason}`);
+    } catch (error) {
+      if (error instanceof BirthPreflightReadError) {
+        reasons.push(`account: birthability could not be established — ${error.message}`);
+      } else {
+        throw error;
+      }
+    }
+  }
+  if (reasons.length === 0) {
     return { verdict: accountBorn === true ? "born" : "eligible", probes, reasons: [] };
   }
   return {
     verdict: "ineligible",
     probes,
-    reasons: failed.map((key) =>
-      key === "p256" && p256Result.transportFailure
-        ? `p256: verifier probe transport failure at ${P256_VERIFIER}; eligibility cannot be established.`
-        : REASONS[key],
-    ),
+    reasons,
   };
 }

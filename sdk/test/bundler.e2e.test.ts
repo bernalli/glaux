@@ -119,7 +119,7 @@ async function bornAndFundedAccount(
   const cloud = new LocalSecp256k1Signer(CLOUD_PK);
 
   const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
-  await submitBirth(client, DEPLOYER_PK, blob);
+  await submitBirth(client, DEPLOYER_PK, blob, 31337);
   if (fundEth !== "0") {
     await test.setBalance({ address: blob.account, value: parseEther(fundEth) });
   }
@@ -250,7 +250,7 @@ describe.skipIf(process.env.GLAUX_ALTO !== "1")(`bundler e2e: a real Alto bundle
       const device = new LocalP256Signer(DEVICE_PK);
       const cloud = new LocalSecp256k1Signer(CLOUD_PK);
       const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
-      await submitBirth(client, DEPLOYER_PK, blob);
+      await submitBirth(client, DEPLOYER_PK, blob, 31337);
       const account = blob.account;
       // Deliberately NOT funded, same as `sdk/test/sponsored.e2e.test.ts`:
       // sponsorship, never the account's own wallet, must cover every wei.

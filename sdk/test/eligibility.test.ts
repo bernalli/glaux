@@ -142,7 +142,7 @@ describe("checkChain", () => {
   );
 
   it(
-    "does not mistake all-ones storage poison for a born account",
+    "does not mistake all-ones storage poison for a born or eligible account",
     async () => {
       const { url } = await spawnAnvil();
       const { client, test } = clientsFor(url);
@@ -160,10 +160,24 @@ describe("checkChain", () => {
       const result = await checkChain(client, CANDIDATE_ACCOUNT);
 
       expect(result.probes.accountBorn).toBe(false);
-      expect(result.verdict).toBe("eligible");
+      expect(result.verdict).toBe("ineligible");
+      expect(result.reasons.some((reason) => reason.startsWith("account: not birthable"))).toBe(true);
     },
     20_000,
   );
+
+  it("reports a foreign delegation as ineligible rather than safe to receive", async () => {
+    const { url } = await spawnAnvil();
+    const { client, test } = clientsFor(url);
+    await setPassingEnvironment(test);
+    await test.setCode({ address: CANDIDATE_ACCOUNT, bytecode: "0xef01000000000000000000000000000000000000000000" });
+
+    const result = await checkChain(client, CANDIDATE_ACCOUNT);
+
+    expect(result.probes.accountBorn).toBe(false);
+    expect(result.verdict).toBe("ineligible");
+    expect(result.reasons).toContainEqual(expect.stringContaining("not birthable"));
+  });
 
   it(
     "keeps failed environment reasons even when the account is already born",

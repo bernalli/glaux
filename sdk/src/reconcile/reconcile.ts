@@ -76,6 +76,9 @@ const DESIGNATOR_PREFIX = "0xef0100";
 const DESIGNATOR_HEX_LENGTH = 2 + 2 * 23; // "0x" + 23 designator bytes.
 const UINT160_MAX = (1n << 160n) - 1n;
 const UINT64_MAX = (1n << 64n) - 1n;
+// `SignatureVerify` accepts only 32-byte secp256k1 key data or 64-byte
+// P-256 coordinates, so a contract-born factor can never write more than 64.
+const MAX_FACTOR_DATA_LENGTH = 64;
 
 const UPDATE_NONCE_SELECTOR = keccak256(stringToBytes("updateNonce()")).slice(0, 10) as Hex;
 const EXEC_NONCE_SELECTOR = keccak256(stringToBytes("execNonce()")).slice(0, 10) as Hex;
@@ -162,20 +165,36 @@ async function readCode(
  * `scripts/reconcile.py:decode_bytes` exactly, adapted for async per-word RPC
  * reads instead of a synchronous local table lookup.
  */
-async function decodeRawBytes(client: PublicClient, chain: string, account: Address, slot: bigint): Promise<Hex> {
+interface DecodedRawBytes {
+  readonly data: Hex;
+  readonly unreadable?: string;
+}
+
+async function decodeRawBytes(
+  client: PublicClient,
+  chain: string,
+  account: Address,
+  slot: bigint,
+): Promise<DecodedRawBytes> {
   const header = await readWord(client, chain, account, slot);
   if ((header & 1n) === 0n) {
     const length = Number((header & 0xffn) / 2n);
-    return slice(toHex(header, { size: 32 }), 0, length);
+    return { data: slice(toHex(header, { size: 32 }), 0, length) };
   }
   const length = Number((header - 1n) / 2n);
+  if (length > MAX_FACTOR_DATA_LENGTH) {
+    return {
+      data: "0x",
+      unreadable: `raw factor data length ${length} exceeds Glaux's ${MAX_FACTOR_DATA_LENGTH}-byte maximum`,
+    };
+  }
   const base = BigInt(keccak256(toHex(slot, { size: 32 })));
   const wordCount = Math.ceil(length / 32);
   const words: Hex[] = [];
   for (let j = 0; j < wordCount; j += 1) {
     words.push(toHex(await readWord(client, chain, account, base + BigInt(j)), { size: 32 }));
   }
-  return slice(concat(words), 0, length);
+  return { data: slice(concat(words), 0, length) };
 }
 
 /** One factor slot as read directly from storage -- deliberately untyped
@@ -374,19 +393,24 @@ export async function inspectChain(client: PublicClient, name: string, account: 
   const { initialized, updateNonce, execNonce } = decodeHeader(headerWord);
 
   const rawSlots: FactorSlotRaw[] = [];
+  const rawUnreadable: string[] = [];
   for (let index = 0; index < 3; index += 1) {
     const verifierType = await readWord(client, name, account, typeSlot(index));
-    const data = await decodeRawBytes(client, name, account, dataSlot(index));
-    rawSlots.push({ verifierType, data });
+    const decoded = await decodeRawBytes(client, name, account, dataSlot(index));
+    rawSlots.push({ verifierType, data: decoded.data });
+    if (decoded.unreadable !== undefined) rawUnreadable.push(`slot ${index}: ${decoded.unreadable}`);
   }
   const slots = rawSlots as [FactorSlotRaw, FactorSlotRaw, FactorSlotRaw];
 
-  const getterMismatches = await collectGetterMismatches(client, name, account, {
+  const getterMismatches = [
+    ...rawUnreadable,
+    ...(await collectGetterMismatches(client, name, account, {
     updateNonce,
     execNonce,
     implPointer,
     slots,
-  });
+    })),
+  ];
 
   return {
     name,

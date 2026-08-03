@@ -22,6 +22,7 @@ import {
   ExecutionSimulationError,
   ExecutionStateReadError,
   ExecutionTransactionRevertedError,
+  ChainIdMismatchError,
   DuplicateExecutionSignerError,
   OperationExpiredError,
   UnrecognizedSignerError,
@@ -108,6 +109,8 @@ export interface SignedExecution {
 export interface SignExecutionParams {
   readonly account: Address;
   readonly client: PublicClient;
+  /** Chain selected by the caller, independently of the RPC endpoint. */
+  readonly expectedChainId: number;
   readonly calls: readonly Call[];
   readonly validUntil: number;
   /** Exactly two of the account's three factor signers — the 2-of-3 quorum for this operation. */
@@ -191,6 +194,13 @@ export async function readChainId(client: PublicClient): Promise<number> {
   } catch (error) {
     throw toStateReadError(error, "chain id");
   }
+}
+
+/** Reads the endpoint's chain id and compares it with the caller's selection. */
+export async function assertExpectedChainId(client: PublicClient, expectedChainId: number): Promise<number> {
+  const actual = await readChainId(client);
+  if (actual !== expectedChainId) throw new ChainIdMismatchError(expectedChainId, actual);
+  return actual;
 }
 
 async function readExecutionNonce(client: PublicClient, account: Address, blockNumber: bigint): Promise<bigint> {
@@ -476,12 +486,12 @@ export function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Sig
  * @throws {DuplicateExecutionSignerError} if both signers occupy one slot.
  */
 export async function signExecution(params: SignExecutionParams): Promise<SignedExecution> {
-  const { account, client, calls, validUntil, signers } = params;
+  const { account, client, calls, validUntil, signers, expectedChainId } = params;
   if (validUntil === 0) {
     throw new OperationExpiredError();
   }
 
-  const chainId = await readChainId(client);
+  const chainId = await assertExpectedChainId(client, expectedChainId);
   const { nonce, slots } = await readExecutionState(client, account);
 
   const slotIndices = signers.map((signer) => matchSlotIndex(slots, signer)) as [number, number];

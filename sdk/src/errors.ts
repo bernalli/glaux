@@ -78,6 +78,119 @@ export class ImplementationNotDeployedError extends Error {
   }
 }
 
+/** Thrown when code at the canonical implementation address is not the published runtime. */
+export class ImplementationCodeHashMismatchError extends Error {
+  constructor(actual: Hex) {
+    super(`implementation code hash ${actual} does not match the published canonical hash.`);
+    this.name = "ImplementationCodeHashMismatchError";
+  }
+}
+
+/** Thrown when the canonical implementation cannot prove its Glaux compatibility marker. */
+export class ImplementationCompatibilityError extends Error {
+  constructor() {
+    super("canonical implementation did not return the Glaux compatibility marker; refusing to sign or submit a birth blob.");
+    this.name = "ImplementationCompatibilityError";
+  }
+}
+
+/** Thrown when a factor identifies an unsupported verifier before a birth key is generated. */
+export class InvalidBirthVerifierTypeError extends Error {
+  readonly slotIndex: number;
+
+  constructor(slotIndex: number) {
+    super(`birth factor slot ${slotIndex} has an unsupported verifier type.`);
+    this.name = "InvalidBirthVerifierTypeError";
+    this.slotIndex = slotIndex;
+  }
+}
+
+/** Thrown when a factor's key encoding fails the exact on-chain validity predicate. */
+export class InvalidBirthSlotError extends Error {
+  readonly slotIndex: number;
+
+  constructor(slotIndex: number) {
+    super(`birth factor slot ${slotIndex} has key data that Glaux will reject.`);
+    this.name = "InvalidBirthSlotError";
+    this.slotIndex = slotIndex;
+  }
+}
+
+/** Thrown when two factor slots encode the same `(verifierType, data)` pair. */
+export class DuplicateBirthSlotError extends Error {
+  readonly firstSlotIndex: number;
+  readonly secondSlotIndex: number;
+
+  constructor(firstSlotIndex: number, secondSlotIndex: number) {
+    super(`birth factor slots ${firstSlotIndex} and ${secondSlotIndex} are duplicates and Glaux will reject them.`);
+    this.name = "DuplicateBirthSlotError";
+    this.firstSlotIndex = firstSlotIndex;
+    this.secondSlotIndex = secondSlotIndex;
+  }
+}
+
+/** Thrown when the public P-256 verifier probe key is supplied as a factor. */
+export class ProbeKeyNotInstallableError extends Error {
+  readonly slotIndex: number;
+
+  constructor(slotIndex: number) {
+    super(`birth factor slot ${slotIndex} is the public P-256 verifier probe key and cannot be installed.`);
+    this.name = "ProbeKeyNotInstallableError";
+    this.slotIndex = slotIndex;
+  }
+}
+
+/** Thrown when a signer emitted a possession proof the contract will reject. */
+export class BirthPossessionProofError extends Error {
+  readonly slotIndex: number;
+
+  constructor(slotIndex: number) {
+    super(`birth factor slot ${slotIndex} did not produce a possession proof Glaux will accept.`);
+    this.name = "BirthPossessionProofError";
+    this.slotIndex = slotIndex;
+  }
+}
+
+/** Thrown if an internally generated birth signature or authorization does not recover to its account. */
+export class BirthBlobSelfCheckError extends Error {
+  constructor(part: "birth signature" | "authorization") {
+    super(`generated ${part} does not recover to the birth account; refusing to emit an unrecoverable blob.`);
+    this.name = "BirthBlobSelfCheckError";
+  }
+}
+
+/** Thrown when an RPC chain id differs from the chain the caller explicitly selected. */
+export class ChainIdMismatchError extends Error {
+  readonly expected: number;
+  readonly actual: number;
+
+  constructor(expected: number, actual: number) {
+    super(`RPC reported chain id ${actual}, but the caller selected chain id ${expected}; refusing to sign or submit on an ambiguous chain.`);
+    this.name = "ChainIdMismatchError";
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+/** Thrown when a restore/interchange birth blob changes a canonical binding. */
+export class InvalidBirthBlobError extends Error {
+  readonly field: "router" | "implementation" | "authorization target";
+
+  constructor(field: InvalidBirthBlobError["field"]) {
+    super(`birth blob ${field} is not canonical; refusing to broadcast it.`);
+    this.name = "InvalidBirthBlobError";
+    this.field = field;
+  }
+}
+
+/** Thrown when a mined birth transaction did not leave the exact expected account state. */
+export class BirthPostconditionError extends Error {
+  constructor(reason: string) {
+    super(`birth transaction succeeded but did not establish the expected Glaux account state: ${reason}`);
+    this.name = "BirthPostconditionError";
+  }
+}
+
 /**
  * Thrown by `preflightFreshAccount` when a candidate birth account is not a
  * pristine EOA — port of `scripts/submit_birth.py:preflight_fresh_account`,

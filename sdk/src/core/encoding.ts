@@ -1,10 +1,15 @@
-import { encodeAbiParameters, hexToBigInt, type Hex } from "viem";
+import { decodeAbiParameters, encodeAbiParameters, hexToBigInt, type Hex } from "viem";
 import type { FactorSlot, SlotSig } from "./types.js";
 import { OperationExpiredError } from "../errors.js";
 
 const FACTOR_SLOT_TUPLE_COMPONENTS = [
   { name: "verifierType", type: "uint8" },
   { name: "data", type: "bytes" },
+] as const;
+
+const INIT_DATA_PARAMETERS = [
+  { type: "tuple[3]", components: FACTOR_SLOT_TUPLE_COMPONENTS },
+  { type: "bytes[3]" },
 ] as const;
 
 /**
@@ -17,12 +22,17 @@ export function encodeInitData(
   proofs: readonly [Hex, Hex, Hex],
 ): Hex {
   return encodeAbiParameters(
-    [
-      { type: "tuple[3]", components: FACTOR_SLOT_TUPLE_COMPONENTS },
-      { type: "bytes[3]" },
-    ],
+    INIT_DATA_PARAMETERS,
     [slots, proofs],
   );
+}
+
+/** Decodes the init-data layout that {@link encodeInitData} emits. */
+export function decodeInitData(initData: Hex): readonly [readonly [FactorSlot, FactorSlot, FactorSlot], readonly [Hex, Hex, Hex]] {
+  return decodeAbiParameters(INIT_DATA_PARAMETERS, initData) as readonly [
+    readonly [FactorSlot, FactorSlot, FactorSlot],
+    readonly [Hex, Hex, Hex],
+  ];
 }
 
 /**

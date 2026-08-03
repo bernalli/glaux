@@ -83,23 +83,31 @@ async function readStorageWord(client: PublicClient, account: Address, slot: Hex
  * @throws {BirthPreflightReadError}
  */
 export async function preflightFreshAccount(client: PublicClient, account: Address): Promise<void> {
+  const reason = await freshAccountFailureReason(client, account);
+  if (reason !== undefined) throw new BirthPreflightError(reason);
+}
+
+/**
+ * Returns why the account fails the freshness predicate, or `undefined` when
+ * it is birthable. Eligibility reuses this rather than maintaining a second
+ * approximation of the account-state rules. Read failures still throw.
+ */
+export async function freshAccountFailureReason(client: PublicClient, account: Address): Promise<string | undefined> {
   const expectedDesignator = concat(["0xef0100", ROUTER]).toLowerCase() as Hex;
   const code = await readCode(client, account);
   const normalizedCode = code.toLowerCase();
   if (normalizedCode !== "0x" && normalizedCode !== expectedDesignator) {
-    throw new BirthPreflightError(
+    return (
       `${account} already has code that is not the EIP-7702 designator for the canonical router (${ROUTER}) ` +
         "— it must be a fresh EOA that was never an EIP-7702 delegate, or the retry of a birth that reverted " +
         "while already delegated to this router (threat-model residual 17). Never migrate an EOA delegated to " +
-        "a different target.",
+        "a different target."
     );
   }
 
   const implWord = await readStorageWord(client, account, IMPL_SLOT);
   if (BigInt(implWord) !== 0n) {
-    throw new BirthPreflightError(
-      `${account} has a non-zero Glaux implementation slot — its storage was pre-planted (threat-model residual 17).`,
-    );
+    return `${account} has a non-zero Glaux implementation slot — its storage was pre-planted (threat-model residual 17).`;
   }
 
   for (let offset = 0; offset < 7; offset += 1) {
@@ -107,10 +115,12 @@ export async function preflightFreshAccount(client: PublicClient, account: Addre
     const word = await readStorageWord(client, account, slot);
     if (BigInt(word) !== 0n) {
       const kind = offset === 0 ? "storage header word" : `FactorSlot word (STORAGE_SLOT+${offset})`;
-      throw new BirthPreflightError(
+      return (
         `${account} has a non-zero Glaux ${kind} at slot ${slot} — its storage was pre-planted ` +
-          "(threat-model residual 17).",
+          "(threat-model residual 17)."
       );
     }
   }
+
+  return undefined;
 }

@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ContractFunctionZeroDataError, parseEther, type Address, type Hex, type PublicClient } from "viem";
+import { ContractFunctionZeroDataError, parseEther, toHex, type Address, type Hex, type PublicClient } from "viem";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { signExecution, submitExecution, withRelayerRefund } from "../src/execute/direct.js";
 import {
+  ChainIdMismatchError,
   DuplicateExecutionSignerError,
   ExecutionAccountNotBornError,
   ExecutionExpiredError,
@@ -137,13 +138,37 @@ async function bornAndFundedAccount(
   const cloud = new LocalSecp256k1Signer(CLOUD_PK);
 
   const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
-  await submitBirth(client, DEPLOYER_PK, blob);
+  await submitBirth(client, DEPLOYER_PK, blob, 31337);
   await test.setBalance({ address: blob.account, value: parseEther(fundEth) });
 
   return { client, account: blob.account, paper, device, cloud };
 }
 
 describe("execute direct path fail-closed guards", () => {
+  it("rejects an endpoint chain-id mismatch before requesting either factor signature", async () => {
+    let signaturesRequested = 0;
+    const signer: Signer = {
+      verifierType: paper.verifierType,
+      keyData: () => paper.keyData(),
+      sign: async () => {
+        signaturesRequested += 1;
+        return paper.sign(toHex(1n, { size: 32 }));
+      },
+    };
+    const client = { getChainId: async () => 31338 } as unknown as PublicClient;
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client,
+        expectedChainId: 31337,
+        calls,
+        validUntil: 1,
+        signers: [signer, signer],
+      }),
+    ).rejects.toBeInstanceOf(ChainIdMismatchError);
+    expect(signaturesRequested).toBe(0);
+  });
+
   const paper = new LocalSecp256k1Signer(PAPER_PK);
   const device = new LocalP256Signer(DEVICE_PK);
   const cloud = new LocalSecp256k1Signer(CLOUD_PK);
@@ -180,6 +205,7 @@ describe("execute direct path fail-closed guards", () => {
       signExecution({
         account: STUB_ACCOUNT,
         client: stub.client,
+        expectedChainId: 31337,
         calls,
         validUntil: 1,
         signers: [paper, cloud],
@@ -196,6 +222,7 @@ describe("execute direct path fail-closed guards", () => {
       signExecution({
         account: STUB_ACCOUNT,
         client: unborn.client,
+        expectedChainId: 31337,
         calls,
         validUntil: 1,
         signers: [paper, cloud],
@@ -218,6 +245,7 @@ describe("execute direct path fail-closed guards", () => {
     await signExecution({
       account: STUB_ACCOUNT,
       client: stub.client,
+      expectedChainId: 31337,
       calls,
       validUntil: 1,
       signers: [paper, cloud],
@@ -234,6 +262,7 @@ describe("execute direct path fail-closed guards", () => {
       signExecution({
         account: STUB_ACCOUNT,
         client: stub.client,
+        expectedChainId: 31337,
         calls,
         validUntil: 1,
         signers: [paper, cloud],
@@ -263,6 +292,7 @@ describe("execute direct path fail-closed guards", () => {
       signExecution({
         account: STUB_ACCOUNT,
         client: stub.client,
+        expectedChainId: 31337,
         calls,
         validUntil: 1,
         signers: [duplicateSigner, duplicateSigner],
@@ -283,6 +313,7 @@ describe("execute direct path fail-closed guards", () => {
       signExecution({
         account: STUB_ACCOUNT,
         client: stub.client,
+        expectedChainId: 31337,
         calls,
         validUntil: 1,
         signers: [paper, uninstalled],
@@ -320,6 +351,7 @@ describe("execute e2e: direct executeWithSigs path", () => {
       const signed = await signExecution({
         account: born.account,
         client,
+        expectedChainId: 31337,
         calls,
         validUntil,
         signers: [born.paper, born.cloud],
@@ -372,6 +404,7 @@ describe("execute e2e: direct executeWithSigs path", () => {
       const signed = await signExecution({
         account: born.account,
         client,
+        expectedChainId: 31337,
         calls,
         validUntil: pastValidUntil,
         signers: [born.paper, born.cloud],
@@ -413,6 +446,7 @@ describe("execute e2e: direct executeWithSigs path", () => {
       signExecution({
         account: "0x1111111111111111111111111111111111111111",
         client: stubClient,
+        expectedChainId: 31337,
         calls,
         validUntil: 0,
         signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
@@ -434,6 +468,7 @@ describe("execute e2e: direct executeWithSigs path", () => {
       const signed = await signExecution({
         account: born.account,
         client,
+        expectedChainId: 31337,
         calls,
         validUntil,
         signers: [born.paper, born.cloud],
@@ -468,6 +503,7 @@ describe("execute e2e: direct executeWithSigs path", () => {
     const signed = await signExecution({
       account: born.account,
       client,
+      expectedChainId: 31337,
       calls,
       validUntil,
       signers: [born.paper, born.cloud],

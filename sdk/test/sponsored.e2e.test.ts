@@ -68,7 +68,7 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
       const device = new LocalP256Signer(DEVICE_PK);
       const cloud = new LocalSecp256k1Signer(CLOUD_PK);
       const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
-      await submitBirth(client, DEPLOYER_PK, blob);
+      await submitBirth(client, DEPLOYER_PK, blob, 31337);
       const account = blob.account;
       // Deliberately NOT funded: `setBalance` is never called for `account`.
       // This is the crux of the proof — sponsorship, not the account's own

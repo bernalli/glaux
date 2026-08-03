@@ -76,7 +76,7 @@ async function bornAndFundedAccount(
   const cloud = new LocalSecp256k1Signer(CLOUD_PK);
 
   const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
-  await submitBirth(client, DEPLOYER_PK, blob);
+  await submitBirth(client, DEPLOYER_PK, blob, 31337);
   await test.setBalance({ address: blob.account, value: parseEther(fundEth) });
 
   return { account: blob.account, paper, device, cloud };

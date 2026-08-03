@@ -7,7 +7,12 @@ import { ROUTER, designator } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { preflightFreshAccount } from "../src/birth/preflight.js";
 import { submitBirth } from "../src/birth/submit.js";
-import { BirthPreflightError, BirthTransactionRevertedError } from "../src/errors.js";
+import {
+  BirthPreflightError,
+  BirthTransactionRevertedError,
+  ImplementationCodeHashMismatchError,
+  InvalidBirthBlobError,
+} from "../src/errors.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
@@ -104,7 +109,7 @@ describe("birth e2e", () => {
       // must pass silently.
       await expect(preflightFreshAccount(client, blob.account)).resolves.toBeUndefined();
 
-      const result = await submitBirth(client, DEPLOYER_PK, blob);
+      const result = await submitBirth(client, DEPLOYER_PK, blob, 31337);
       expect(result.account).toBe(blob.account);
 
       const code = await client.getCode({ address: blob.account });
@@ -145,7 +150,7 @@ describe("birth e2e", () => {
       // though the code-only check alone would have looked like a
       // legitimate retry.
       await expect(preflightFreshAccount(client, blob.account)).rejects.toThrow(BirthPreflightError);
-      await expect(submitBirth(client, DEPLOYER_PK, blob)).rejects.toThrow(BirthPreflightError);
+      await expect(submitBirth(client, DEPLOYER_PK, blob, 31337)).rejects.toThrow(BirthPreflightError);
     },
     90_000,
   );
@@ -188,7 +193,7 @@ describe("birth e2e", () => {
 
       let thrown: unknown;
       try {
-        await submitBirth(clientWithForcedEstimate, DEPLOYER_PK, revertedBlob);
+        await submitBirth(clientWithForcedEstimate, DEPLOYER_PK, revertedBlob, 31337);
       } catch (error) {
         thrown = error;
       }
@@ -201,6 +206,29 @@ describe("birth e2e", () => {
     },
     30_000,
   );
+
+  it("refuses tampered canonical blob bindings and a mismatched live implementation hash before broadcast", async () => {
+    const { url } = await spawnAnvil();
+    const { client, test } = clientsFor(url);
+    await test.setCode({ address: P256_VERIFIER, bytecode: loadP256OracleBytecode() });
+    await deployCanonical(client, DEPLOYER_PK);
+    const [paper, device, cloud] = [
+      new LocalSecp256k1Signer(PAPER_PK),
+      new LocalP256Signer(DEVICE_PK),
+      new LocalSecp256k1Signer(CLOUD_PK),
+    ] as const;
+    const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
+
+    await expect(submitBirth(client, DEPLOYER_PK, { ...blob, router: paper.address }, 31337)).rejects.toBeInstanceOf(
+      InvalidBirthBlobError,
+    );
+    await expect(
+      submitBirth(client, DEPLOYER_PK, { ...blob, authorization: { ...blob.authorization, address: paper.address } }, 31337),
+    ).rejects.toBeInstanceOf(InvalidBirthBlobError);
+    await expect(
+      submitBirth(client, DEPLOYER_PK, { ...blob, expectedCodeHash: `0x${"11".repeat(32)}` as Hex }, 31337),
+    ).rejects.toBeInstanceOf(ImplementationCodeHashMismatchError);
+  }, 30_000);
 });
 
 describe("birth blob JSON schema", () => {

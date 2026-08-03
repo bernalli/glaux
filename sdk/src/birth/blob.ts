@@ -1,11 +1,23 @@
-import { createPublicClient, http, keccak256, type Hex } from "viem";
+import { createPublicClient, getAddress, hexToBytes, http, keccak256, recoverAddress, size, type Hex } from "viem";
+import { recoverAuthorizationAddress } from "viem/utils";
+import { p256 } from "@noble/curves/nist.js";
 import { generatePrivateKey, privateKeyToAddress, sign, signAuthorization } from "viem/accounts";
-import { IMPL, ROUTER } from "../core/constants.js";
-import { initDigest } from "../core/digests.js";
+import { IMPL, IMPL_CODE_HASH, ROUTER } from "../core/constants.js";
+import { initDigest, registrationDigest } from "../core/digests.js";
 import { encodeInitData } from "../core/encoding.js";
-import type { BirthBlob, FactorSlot } from "../core/types.js";
-import { ImplementationNotDeployedError } from "../errors.js";
-import { registrationProof, type Signer } from "../signers/signer.js";
+import { VERIFIER_P256, VERIFIER_SECP256K1, type BirthBlob, type FactorSlot } from "../core/types.js";
+import {
+  BirthBlobSelfCheckError,
+  BirthPossessionProofError,
+  DuplicateBirthSlotError,
+  ImplementationCodeHashMismatchError,
+  ImplementationCompatibilityError,
+  ImplementationNotDeployedError,
+  InvalidBirthSlotError,
+  InvalidBirthVerifierTypeError,
+  ProbeKeyNotInstallableError,
+} from "../errors.js";
+import type { Signer } from "../signers/signer.js";
 
 // Task 6's public naming contract calls this helper `buildInitDigest`; retain
 // the pre-existing core name as well, with one implementation and no drift.
@@ -28,6 +40,86 @@ export function buildSlots(factors: readonly [Signer, Signer, Signer]): [FactorS
   ];
 }
 
+const UINT160_MAX = (1n << 160n) - 1n;
+const SECP256K1_N_DIV_2 = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+const P256_P = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
+const P256_A = P256_P - 3n;
+const P256_B = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bn;
+const PROBE_QX = 0x6e116efa770f5c5455124d86df9b00525dab28db280c3c8f33bb64c0ef313489n;
+const PROBE_QY = 0x8961e3da77e0f8d247f099835070289b64906c509ec256eec976858516ae8d81n;
+const COMPATIBILITY_ID = keccak256(new TextEncoder().encode("GLAUX_ACCOUNT_V1"));
+
+function isHexBytes(value: unknown): value is Hex {
+  return typeof value === "string" && /^0x(?:[0-9a-fA-F]{2})*$/u.test(value);
+}
+
+function validP256Key(data: Hex): boolean {
+  if (size(data) !== 64) return false;
+  const qx = BigInt(`0x${data.slice(2, 66)}`);
+  const qy = BigInt(`0x${data.slice(66)}`);
+  if (qx >= P256_P || qy >= P256_P || (qx === 0n && qy === 0n)) return false;
+  const lhs = (qy * qy) % P256_P;
+  const xSquared = (qx * qx) % P256_P;
+  const rhs = (((xSquared * qx + P256_A * qx + P256_B) % P256_P) + P256_P) % P256_P;
+  return lhs === rhs;
+}
+
+/** Mirrors `GlauxAccount._validateSlot`'s locally decidable slot checks. */
+function validateSlot(slot: FactorSlot, index: number): void {
+  if (slot.verifierType !== VERIFIER_SECP256K1 && slot.verifierType !== VERIFIER_P256) {
+    throw new InvalidBirthVerifierTypeError(index);
+  }
+  if (!isHexBytes(slot.data)) throw new InvalidBirthSlotError(index);
+  if (slot.verifierType === VERIFIER_SECP256K1) {
+    if (size(slot.data) !== 32 || BigInt(slot.data) === 0n || BigInt(slot.data) > UINT160_MAX) {
+      throw new InvalidBirthSlotError(index);
+    }
+    return;
+  }
+  if (!validP256Key(slot.data)) throw new InvalidBirthSlotError(index);
+  const qx = BigInt(`0x${slot.data.slice(2, 66)}`);
+  const qy = BigInt(`0x${slot.data.slice(66)}`);
+  if (qx === PROBE_QX && qy === PROBE_QY) throw new ProbeKeyNotInstallableError(index);
+}
+
+function validateDistinctSlots(slots: readonly [FactorSlot, FactorSlot, FactorSlot]): void {
+  for (let first = 0; first < slots.length; first += 1) {
+    for (let second = first + 1; second < slots.length; second += 1) {
+      const a = slots[first]!;
+      const b = slots[second]!;
+      if (a.verifierType === b.verifierType && a.data.toLowerCase() === b.data.toLowerCase()) {
+        throw new DuplicateBirthSlotError(first, second);
+      }
+    }
+  }
+}
+
+async function validatePossessionProof(slot: FactorSlot, proof: Hex, index: number): Promise<void> {
+  const digest = registrationDigest(index, slot.verifierType, slot.data);
+  try {
+    if (slot.verifierType === VERIFIER_SECP256K1) {
+      const v = Number(`0x${proof.slice(130)}`);
+      if (
+        size(proof) !== 65 ||
+        BigInt(`0x${proof.slice(66, 130)}`) > SECP256K1_N_DIV_2 ||
+        (v !== 27 && v !== 28)
+      ) {
+        throw new BirthPossessionProofError(index);
+      }
+      const recovered = await recoverAddress({ hash: digest, signature: proof });
+      const expected = getAddress(`0x${slot.data.slice(-40)}` as Hex);
+      if (recovered !== expected) throw new BirthPossessionProofError(index);
+      return;
+    }
+    if (size(proof) !== 64 || !p256.verify(hexToBytes(proof), hexToBytes(digest), hexToBytes(`0x04${slot.data.slice(2)}`), { prehash: false })) {
+      throw new BirthPossessionProofError(index);
+    }
+  } catch (error) {
+    if (error instanceof BirthPossessionProofError) throw error;
+    throw new BirthPossessionProofError(index);
+  }
+}
+
 /**
  * Signs one possession proof per factor and ABI-encodes the
  * `(FactorSlot[3], bytes[3])` blob `GlauxAccount.initializeAccount` decodes
@@ -40,7 +132,7 @@ export async function buildInitData(
   slots: readonly [FactorSlot, FactorSlot, FactorSlot],
   factors: readonly [Signer, Signer, Signer],
 ): Promise<Hex> {
-  const proofs = await Promise.all(factors.map((signer, index) => registrationProof(signer, index)));
+  const proofs = await Promise.all(factors.map((signer, index) => signer.sign(registrationDigest(index, slots[index]!.verifierType, slots[index]!.data))));
   return encodeInitData(slots, proofs as [Hex, Hex, Hex]);
 }
 
@@ -87,12 +179,33 @@ export interface BuildBirthBlobParams {
  * @throws {ImplementationNotDeployedError} if `IMPL` has no code on `chainRpc`.
  */
 export async function buildBirthBlob({ factors, chainRpc }: BuildBirthBlobParams): Promise<BirthBlob> {
+  const slots = buildSlots(factors);
+  slots.forEach((slot, index) => validateSlot(slot, index));
+  validateDistinctSlots(slots);
+
   const client = createPublicClient({ transport: http(chainRpc) });
   const implementationCode = await client.getCode({ address: IMPL });
   if (implementationCode === undefined || implementationCode === "0x") {
     throw new ImplementationNotDeployedError(IMPL);
   }
   const expectedCodeHash = keccak256(implementationCode);
+  if (expectedCodeHash !== IMPL_CODE_HASH) throw new ImplementationCodeHashMismatchError(expectedCodeHash);
+  if (implementationCode.slice(0, 4).toLowerCase() === "0xef") throw new ImplementationCompatibilityError();
+  try {
+    const compatibilityId = await client.readContract({
+      address: IMPL,
+      abi: [{ type: "function", name: "glauxCompatibilityId", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] }],
+      functionName: "glauxCompatibilityId",
+    });
+    if (compatibilityId !== COMPATIBILITY_ID) throw new ImplementationCompatibilityError();
+  } catch (error) {
+    if (error instanceof ImplementationCompatibilityError) throw error;
+    throw new ImplementationCompatibilityError();
+  }
+
+  const proofs = await Promise.all(factors.map((signer, index) => signer.sign(registrationDigest(index, slots[index]!.verifierType, slots[index]!.data))));
+  await Promise.all(proofs.map((proof, index) => validatePossessionProof(slots[index]!, proof, index)));
+  const initData = encodeInitData(slots, proofs as [Hex, Hex, Hex]);
 
   const birthPrivateKey = generatePrivateKey();
   const account = privateKeyToAddress(birthPrivateKey);
@@ -104,8 +217,6 @@ export async function buildBirthBlob({ factors, chainRpc }: BuildBirthBlobParams
     privateKey: birthPrivateKey,
   });
 
-  const slots = buildSlots(factors);
-  const initData = await buildInitData(slots, factors);
   const digest = initDigest(ROUTER, IMPL, expectedCodeHash, initData);
   const birthSig = await signBirthDigest(birthPrivateKey, digest);
 
@@ -115,6 +226,18 @@ export async function buildBirthBlob({ factors, chainRpc }: BuildBirthBlobParams
   // exercises the standard `v - 27` mapping if a future `viem` version ever
   // omitted `yParity`.
   const yParity = signedAuthorization.yParity ?? Number(signedAuthorization.v ?? 27n) - 27;
+
+  try {
+    const [birthSigner, authorizationSigner] = await Promise.all([
+      recoverAddress({ hash: digest, signature: birthSig }),
+      recoverAuthorizationAddress({ authorization: { ...signedAuthorization, yParity } }),
+    ]);
+    if (birthSigner !== account) throw new BirthBlobSelfCheckError("birth signature");
+    if (authorizationSigner !== account) throw new BirthBlobSelfCheckError("authorization");
+  } catch (error) {
+    if (error instanceof BirthBlobSelfCheckError) throw error;
+    throw new BirthBlobSelfCheckError("birth signature");
+  }
 
   return {
     account,
