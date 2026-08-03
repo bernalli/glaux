@@ -46,12 +46,19 @@ import { signVerifyingPaymasterData, startMock7677Server } from "./helpers/mock7
  * `spawnAlto` therefore runs Alto with `--safe-mode false`: a verified,
  * documented environment necessity, not a weakening of the operations under
  * test — see that helper's doc comment for the exact captured error and the
- * upstream evidence. Full ERC-7562 opcode-banning coverage against Glaux
- * remains an open gap that needs a Geth-family node; everything else a real,
- * independent bundler implementation does — accepting the wire-format
- * operation, validating and staking-checking it by its own rules, bundling
- * and submitting it, and answering the standard receipt-polling RPC — is
- * exercised here for real.
+ * upstream evidence. In Alto 0.0.20, unsafe mode uses `UnsafeValidator` and
+ * `NullReputationManager`; ERC-7562 opcode, storage-access, referenced-code,
+ * entity-role, reputation, and associated stake enforcement are untested.
+ * This suite still proves EntryPoint simulation, fee/gas ceilings, RPC and
+ * mempool transport, bundling, inclusion, and receipt handling.
+ *
+ * Alto 0.0.20 safe mode only recognizes precompiles `0x01` through `0x09`.
+ * Glaux's P-256 factor uses `STATICCALL` to `0x0100`, so that Alto version can
+ * reject it as an undeployed contract even on an EIP-7951/RIP-7212 chain. This
+ * is an Alto-version limitation, not an ERC-7562 violation by Glaux. The
+ * P-256 test below covers unsafe-mode transport only; it does not prove
+ * safe-mode acceptance. Integrators must verify that their bundler accepts
+ * `0x0100` as a precompile on the target chain under its safe validation rules.
  *
  * Skipped unless `GLAUX_ALTO=1`, so the default suite and CI stay exactly as
  * fast and network-free as before — same convention `test/P256ForkProbe.t.sol`
@@ -153,6 +160,61 @@ describe.skipIf(process.env.GLAUX_ALTO !== "1")(`bundler e2e: a real Alto bundle
         chainId,
         client,
         signers: [born.paper, born.cloud],
+      });
+      const userOpHash = computeUserOpHash(signed, ENTRYPOINT, chainId);
+
+      const submittedHash = await sendUserOperation(bundler.url, toBundlerRpcUserOp(signed), ENTRYPOINT);
+      expect(submittedHash).toBe(userOpHash);
+
+      const bundlerReceipt = await waitForUserOperationReceipt(bundler.url, userOpHash);
+      expect(bundlerReceipt.success).toBe(true);
+
+      const receipt = await client.waitForTransactionReceipt({ hash: bundlerReceipt.receipt.transactionHash });
+      expect(receipt.status).toBe("success");
+
+      const event = extractUserOperationEvent(receipt.logs, userOpHash, receipt.transactionHash);
+      expect(event.success).toBe(true);
+
+      const recipientBalanceAfter = await client.getBalance({ address: FRESH_RECIPIENT });
+      expect(recipientBalanceAfter - recipientBalanceBefore).toBe(transferValue);
+    },
+    120_000,
+  );
+
+  it(
+    "a P-256 device-factor userOp is bundled and lands on-chain in Alto unsafe mode",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      const born = await bornAndFundedAccount(url, client, test, "1");
+
+      const altoExecutor = privateKeyToAddress(ALTO_EXECUTOR_PK);
+      const altoUtility = privateKeyToAddress(ALTO_UTILITY_PK);
+      await test.setBalance({ address: altoExecutor, value: parseEther("100") });
+      await test.setBalance({ address: altoUtility, value: parseEther("100") });
+
+      const bundler = await spawnAlto({
+        rpcUrl: url,
+        entryPoints: [ENTRYPOINT],
+        executorPrivateKey: ALTO_EXECUTOR_PK,
+        utilityPrivateKey: ALTO_UTILITY_PK,
+      });
+
+      const recipientBalanceBefore = await client.getBalance({ address: FRESH_RECIPIENT });
+      const transferValue = parseEther("0.1");
+      const op = await buildUserOp({
+        account: born.account,
+        client,
+        calls: [{ to: FRESH_RECIPIENT, value: transferValue, data: "0x" as Hex }],
+        validUntil: Math.floor(Date.now() / 1000) + 3600,
+      });
+      const chainId = BigInt(await client.getChainId());
+      const signed = await signUserOp({
+        op,
+        entryPoint: ENTRYPOINT,
+        chainId,
+        client,
+        signers: [born.device, born.paper],
       });
       const userOpHash = computeUserOpHash(signed, ENTRYPOINT, chainId);
 

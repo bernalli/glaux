@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import type { Readable } from "node:stream";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +17,7 @@ import { afterEach } from "vitest";
  * independent of any other suite's set.
  */
 const runningAltos = new Set<ChildProcessByStdio<null, Readable, Readable>>();
+const altoWorkingDirectories = new Set<string>();
 
 async function stopAlto(child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> {
   if (child.exitCode !== null) return;
@@ -35,6 +38,8 @@ async function stopAlto(child: ChildProcessByStdio<null, Readable, Readable>): P
 afterEach(async () => {
   await Promise.all([...runningAltos].map(stopAlto));
   runningAltos.clear();
+  await Promise.all([...altoWorkingDirectories].map((directory) => rm(directory, { force: true, recursive: true })));
+  altoWorkingDirectories.clear();
 });
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -104,6 +109,30 @@ export interface SpawnAltoOptions {
 
 export interface AltoHandle {
   readonly url: string;
+}
+
+/**
+ * The pinned Alto CLI loads `DOTENV_CONFIG_PATH` (or `.env` in its working
+ * directory) and initializes Sentry when `SENTRY_DSN` is set. Do not inherit
+ * the test runner's environment: it could contain developer credentials or
+ * telemetry configuration unrelated to this local harness. `PATH` is needed
+ * for the pinned binary's `#!/usr/bin/env node` shebang; nothing else is.
+ */
+export function createAltoChildEnvironment(parentEnvironment: NodeJS.ProcessEnv, workingDirectory: string): NodeJS.ProcessEnv {
+  return {
+    PATH: parentEnvironment.PATH ?? "",
+    // This file never exists in the fresh working directory created below,
+    // so Alto cannot fall back to loading a parent checkout's `.env`.
+    DOTENV_CONFIG_PATH: join(workingDirectory, ".env.disabled"),
+    // Alto 0.0.20 only initializes Sentry for a truthy DSN; clear it explicitly.
+    SENTRY_DSN: "",
+  };
+}
+
+async function createAltoWorkingDirectory(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "glaux-alto-"));
+  altoWorkingDirectories.add(directory);
+  return directory;
 }
 
 /**
@@ -186,18 +215,28 @@ async function waitForAltoReady(
  * `--safe-mode true`), and Alto's own local-dev tooling
  * (`scripts/run-local-instance.sh` + `scripts/config.local.json`) ships
  * `"safe-mode": false` for exactly this reason — pairing Alto with a local
- * Anvil/Hardhat node. `--safe-mode false` still exercises everything this
- * task actually asks for — a real, independent bundler implementation's
- * JSON-RPC surface, its own mempool/staking/gas-limit checks, and its own
- * bundling and inclusion logic — it only skips the ERC-7562 opcode-banning
- * layer that upstream's own tooling says needs a Geth-family node. Full
- * opcode-banning coverage against Glaux is therefore an open gap, not
- * something this task silently papers over: see `sdk/test/bundler.e2e.test.ts`'s
+ * Anvil/Hardhat node. In Alto 0.0.20, unsafe mode selects `UnsafeValidator`
+ * and `NullReputationManager`; it therefore does NOT test ERC-7562 opcode,
+ * storage-access, referenced-code, entity-role, reputation, or associated
+ * stake enforcement. What it does still prove is EntryPoint simulation,
+ * fee/gas ceilings, RPC and mempool transport, bundling, inclusion, and
+ * receipt handling. Safe-mode coverage remains an open gap, not something
+ * this task silently papers over: see `sdk/test/bundler.e2e.test.ts`'s
  * suite-level doc comment and Task 11's report.
+ *
+ * P-256 bundler compatibility note: Alto 0.0.20's safe tracer allowlists
+ * only precompiles `0x01` through `0x09`. Glaux validates its P-256 factor
+ * with `STATICCALL` to `0x0100`, so this Alto version can classify that call
+ * as an undeployed contract and reject it even on an EIP-7951/RIP-7212 chain.
+ * That is an Alto-version limitation, not an ERC-7562 violation by Glaux.
+ * Before relying on the P-256 factor through ERC-4337, integrators must
+ * verify that their bundler accepts `0x0100` as a precompile on the target
+ * chain under its safe validation rules.
  */
 export async function spawnAlto(options: SpawnAltoOptions): Promise<AltoHandle> {
   const port = await findFreePort();
   const url = `http://127.0.0.1:${port}`;
+  const workingDirectory = await createAltoWorkingDirectory();
 
   const child = spawn(
     ALTO_BIN,
@@ -219,7 +258,11 @@ export async function spawnAlto(options: SpawnAltoOptions): Promise<AltoHandle> 
       "--log-level",
       "error",
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      cwd: workingDirectory,
+      env: createAltoChildEnvironment(process.env, workingDirectory),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
   runningAltos.add(child);
   child.once("exit", () => runningAltos.delete(child));
