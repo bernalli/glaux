@@ -1,0 +1,25 @@
+{
+  "name": "@glaux/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript client SDK for the Glaux EIP-7702 smart account.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "viem": "2.55.10",
+    "@noble/curves": "2.2.0"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "@types/node": "26.1.2"
+  }
+}
