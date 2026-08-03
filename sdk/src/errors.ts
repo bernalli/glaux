@@ -150,3 +150,98 @@ export class BirthTransactionRevertedError extends Error {
     this.txHash = txHash;
   }
 }
+
+/**
+ * Thrown when `signExecution` is given a signer whose key material does not
+ * match any of the account's three installed factor slots.
+ *
+ * `executeWithSigs` identifies a factor by `slotIndex`, not by key material,
+ * so a client must know which slot each signer occupies. Rather than accept a
+ * caller-supplied index that could silently name the wrong slot (and produce
+ * a signature that verifies against a different factor than the one that
+ * actually signed), `signExecution` reads the account's three slots live and
+ * matches each signer to the one whose `(verifierType, data)` equals the
+ * signer's own — the only source of truth for "which slot is this", per the
+ * contract's own state rather than an assumption about factor ordering.
+ */
+export class UnrecognizedSignerError extends Error {
+  constructor() {
+    super(
+      "a provided signer's key material does not match any of the account's three installed factor slots.",
+    );
+    this.name = "UnrecognizedSignerError";
+  }
+}
+
+/**
+ * Thrown when `submitExecution`'s pre-flight simulation of `executeWithSigs`
+ * reverts with `OperationExpired(uint48 validUntil, uint256 blockTimestamp)`
+ * — the CONTRACT's own rejection of an expired operation, decoded from the
+ * real revert data rather than inferred. Distinct from `OperationExpiredError`,
+ * which fires client-side for `validUntil === 0` before any signing or RPC
+ * call; this one only ever fires after the contract itself has evaluated
+ * `block.timestamp > validUntil` and found the operation dead on arrival.
+ */
+export class ExecutionExpiredError extends Error {
+  readonly validUntil: number;
+  readonly blockTimestamp: bigint;
+
+  constructor(validUntil: number, blockTimestamp: bigint) {
+    super(
+      `executeWithSigs reverted OperationExpired: validUntil ${validUntil} is not after block timestamp ${blockTimestamp}.`,
+    );
+    this.name = "ExecutionExpiredError";
+    this.validUntil = validUntil;
+    this.blockTimestamp = blockTimestamp;
+  }
+}
+
+/**
+ * Thrown when `submitExecution`'s pre-flight simulation of `executeWithSigs`
+ * reverts with a decoded reason other than `OperationExpired` (for example
+ * `InvalidSignature`, `NotInitialized`, or `CallFailed`), or with a reason
+ * that could not be decoded against the account's ABI at all. `reason`
+ * carries whatever the simulation could establish — the decoded custom
+ * error's name, or the raw message — so a caller can distinguish "no
+ * quorum" from "account not initialized" from "one of the calls failed"
+ * rather than seeing only "it reverted".
+ */
+export class ExecutionRevertedError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`executeWithSigs simulation reverted: ${reason}`);
+    this.name = "ExecutionRevertedError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Thrown when a plausible gas estimate for `executeWithSigs` cannot be
+ * obtained after the pre-flight simulation already succeeded. Nothing has
+ * been broadcast when this is thrown.
+ */
+export class ExecutionGasEstimationError extends Error {
+  constructor() {
+    super(
+      "unable to obtain a gas estimate for the direct execution transaction; refusing to broadcast.",
+    );
+    this.name = "ExecutionGasEstimationError";
+  }
+}
+
+/**
+ * Thrown when the direct execution transaction was mined but its receipt
+ * reports failure — despite a successful pre-flight simulation (for example
+ * a state change between simulation and inclusion). Never silently treated
+ * as success.
+ */
+export class ExecutionTransactionRevertedError extends Error {
+  readonly txHash: Hex;
+
+  constructor(txHash: Hex) {
+    super(`execution transaction ${txHash} was mined but reverted.`);
+    this.name = "ExecutionTransactionRevertedError";
+    this.txHash = txHash;
+  }
+}

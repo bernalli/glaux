@@ -1,0 +1,263 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { parseEther, type Address, type Hex, type PublicClient } from "viem";
+import { buildBirthBlob } from "../src/birth/blob.js";
+import { submitBirth } from "../src/birth/submit.js";
+import { signExecution, submitExecution, withRelayerRefund } from "../src/execute/direct.js";
+import { ExecutionExpiredError, OperationExpiredError } from "../src/errors.js";
+import { LocalP256Signer } from "../src/signers/p256.js";
+import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
+import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
+import { deployCanonical } from "./helpers/deploy.js";
+
+/**
+ * Same well-known anvil accounts the other e2e suites use for the
+ * deployer/paper/cloud/device roles (see `sdk/test/birth.e2e.test.ts`'s
+ * comment for provenance) plus anvil's account #3 as a RELAYER distinct from
+ * every factor and from the deployer — verified live against `anvil`'s own
+ * printed "Private Keys" banner and against `viem/accounts`'
+ * `privateKeyToAddress`, none of these ever hold real value.
+ */
+const P256_VERIFIER: Address = "0x0000000000000000000000000000000000000100";
+const DEPLOYER_PK: Hex = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const PAPER_PK: Hex = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const CLOUD_PK: Hex = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
+const DEVICE_PK: Hex = "0x7459e13afd9158a379ee75ca9e80a328916dba1473c863f800f51ee5f46eb3ab";
+const RELAYER_PK: Hex = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6";
+const RELAYER_ADDRESS: Address = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
+
+const FRESH_RECIPIENT: Address = "0x000000000000000000000000000000000000f00d";
+
+function loadP256OracleBytecode(): Hex {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const artifactPath = join(here, "../../out/P256VerifierOracle.sol/P256VerifierOracle.json");
+  const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+    deployedBytecode: { object: string };
+  };
+  return artifact.deployedBytecode.object as Hex;
+}
+
+interface BornAccount {
+  readonly client: PublicClient;
+  readonly account: Address;
+  readonly paper: LocalSecp256k1Signer;
+  readonly device: LocalP256Signer;
+  readonly cloud: LocalSecp256k1Signer;
+}
+
+/** Births a fresh account and funds it with `fundEth` ETH via anvil's `setBalance`. */
+async function bornAndFundedAccount(
+  url: string,
+  client: PublicClient,
+  test: ReturnType<typeof clientsFor>["test"],
+  fundEth: string,
+): Promise<BornAccount> {
+  await test.setCode({ address: P256_VERIFIER, bytecode: loadP256OracleBytecode() });
+  await deployCanonical(client, DEPLOYER_PK);
+
+  const paper = new LocalSecp256k1Signer(PAPER_PK);
+  const device = new LocalP256Signer(DEVICE_PK);
+  const cloud = new LocalSecp256k1Signer(CLOUD_PK);
+
+  const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
+  await submitBirth(client, DEPLOYER_PK, blob);
+  await test.setBalance({ address: blob.account, value: parseEther(fundEth) });
+
+  return { client, account: blob.account, paper, device, cloud };
+}
+
+describe("execute e2e: direct executeWithSigs path", () => {
+  it(
+    "transfers value through a separate relayer, advances execNonce by exactly 1, and the relayer alone pays gas",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      const born = await bornAndFundedAccount(url, client, test, "1");
+
+      const accountBalanceBefore = await client.getBalance({ address: born.account });
+      const recipientBalanceBefore = await client.getBalance({ address: FRESH_RECIPIENT });
+      const relayerBalanceBefore = await client.getBalance({ address: RELAYER_ADDRESS });
+      const execNonceBefore = await client.readContract({
+        address: born.account,
+        abi: [
+          { type: "function", name: "execNonce", stateMutability: "view", inputs: [], outputs: [{ type: "uint64" }] },
+        ] as const,
+        functionName: "execNonce",
+      });
+      expect(execNonceBefore).toBe(0n);
+
+      const transferValue = parseEther("0.1");
+      const calls = [{ to: FRESH_RECIPIENT, value: transferValue, data: "0x" as Hex }];
+      const validUntil = Math.floor(Date.now() / 1000) + 3600;
+
+      const signed = await signExecution({
+        account: born.account,
+        client,
+        calls,
+        validUntil,
+        signers: [born.paper, born.cloud],
+      });
+
+      const txHash = await submitExecution(client, RELAYER_PK, signed);
+      const receipt = await client.waitForTransactionReceipt({ hash: txHash });
+      expect(receipt.status).toBe("success");
+
+      const accountBalanceAfter = await client.getBalance({ address: born.account });
+      const recipientBalanceAfter = await client.getBalance({ address: FRESH_RECIPIENT });
+      const relayerBalanceAfter = await client.getBalance({ address: RELAYER_ADDRESS });
+      const execNonceAfter = await client.readContract({
+        address: born.account,
+        abi: [
+          { type: "function", name: "execNonce", stateMutability: "view", inputs: [], outputs: [{ type: "uint64" }] },
+        ] as const,
+        functionName: "execNonce",
+      });
+
+      // The recipient gained exactly the transferred amount.
+      expect(recipientBalanceAfter - recipientBalanceBefore).toBe(transferValue);
+      // execNonce advanced by exactly 1, not more, not zero.
+      expect(execNonceAfter - execNonceBefore).toBe(1n);
+      // The ACCOUNT's balance dropped by exactly the transferred value — no gas
+      // was drawn from it.
+      expect(accountBalanceBefore - accountBalanceAfter).toBe(transferValue);
+      // The RELAYER's balance dropped by MORE than zero (it paid gas) but by
+      // LESS than the transfer amount plus any gas — i.e. it paid gas only,
+      // never the transferred value, which came entirely out of the account.
+      const relayerSpent = relayerBalanceBefore - relayerBalanceAfter;
+      expect(relayerSpent).toBeGreaterThan(0n);
+      expect(relayerSpent).toBeLessThan(transferValue);
+      const gasUsed = receipt.gasUsed * receipt.effectiveGasPrice;
+      expect(relayerSpent).toBe(gasUsed);
+    },
+    60_000,
+  );
+
+  it(
+    "the contract reverts OperationExpired for a past validUntil, and the SDK surfaces the typed error with the real reason",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      const born = await bornAndFundedAccount(url, client, test, "1");
+
+      const pastValidUntil = 1; // 1970-01-01T00:00:01Z: expired on every real chain.
+      const calls = [{ to: FRESH_RECIPIENT, value: parseEther("0.01"), data: "0x" as Hex }];
+
+      const signed = await signExecution({
+        account: born.account,
+        client,
+        calls,
+        validUntil: pastValidUntil,
+        signers: [born.paper, born.cloud],
+      });
+
+      let thrown: unknown;
+      try {
+        await submitExecution(client, RELAYER_PK, signed);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ExecutionExpiredError);
+      const error = thrown as ExecutionExpiredError;
+      // The genuine revert reason, not merely "something threw": the exact
+      // `validUntil` the contract rejected travels back from the decoded
+      // `OperationExpired(uint48,uint256)` custom error.
+      expect(error.validUntil).toBe(pastValidUntil);
+      expect(error.blockTimestamp).toBeGreaterThan(BigInt(pastValidUntil));
+    },
+    60_000,
+  );
+
+  it("rejects validUntil === 0 client-side before any RPC call is made", async () => {
+    const calls = [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" as Hex }];
+    let requestsIssued = 0;
+    const stubClient = {
+      getChainId: async () => {
+        requestsIssued += 1;
+        return 31337;
+      },
+      readContract: async () => {
+        requestsIssued += 1;
+        return 0n;
+      },
+    } as unknown as PublicClient;
+
+    await expect(
+      signExecution({
+        account: "0x1111111111111111111111111111111111111111",
+        client: stubClient,
+        calls,
+        validUntil: 0,
+        signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
+      }),
+    ).rejects.toThrow(OperationExpiredError);
+
+    expect(requestsIssued).toBe(0);
+  });
+
+  it(
+    "replay protection: submitting the same signed execution twice fails the second time",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      const born = await bornAndFundedAccount(url, client, test, "1");
+
+      const calls = [{ to: FRESH_RECIPIENT, value: parseEther("0.01"), data: "0x" as Hex }];
+      const validUntil = Math.floor(Date.now() / 1000) + 3600;
+      const signed = await signExecution({
+        account: born.account,
+        client,
+        calls,
+        validUntil,
+        signers: [born.paper, born.cloud],
+      });
+
+      const firstTxHash = await submitExecution(client, RELAYER_PK, signed);
+      const firstReceipt = await client.waitForTransactionReceipt({ hash: firstTxHash });
+      expect(firstReceipt.status).toBe("success");
+
+      // The exact same signed payload again: the nonce it was signed against
+      // has already moved, so this must fail rather than execute twice.
+      await expect(submitExecution(client, RELAYER_PK, signed)).rejects.toThrow();
+    },
+    60_000,
+  );
+
+  it("withRelayerRefund produces a batch whose refund call actually reaches the relayer's balance", async () => {
+    const { url } = await spawnAnvil();
+    const { client, test } = clientsFor(url);
+    const born = await bornAndFundedAccount(url, client, test, "1");
+
+    const relayerBalanceBefore = await client.getBalance({ address: RELAYER_ADDRESS });
+
+    const refundAmount = parseEther("0.02");
+    const baseCalls = [{ to: FRESH_RECIPIENT, value: parseEther("0.01"), data: "0x" as Hex }];
+    const calls = withRelayerRefund(baseCalls, RELAYER_ADDRESS, refundAmount);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(baseCalls[0]);
+    expect(calls[1]).toEqual({ to: RELAYER_ADDRESS, value: refundAmount, data: "0x" });
+
+    const validUntil = Math.floor(Date.now() / 1000) + 3600;
+    const signed = await signExecution({
+      account: born.account,
+      client,
+      calls,
+      validUntil,
+      signers: [born.paper, born.cloud],
+    });
+
+    const txHash = await submitExecution(client, RELAYER_PK, signed);
+    const receipt = await client.waitForTransactionReceipt({ hash: txHash });
+    expect(receipt.status).toBe("success");
+
+    const relayerBalanceAfter = await client.getBalance({ address: RELAYER_ADDRESS });
+    const gasCost = receipt.gasUsed * receipt.effectiveGasPrice;
+
+    // Net change = refund received minus gas fronted, not merely "some
+    // change happened" — proves the refund call actually landed on the
+    // relayer, not just that the batch had two entries.
+    expect(relayerBalanceAfter - relayerBalanceBefore).toBe(refundAmount - gasCost);
+  });
+});
