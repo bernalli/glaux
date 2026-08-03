@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import {
   concat,
   encodeAbiParameters,
@@ -77,6 +77,7 @@ async function readBody(req: IncomingMessage): Promise<string> {
  * `!response.ok`, never as a parseable (if unlucky) JSON-RPC error.
  */
 export async function startMock7677Server(handlers: Mock7677Handlers): Promise<Mock7677ServerHandle> {
+  const sockets = new Set<Socket>();
   const server: Server = createServer((req, res) => {
     void (async (): Promise<void> => {
       let parsed: { id: unknown; method: string; params: readonly unknown[] };
@@ -123,6 +124,10 @@ export async function startMock7677Server(handlers: Mock7677Handlers): Promise<M
       }
     })();
   });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
@@ -131,6 +136,7 @@ export async function startMock7677Server(handlers: Mock7677Handlers): Promise<M
     url: `http://127.0.0.1:${address.port}`,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        for (const socket of sockets) socket.destroy();
         server.close((error) => (error ? reject(error) : resolve()));
       }),
   };

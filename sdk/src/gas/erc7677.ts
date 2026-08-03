@@ -104,11 +104,18 @@ export interface Erc7677RequestParams {
  * here — `isFinal` says whether it happened to already be final).
  */
 export interface PaymasterStubData {
-  readonly paymaster: Address;
-  readonly paymasterData: Hex;
+  readonly sponsor?: PaymasterSponsor;
+  readonly paymaster?: Address;
+  readonly paymasterData?: Hex;
   readonly paymasterVerificationGasLimit?: bigint;
   readonly paymasterPostOpGasLimit?: bigint;
   readonly isFinal?: boolean;
+}
+
+/** ERC-7677's optional human-readable sponsor metadata on a stub response. */
+export interface PaymasterSponsor {
+  readonly name: string;
+  readonly icon?: string;
 }
 
 /**
@@ -120,6 +127,10 @@ export interface PaymasterStubData {
 export interface PaymasterFinalData {
   readonly paymaster: Address;
   readonly paymasterData: Hex;
+}
+
+/** Optional gas limits supplied by an ERC-7677 stub, for the final decoration. */
+export interface PaymasterGasLimits {
   readonly paymasterVerificationGasLimit?: bigint;
   readonly paymasterPostOpGasLimit?: bigint;
 }
@@ -156,38 +167,71 @@ function isOptionalHexQuantity(value: unknown): value is Hex | undefined {
  * artifact the EntryPoint might reject in a way that looks like the
  * account's own fault.
  */
-function parsePaymasterResult(method: Erc7677Method, result: unknown, allowIsFinal: boolean): PaymasterFinalData & { isFinal?: boolean } {
+function parsePaymasterStubResult(result: unknown): PaymasterStubData {
+  const method = "pm_getPaymasterStubData";
   if (typeof result !== "object" || result === null) {
     throw new PaymasterUnavailableError(method, "response result was not an object");
   }
   const candidate = result as Record<string, unknown>;
-  const { paymaster, paymasterData, paymasterVerificationGasLimit, paymasterPostOpGasLimit, isFinal } = candidate;
+  const { sponsor, paymaster, paymasterData, paymasterVerificationGasLimit, paymasterPostOpGasLimit, isFinal } = candidate;
 
-  if (!isAddressLike(paymaster)) {
-    throw new PaymasterUnavailableError(method, "response's `paymaster` was missing or not an address");
+  if (paymaster !== undefined && !isAddressLike(paymaster)) {
+    throw new PaymasterUnavailableError(method, "response's `paymaster` was not an address");
   }
-  if (!isHexLike(paymasterData)) {
-    throw new PaymasterUnavailableError(method, "response's `paymasterData` was missing or not hex bytes");
+  if (paymasterData !== undefined && !isHexLike(paymasterData)) {
+    throw new PaymasterUnavailableError(method, "response's `paymasterData` was not hex bytes");
   }
   if (!isOptionalHexQuantity(paymasterVerificationGasLimit) || !isOptionalHexQuantity(paymasterPostOpGasLimit)) {
     throw new PaymasterUnavailableError(method, "response's paymaster gas limit fields were not hex");
   }
-  if (allowIsFinal && isFinal !== undefined && typeof isFinal !== "boolean") {
+  if (isFinal !== undefined && typeof isFinal !== "boolean") {
     throw new PaymasterUnavailableError(method, "response's `isFinal` was not a boolean");
+  }
+  if (
+    sponsor !== undefined &&
+    (typeof sponsor !== "object" ||
+      sponsor === null ||
+      typeof (sponsor as Record<string, unknown>).name !== "string" ||
+      ((sponsor as Record<string, unknown>).icon !== undefined && typeof (sponsor as Record<string, unknown>).icon !== "string"))
+  ) {
+    throw new PaymasterUnavailableError(method, "response's `sponsor` was malformed");
   }
 
   return {
-    paymaster,
-    paymasterData,
+    ...(sponsor === undefined
+      ? {}
+      : { sponsor: { name: (sponsor as Record<string, unknown>).name as string, ...(typeof (sponsor as Record<string, unknown>).icon === "string" ? { icon: (sponsor as Record<string, unknown>).icon as string } : {}) } }),
+    ...(paymaster === undefined ? {} : { paymaster }),
+    ...(paymasterData === undefined ? {} : { paymasterData }),
     paymasterVerificationGasLimit:
       paymasterVerificationGasLimit === undefined ? undefined : hexToBigInt(paymasterVerificationGasLimit),
     paymasterPostOpGasLimit:
       paymasterPostOpGasLimit === undefined ? undefined : hexToBigInt(paymasterPostOpGasLimit),
-    ...(allowIsFinal ? { isFinal: isFinal as boolean | undefined } : {}),
+    isFinal: isFinal as boolean | undefined,
   };
 }
 
-async function callErc7677(url: string, method: Erc7677Method, params: Erc7677RequestParams): Promise<unknown> {
+function parsePaymasterFinalResult(result: unknown): PaymasterFinalData {
+  const method = "pm_getPaymasterData";
+  if (typeof result !== "object" || result === null) {
+    throw new PaymasterUnavailableError(method, "response result was not an object");
+  }
+  const candidate = result as Record<string, unknown>;
+  if (!isAddressLike(candidate.paymaster)) {
+    throw new PaymasterUnavailableError(method, "response's `paymaster` was missing or not an address");
+  }
+  if (!isHexLike(candidate.paymasterData)) {
+    throw new PaymasterUnavailableError(method, "response's `paymasterData` was missing or not hex bytes");
+  }
+  return { paymaster: candidate.paymaster, paymasterData: candidate.paymasterData };
+}
+
+async function callErc7677(
+  url: string,
+  method: Erc7677Method,
+  params: Erc7677RequestParams,
+  timeoutMs: number,
+): Promise<unknown> {
   const body = JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
@@ -195,41 +239,56 @@ async function callErc7677(url: string, method: Erc7677Method, params: Erc7677Re
     params: [toRpcUserOp(params.op), params.entryPoint, numberToHex(params.chainId), params.context ?? {}],
   });
 
-  let response: Response;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
+      signal: controller.signal,
     });
-  } catch {
+    if (!response.ok) {
+      throw new PaymasterUnavailableError(method, `provider responded with HTTP ${response.status}`);
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      if (timedOut) {
+        throw new PaymasterUnavailableError(method, `request timed out after ${timeoutMs}ms`);
+      }
+      throw new PaymasterUnavailableError(method, "provider response was not valid JSON");
+    }
+
+    if (typeof payload !== "object" || payload === null) {
+      throw new PaymasterUnavailableError(method, "provider response was not a JSON object");
+    }
+    const envelope = payload as Record<string, unknown>;
+    if (envelope.error !== undefined && envelope.error !== null) {
+      const error = envelope.error as Record<string, unknown>;
+      const message = typeof error.message === "string" ? error.message : "provider returned a JSON-RPC error";
+      throw new PaymasterUnavailableError(method, message);
+    }
+    if (!("result" in envelope)) {
+      throw new PaymasterUnavailableError(method, "provider response carried neither a result nor an error");
+    }
+    return envelope.result;
+  } catch (error) {
+    if (error instanceof PaymasterUnavailableError) throw error;
+    if (timedOut) {
+      throw new PaymasterUnavailableError(method, `request timed out after ${timeoutMs}ms`);
+    }
     throw new PaymasterUnavailableError(method, "request failed: the provider was unreachable");
+  } finally {
+    clearTimeout(timeout);
   }
-
-  if (!response.ok) {
-    throw new PaymasterUnavailableError(method, `provider responded with HTTP ${response.status}`);
-  }
-
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new PaymasterUnavailableError(method, "provider response was not valid JSON");
-  }
-
-  if (typeof payload !== "object" || payload === null) {
-    throw new PaymasterUnavailableError(method, "provider response was not a JSON object");
-  }
-  const envelope = payload as Record<string, unknown>;
-  if (envelope.error !== undefined && envelope.error !== null) {
-    const error = envelope.error as Record<string, unknown>;
-    const message = typeof error.message === "string" ? error.message : "provider returned a JSON-RPC error";
-    throw new PaymasterUnavailableError(method, message);
-  }
-  if (!("result" in envelope)) {
-    throw new PaymasterUnavailableError(method, "provider response carried neither a result nor an error");
-  }
-  return envelope.result;
 }
 
 /**
@@ -248,22 +307,27 @@ async function callErc7677(url: string, method: Erc7677Method, params: Erc7677Re
  * guessed at.
  */
 export class Erc7677Client {
-  constructor(private readonly url: string) {}
+  private readonly timeoutMs: number;
+
+  constructor(
+    private readonly url: string,
+    options: { readonly timeoutMs?: number } = {},
+  ) {
+    const timeoutMs = options.timeoutMs ?? 10_000;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new RangeError("ERC-7677 timeoutMs must be a positive integer.");
+    }
+    this.timeoutMs = timeoutMs;
+  }
 
   async getPaymasterStubData(params: Erc7677RequestParams): Promise<PaymasterStubData> {
-    const result = await callErc7677(this.url, "pm_getPaymasterStubData", params);
-    return parsePaymasterResult("pm_getPaymasterStubData", result, true);
+    const result = await callErc7677(this.url, "pm_getPaymasterStubData", params, this.timeoutMs);
+    return parsePaymasterStubResult(result);
   }
 
   async getPaymasterData(params: Erc7677RequestParams): Promise<PaymasterFinalData> {
-    const result = await callErc7677(this.url, "pm_getPaymasterData", params);
-    const parsed = parsePaymasterResult("pm_getPaymasterData", result, false);
-    return {
-      paymaster: parsed.paymaster,
-      paymasterData: parsed.paymasterData,
-      paymasterVerificationGasLimit: parsed.paymasterVerificationGasLimit,
-      paymasterPostOpGasLimit: parsed.paymasterPostOpGasLimit,
-    };
+    const result = await callErc7677(this.url, "pm_getPaymasterData", params, this.timeoutMs);
+    return parsePaymasterFinalResult(result);
   }
 }
 
@@ -308,9 +372,13 @@ const DEFAULT_PAYMASTER_POSTOP_GAS_LIMIT = 50_000n;
  * (`signUserOp`, `../execute/userop.js`) is computed AFTER this decoration,
  * over the full resulting op, so nothing here is ever signed blind.
  */
-export function applyPaymasterData(op: PackedUserOperation, data: PaymasterFinalData): PackedUserOperation {
-  const verificationGasLimit = data.paymasterVerificationGasLimit ?? DEFAULT_PAYMASTER_VERIFICATION_GAS_LIMIT;
-  const postOpGasLimit = data.paymasterPostOpGasLimit ?? DEFAULT_PAYMASTER_POSTOP_GAS_LIMIT;
+export function applyPaymasterData(
+  op: PackedUserOperation,
+  data: PaymasterFinalData,
+  gasLimits: PaymasterGasLimits = {},
+): PackedUserOperation {
+  const verificationGasLimit = gasLimits.paymasterVerificationGasLimit ?? DEFAULT_PAYMASTER_VERIFICATION_GAS_LIMIT;
+  const postOpGasLimit = gasLimits.paymasterPostOpGasLimit ?? DEFAULT_PAYMASTER_POSTOP_GAS_LIMIT;
 
   const paymasterAndData = concat([
     data.paymaster,

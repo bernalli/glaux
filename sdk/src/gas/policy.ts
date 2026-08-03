@@ -1,12 +1,14 @@
 import type { Address, PublicClient } from "viem";
 import type { PackedUserOperation } from "../execute/userop.js";
-import { PaymasterNotConfiguredError, SelfFundingUnavailableError } from "../errors.js";
+import { fetchEntryPointDeposit } from "../execute/userop.js";
+import { PaymasterNotConfiguredError, PaymasterUnavailableError, SelfFundingUnavailableError } from "../errors.js";
 import {
   applyPaymasterData,
   paymasterClientFromEnv,
   unpackAccountGasLimits,
   unpackGasFees,
   Erc7677Client,
+  type PaymasterStubData,
   type Erc7677Context,
 } from "./erc7677.js";
 
@@ -28,9 +30,9 @@ export interface GasPlanChainContext {
  * needs no prefund from the account.
  */
 export type GasPlan =
-  | { readonly kind: "sponsored"; readonly op: PackedUserOperation }
-  | { readonly kind: "selfFunded"; readonly op: PackedUserOperation }
-  | { readonly kind: "selfRelay" };
+  | { readonly kind: "sponsored"; readonly op: PackedUserOperation; readonly events: readonly GasFallbackEvent[] }
+  | { readonly kind: "selfFunded"; readonly op: PackedUserOperation; readonly events: readonly GasFallbackEvent[] }
+  | { readonly kind: "selfRelay"; readonly events: readonly GasFallbackEvent[] };
 
 export type GasFallbackFrom = "sponsored" | "selfFunded";
 export type GasFallbackTo = "selfFunded" | "selfRelay";
@@ -59,12 +61,6 @@ export interface GasPolicyParams {
   readonly onFallback?: (event: GasFallbackEvent) => void;
 }
 
-const NOOP_ON_FALLBACK = (): void => {
-  // Intentionally does nothing: a caller who doesn't observe fallbacks still
-  // gets correct execution, but per spec §7 they are opting out of an
-  // explicit signal, not causing one to vanish.
-};
-
 function causeNameOf(error: unknown): string {
   return error instanceof Error ? error.name : "UnknownPaymasterError";
 }
@@ -90,18 +86,18 @@ function requiredPrefund(op: PackedUserOperation): bigint {
 /**
  * The gas module's fallback policy (spec §5/§7): sponsored (ERC-7677) →
  * self-funded ERC-4337 → self-relay guidance, with NO silent degradation —
- * every transition between tiers calls `onFallback` with a `{from, to,
- * cause}` event before falling through, whether the cause is a failed
- * provider call, an unconfigured provider, or an account balance too low to
- * self-fund.
+ * every transition between tiers records a `{from, to, cause}` event in the
+ * returned plan and calls `onFallback` when supplied, whether the cause is a
+ * failed provider call, an unconfigured provider, or an account balance too
+ * low to self-fund.
  */
 export class GasPolicy {
   private readonly paymasterClient: Erc7677Client | null;
-  private readonly onFallback: (event: GasFallbackEvent) => void;
+  private readonly onFallback?: (event: GasFallbackEvent) => void;
 
   constructor(params: GasPolicyParams = {}) {
     this.paymasterClient = params.paymasterClient === undefined ? paymasterClientFromEnv() : params.paymasterClient;
-    this.onFallback = params.onFallback ?? NOOP_ON_FALLBACK;
+    this.onFallback = params.onFallback;
   }
 
   /**
@@ -112,24 +108,42 @@ export class GasPolicy {
    * `../execute/userop.js`).
    */
   async plan(op: PackedUserOperation, chain: GasPlanChainContext): Promise<GasPlan> {
-    const sponsoredOp = await this.trySponsor(op, chain);
+    const events: GasFallbackEvent[] = [];
+    const sponsoredOp = await this.trySponsor(op, chain, events);
     if (sponsoredOp !== null) {
-      return { kind: "sponsored", op: sponsoredOp };
+      return { kind: "sponsored", op: sponsoredOp, events };
     }
 
-    const balance = await chain.client.getBalance({ address: op.sender });
+    const [balance, deposit] = await Promise.all([
+      chain.client.getBalance({ address: op.sender }),
+      fetchEntryPointDeposit(chain.client, chain.entryPoint, op.sender),
+    ]);
     const required = requiredPrefund(op);
-    if (balance >= required) {
-      return { kind: "selfFunded", op };
+    const missingAccountFunds = required > deposit ? required - deposit : 0n;
+    if (balance >= missingAccountFunds) {
+      return { kind: "selfFunded", op, events };
     }
 
-    this.onFallback({ from: "selfFunded", to: "selfRelay", cause: new SelfFundingUnavailableError(required, balance).name });
-    return { kind: "selfRelay" };
+    this.recordFallback(events, {
+      from: "selfFunded",
+      to: "selfRelay",
+      cause: new SelfFundingUnavailableError(missingAccountFunds, balance).name,
+    });
+    return { kind: "selfRelay", events };
   }
 
-  private async trySponsor(op: PackedUserOperation, chain: GasPlanChainContext): Promise<PackedUserOperation | null> {
+  private recordFallback(events: GasFallbackEvent[], event: GasFallbackEvent): void {
+    events.push(event);
+    this.onFallback?.(event);
+  }
+
+  private async trySponsor(
+    op: PackedUserOperation,
+    chain: GasPlanChainContext,
+    events: GasFallbackEvent[],
+  ): Promise<PackedUserOperation | null> {
     if (this.paymasterClient === null) {
-      this.onFallback({ from: "sponsored", to: "selfFunded", cause: new PaymasterNotConfiguredError().name });
+      this.recordFallback(events, { from: "sponsored", to: "selfFunded", cause: new PaymasterNotConfiguredError().name });
       return null;
     }
 
@@ -139,12 +153,22 @@ export class GasPolicy {
       // call first (as gas estimation would), then request the final,
       // submission-safe data. A provider that fails at either stage
       // degrades the same way — one fallback event, not two.
-      await this.paymasterClient.getPaymasterStubData(request);
+      const stub = await this.paymasterClient.getPaymasterStubData(request);
+      if (stub.isFinal) {
+        return applyPaymasterData(op, finalDataFromStub(stub), stub);
+      }
       const final = await this.paymasterClient.getPaymasterData(request);
-      return applyPaymasterData(op, final);
+      return applyPaymasterData(op, final, stub);
     } catch (error) {
-      this.onFallback({ from: "sponsored", to: "selfFunded", cause: causeNameOf(error) });
+      this.recordFallback(events, { from: "sponsored", to: "selfFunded", cause: causeNameOf(error) });
       return null;
     }
   }
+}
+
+function finalDataFromStub(stub: PaymasterStubData): { readonly paymaster: Address; readonly paymasterData: `0x${string}` } {
+  if (stub.paymaster === undefined || stub.paymasterData === undefined) {
+    throw new PaymasterUnavailableError("pm_getPaymasterStubData", "final stub omitted paymaster data");
+  }
+  return { paymaster: stub.paymaster, paymasterData: stub.paymasterData };
 }

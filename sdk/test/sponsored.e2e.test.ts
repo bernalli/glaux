@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { concat, encodeAbiParameters, numberToHex, parseEther, type Address, type Hex } from "viem";
+import { concat, encodeAbiParameters, encodeFunctionData, numberToHex, parseEther, type Address, type Hex } from "viem";
 import { privateKeyToAddress } from "viem/accounts";
 import { ENTRYPOINT } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
@@ -15,7 +15,15 @@ import {
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
-import { deployCanonical, deployEntryPoint, deployP256Oracle, deployVerifyingPaymaster, depositForPaymaster, stakeVerifyingPaymaster } from "./helpers/deploy.js";
+import {
+  deployCanonical,
+  deployEntryPoint,
+  deployP256Oracle,
+  deploySponsorshipFixtures,
+  deployVerifyingPaymaster,
+  depositForPaymaster,
+  stakeVerifyingPaymaster,
+} from "./helpers/deploy.js";
 import { signVerifyingPaymasterData, startMock7677Server } from "./helpers/mock7677.js";
 import { Erc7677Client } from "../src/gas/erc7677.js";
 import { GasPolicy, type GasFallbackEvent } from "../src/gas/policy.js";
@@ -27,11 +35,21 @@ const CLOUD_PK: Hex = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a80
 const DEVICE_PK: Hex = "0x7459e13afd9158a379ee75ca9e80a328916dba1473c863f800f51ee5f46eb3ab";
 const RELAYER_PK: Hex = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6";
 const BENEFICIARY: Address = "0x000000000000000000000000000000000000beef";
-const FRESH_RECIPIENT: Address = "0x000000000000000000000000000000000000f00d";
 
 const PAYMASTER_VERIFICATION_GAS_LIMIT = 100_000n;
 const PAYMASTER_POSTOP_GAS_LIMIT = 50_000n;
 const PAYMASTER_VALID_AFTER = 0;
+
+const OBSERVER_ABI = [
+  { type: "function", name: "observe", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  { type: "function", name: "accountBalanceDuringExecution", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "accountDepositDuringExecution", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+] as const;
+
+const COUNTER_ABI = [
+  { type: "function", name: "bump", stateMutability: "payable", inputs: [], outputs: [] },
+  { type: "function", name: "n", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+] as const;
 
 describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirroring EntryPoint4337.t.sol's zero-balance proof", () => {
   it(
@@ -55,6 +73,7 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
       // Deliberately NOT funded: `setBalance` is never called for `account`.
       // This is the crux of the proof — sponsorship, not the account's own
       // wallet, must cover every wei of gas.
+      const { observer, counter } = await deploySponsorshipFixtures(client, DEPLOYER_PK, account);
 
       // Owner AND verifyingSigner are the SAME test key (the task brief's
       // "owner = a test key" / "the mock server signs paymasterData with the
@@ -105,8 +124,6 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
           return {
             paymaster,
             paymasterData,
-            paymasterVerificationGasLimit: numberToHex(PAYMASTER_VERIFICATION_GAS_LIMIT),
-            paymasterPostOpGasLimit: numberToHex(PAYMASTER_POSTOP_GAS_LIMIT),
           };
         },
       });
@@ -118,7 +135,16 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
           onFallback: (event) => events.push(event),
         });
 
-        const calls = [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" as Hex }];
+        const calls = [
+          // This is executed by the Glaux account inside EntryPoint.handleOps,
+          // not sampled before or after the transaction. It records the
+          // account's native balance and EntryPoint deposit at that execution
+          // point; it cannot by itself prove every individual opcode's state.
+          { to: observer, value: 0n, data: encodeFunctionData({ abi: OBSERVER_ABI, functionName: "observe" }) },
+          // A separate state-changing target proves the intended user call ran
+          // after the observer, rather than merely validating a paymaster path.
+          { to: counter, value: 0n, data: encodeFunctionData({ abi: COUNTER_ABI, functionName: "bump" }) },
+        ];
         const op = await buildUserOp({ account, client, calls, validUntil });
 
         const plan = await policy.plan(op, { client, entryPoint: ENTRYPOINT, chainId });
@@ -128,6 +154,7 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
         if (plan.kind !== "sponsored") {
           throw new Error(`expected a sponsored plan, got ${plan.kind}`);
         }
+        expect(plan.events).toEqual([]);
         expect(plan.op.paymasterAndData).not.toBe("0x");
 
         const signed = await signUserOp({
@@ -148,20 +175,22 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
         expect(event.success).toBe(true);
         expect(event.actualGasCost).toBeGreaterThan(0n);
 
+        const [counterValue, accountBalanceDuringExecution, accountDepositDuringExecution] = await Promise.all([
+          client.readContract({ address: counter, abi: COUNTER_ABI, functionName: "n" }),
+          client.readContract({ address: observer, abi: OBSERVER_ABI, functionName: "accountBalanceDuringExecution" }),
+          client.readContract({ address: observer, abi: OBSERVER_ABI, functionName: "accountDepositDuringExecution" }),
+        ]);
+        expect(counterValue).toBe(1n);
+        expect(accountBalanceDuringExecution).toBe(0n);
+        expect(accountDepositDuringExecution).toBe(0n);
+
         const accountBalanceAfter = await client.getBalance({ address: account });
         const accountDepositAfter = await fetchEntryPointDeposit(client, ENTRYPOINT, account);
         const paymasterDepositAfter = await fetchEntryPointDeposit(client, ENTRYPOINT, paymaster);
 
-        // Mirrors `EntryPoint4337.t.sol::test_userOp_sponsoredExecutionWithZeroBalanceAccount`'s
-        // before/after assertions: the account's native balance and its
-        // EntryPoint deposit are zero both before and after the entire
-        // sponsored operation — the account never fronts anything. (The
-        // Solidity proof additionally walks every intermediate state-diff
-        // step via `vm.recordLogs`/`vm.stopAndReturnStateDiff`, an EVM-
-        // internal cheatcode with no JSON-RPC equivalent this external SDK
-        // test can reach; before/after zero across the one atomic
-        // transaction is the strongest check available from outside the
-        // EVM, and is what this test asserts.)
+        // Together with the observer's in-execution reading above, the native
+        // balance and EntryPoint deposit are zero before, during the actual
+        // account call, and after the sponsored operation.
         expect(accountBalanceAfter).toBe(0n);
         expect(accountDepositAfter).toBe(0n);
 

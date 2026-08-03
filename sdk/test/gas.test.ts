@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { encodePacked, parseEther, type Address, type Hex, type PublicClient } from "viem";
+import { concat, encodePacked, parseEther, type Address, type Hex, type PublicClient } from "viem";
 import { ENTRYPOINT } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
@@ -77,6 +77,13 @@ function stubOp(overrides: Partial<PackedUserOperation> = {}): PackedUserOperati
   };
 }
 
+function policyClient(balance: bigint, deposit = 0n): PublicClient {
+  return {
+    getBalance: async () => balance,
+    readContract: async () => deposit,
+  } as unknown as PublicClient;
+}
+
 const openMocks: Mock7677ServerHandle[] = [];
 
 afterEach(async () => {
@@ -98,11 +105,17 @@ describe("Erc7677Client: ERC-7677 wire round trip against an in-process mock", (
     const server = await mockServer({
       getPaymasterStubData: (params) => {
         seenStub.push(params);
-        return { paymaster, paymasterData: "0x1234", paymasterVerificationGasLimit: "0xea60", isFinal: false };
+        return {
+          sponsor: { name: "Mock sponsor", icon: "https://example.invalid/icon.svg" },
+          paymaster,
+          paymasterData: "0x1234",
+          paymasterVerificationGasLimit: "0xea60",
+          isFinal: false,
+        };
       },
       getPaymasterData: (params) => {
         seenFinal.push(params);
-        return { paymaster, paymasterData: "0x5678", paymasterPostOpGasLimit: "0x2710" };
+        return { paymaster, paymasterData: "0x5678" };
       },
     });
 
@@ -114,6 +127,7 @@ describe("Erc7677Client: ERC-7677 wire round trip against an in-process mock", (
     expect(stub).toEqual({
       paymaster,
       paymasterData: "0x1234",
+      sponsor: { name: "Mock sponsor", icon: "https://example.invalid/icon.svg" },
       paymasterVerificationGasLimit: 60_000n,
       paymasterPostOpGasLimit: undefined,
       isFinal: false,
@@ -123,8 +137,6 @@ describe("Erc7677Client: ERC-7677 wire round trip against an in-process mock", (
     expect(final).toEqual({
       paymaster,
       paymasterData: "0x5678",
-      paymasterVerificationGasLimit: undefined,
-      paymasterPostOpGasLimit: 10_000n,
     });
 
     expect(seenStub).toHaveLength(1);
@@ -135,15 +147,29 @@ describe("Erc7677Client: ERC-7677 wire round trip against an in-process mock", (
     expect(stubParams.context).toEqual(context);
   });
 
-  it("fails closed with PaymasterUnavailableError on a malformed provider response (missing paymaster address)", async () => {
+  it("accepts a standards-shaped stub that omits all paymaster fields", async () => {
     const server = await mockServer({
-      getPaymasterStubData: () => ({ paymasterData: "0x1234" }),
+      getPaymasterStubData: () => ({ sponsor: { name: "Provider is considering sponsorship" } }),
     });
     const client = new Erc7677Client(server.url);
 
-    await expect(
-      client.getPaymasterStubData({ op: stubOp(), entryPoint: ENTRYPOINT, chainId: 31337n }),
-    ).rejects.toBeInstanceOf(PaymasterUnavailableError);
+    await expect(client.getPaymasterStubData({ op: stubOp(), entryPoint: ENTRYPOINT, chainId: 31337n })).resolves.toEqual({
+      sponsor: { name: "Provider is considering sponsorship" },
+      paymasterVerificationGasLimit: undefined,
+      paymasterPostOpGasLimit: undefined,
+      isFinal: undefined,
+    });
+  });
+
+  it("fails closed with PaymasterUnavailableError when the final response omits paymaster data", async () => {
+    const server = await mockServer({
+      getPaymasterData: () => ({ paymasterData: "0x1234" }),
+    });
+    const client = new Erc7677Client(server.url);
+
+    await expect(client.getPaymasterData({ op: stubOp(), entryPoint: ENTRYPOINT, chainId: 31337n })).rejects.toBeInstanceOf(
+      PaymasterUnavailableError,
+    );
   });
 
   it("fails closed with PaymasterUnavailableError on an HTTP-level failure", async () => {
@@ -176,34 +202,130 @@ describe("Erc7677Client: ERC-7677 wire round trip against an in-process mock", (
       client.getPaymasterStubData({ op: stubOp(), entryPoint: ENTRYPOINT, chainId: 31337n }),
     ).rejects.toBeInstanceOf(PaymasterUnavailableError);
   });
+
+  it("maps a provider that accepts but never answers to PaymasterUnavailableError within its configured timeout", async () => {
+    const server = await mockServer({
+      getPaymasterStubData: () => new Promise<never>(() => undefined),
+    });
+    const client = new Erc7677Client(server.url, { timeoutMs: 25 });
+
+    await expect(client.getPaymasterStubData({ op: stubOp(), entryPoint: ENTRYPOINT, chainId: 31337n })).rejects.toMatchObject({
+      name: PaymasterUnavailableError.name,
+      message: expect.stringContaining("timed out after 25ms"),
+    });
+
+    const policy = new GasPolicy({ paymasterClient: client });
+    const plan = await policy.plan(stubOp(), { client: policyClient(parseEther("1")), entryPoint: ENTRYPOINT, chainId: 31337n });
+    expect(plan).toMatchObject({
+      kind: "selfFunded",
+      events: [{ from: "sponsored", to: "selfFunded", cause: PaymasterUnavailableError.name }],
+    });
+  });
 });
 
 describe("GasPolicy: no silent fallbacks", () => {
-  it("emits a distinct PaymasterNotConfiguredError event (never PaymasterUnavailableError) when no provider is configured, then completes self-funded", async () => {
-    const events: GasFallbackEvent[] = [];
-    const policy = new GasPolicy({ paymasterClient: null, onFallback: (event) => events.push(event) });
+  it("returns a distinct PaymasterNotConfiguredError event even without an onFallback callback, then completes self-funded", async () => {
+    const policy = new GasPolicy({ paymasterClient: null });
     const op = stubOp();
-    const stubClient = { getBalance: async () => parseEther("1") } as unknown as PublicClient;
+    const stubClient = policyClient(parseEther("1"));
 
     const plan = await policy.plan(op, { client: stubClient, entryPoint: ENTRYPOINT, chainId: 31337n });
 
-    expect(plan).toEqual({ kind: "selfFunded", op });
-    expect(events).toEqual([{ from: "sponsored", to: "selfFunded", cause: PaymasterNotConfiguredError.name }]);
+    expect(plan).toEqual({
+      kind: "selfFunded",
+      op,
+      events: [{ from: "sponsored", to: "selfFunded", cause: PaymasterNotConfiguredError.name }],
+    });
   });
 
   it("degrades further to selfRelay, with its own emitted event, when the account cannot cover the self-funded prefund", async () => {
     const events: GasFallbackEvent[] = [];
     const policy = new GasPolicy({ paymasterClient: null, onFallback: (event) => events.push(event) });
     const op = stubOp();
-    const stubClient = { getBalance: async () => 0n } as unknown as PublicClient;
+    const stubClient = policyClient(0n);
 
     const plan = await policy.plan(op, { client: stubClient, entryPoint: ENTRYPOINT, chainId: 31337n });
 
-    expect(plan).toEqual({ kind: "selfRelay" });
-    expect(events).toEqual([
+    const expectedEvents = [
       { from: "sponsored", to: "selfFunded", cause: PaymasterNotConfiguredError.name },
       { from: "selfFunded", to: "selfRelay", cause: SelfFundingUnavailableError.name },
-    ]);
+    ];
+    expect(plan).toEqual({ kind: "selfRelay", events: expectedEvents });
+    expect(events).toEqual(expectedEvents);
+  });
+
+  it("uses a sufficient EntryPoint deposit before requiring native prefund", async () => {
+    const policy = new GasPolicy({ paymasterClient: null });
+    const op = stubOp();
+    const plan = await policy.plan(op, { client: policyClient(0n, 9_000_000n), entryPoint: ENTRYPOINT, chainId: 31337n });
+
+    expect(plan).toEqual({
+      kind: "selfFunded",
+      op,
+      events: [{ from: "sponsored", to: "selfFunded", cause: PaymasterNotConfiguredError.name }],
+    });
+  });
+
+  it("uses a partial EntryPoint deposit and requires native balance only for the remaining prefund", async () => {
+    const policy = new GasPolicy({ paymasterClient: null });
+    const op = stubOp();
+    const plan = await policy.plan(op, { client: policyClient(3_000_000n, 6_000_000n), entryPoint: ENTRYPOINT, chainId: 31337n });
+
+    expect(plan).toEqual({
+      kind: "selfFunded",
+      op,
+      events: [{ from: "sponsored", to: "selfFunded", cause: PaymasterNotConfiguredError.name }],
+    });
+  });
+
+  it("preserves stub gas limits when the authoritative final response contains only paymaster and paymasterData", async () => {
+    const paymaster = "0x9999999999999999999999999999999999999999" as Address;
+    const server = await mockServer({
+      getPaymasterStubData: () => ({
+        paymaster,
+        paymasterData: "0x1234",
+        paymasterVerificationGasLimit: "0x1111",
+        paymasterPostOpGasLimit: "0x2222",
+        isFinal: false,
+      }),
+      getPaymasterData: () => ({ paymaster, paymasterData: "0xabcd" }),
+    });
+    const policy = new GasPolicy({ paymasterClient: new Erc7677Client(server.url) });
+    const plan = await policy.plan(stubOp(), { client: policyClient(0n), entryPoint: ENTRYPOINT, chainId: 31337n });
+
+    if (plan.kind !== "sponsored") throw new Error(`expected sponsored plan, got ${plan.kind}`);
+    expect(plan.events).toEqual([]);
+    expect(plan.op.paymasterAndData).toBe(
+      concat([paymaster, encodePacked(["uint128", "uint128"], [0x1111n, 0x2222n]), "0xabcd"]),
+    );
+  });
+
+  it("honours an isFinal stub and does not call pm_getPaymasterData", async () => {
+    const paymaster = "0x9999999999999999999999999999999999999999" as Address;
+    let finalCalls = 0;
+    const server = await mockServer({
+      getPaymasterStubData: () => ({
+        sponsor: { name: "Final sponsor" },
+        paymaster,
+        paymasterData: "0x1234",
+        paymasterVerificationGasLimit: "0x1111",
+        paymasterPostOpGasLimit: "0x2222",
+        isFinal: true,
+      }),
+      getPaymasterData: () => {
+        finalCalls += 1;
+        throw new Error("must not be called");
+      },
+    });
+    const policy = new GasPolicy({ paymasterClient: new Erc7677Client(server.url) });
+    const plan = await policy.plan(stubOp(), { client: policyClient(0n), entryPoint: ENTRYPOINT, chainId: 31337n });
+
+    expect(finalCalls).toBe(0);
+    if (plan.kind !== "sponsored") throw new Error(`expected sponsored plan, got ${plan.kind}`);
+    expect(plan.events).toEqual([]);
+    expect(plan.op.paymasterAndData).toBe(
+      concat([paymaster, encodePacked(["uint128", "uint128"], [0x1111n, 0x2222n]), "0x1234"]),
+    );
   });
 
   it(
@@ -232,7 +354,9 @@ describe("GasPolicy: no silent fallbacks", () => {
       const chainId = BigInt(await client.getChainId());
 
       const plan = await policy.plan(op, { client, entryPoint: ENTRYPOINT, chainId });
-      expect(events).toEqual([{ from: "sponsored", to: "selfFunded", cause: PaymasterUnavailableError.name }]);
+      const expectedEvents = [{ from: "sponsored", to: "selfFunded", cause: PaymasterUnavailableError.name }];
+      expect(events).toEqual(expectedEvents);
+      expect(plan.events).toEqual(expectedEvents);
       if (plan.kind !== "selfFunded") {
         throw new Error(`expected a selfFunded plan, got ${plan.kind}`);
       }

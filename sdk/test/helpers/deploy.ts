@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,96 @@ function loadDeployedBytecode(sourceFile: string, contractName: string, outDir: 
   const artifactPath = join(outDir, `${sourceFile}.sol`, `${contractName}.json`);
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as ForgeArtifact;
   return artifact.deployedBytecode.object;
+}
+
+/** A pinned, temporary Solidity compilation failed before it produced an artifact. */
+export class TestContractCompilationError extends Error {
+  readonly sourcePath: string;
+  readonly exitCode: number | null;
+
+  constructor(sourcePath: string, exitCode: number | null, output: string) {
+    super(`pinned forge build of ${sourcePath} failed (exit ${String(exitCode)}): ${output}`);
+    this.name = "TestContractCompilationError";
+    this.sourcePath = sourcePath;
+    this.exitCode = exitCode;
+  }
+}
+
+/** A pinned compilation completed but did not produce the contract artifact the test needs. */
+export class TestContractArtifactError extends Error {
+  readonly sourceFile: string;
+  readonly contractName: string;
+
+  constructor(sourceFile: string, contractName: string, reason: string) {
+    super(`compiled ${sourceFile} did not yield ${contractName}'s creation bytecode: ${reason}`);
+    this.name = "TestContractArtifactError";
+    this.sourceFile = sourceFile;
+    this.contractName = contractName;
+  }
+}
+
+interface TemporaryCompilation {
+  readonly outDir: string;
+  cleanup(): void;
+}
+
+/**
+ * Compiles a test-only Solidity fixture out of tree with every bytecode-affecting
+ * setting explicit. These fixtures must not enter the repository's normal
+ * Solidity build graph: doing so would widen the canonical Glaux compilation
+ * surface merely to support an SDK integration test.
+ */
+function compileTestFixture(sourcePath: string): TemporaryCompilation {
+  const outDir = mkdtempSync(join(tmpdir(), "glaux-test-fixture-out-"));
+  const cacheDir = mkdtempSync(join(tmpdir(), "glaux-test-fixture-cache-"));
+  const cleanup = (): void => {
+    rmSync(outDir, { recursive: true, force: true });
+    rmSync(cacheDir, { recursive: true, force: true });
+  };
+  const result = spawnSync(
+    "forge",
+    [
+      "build",
+      sourcePath,
+      "--use",
+      "0.8.28",
+      "--offline",
+      "--evm-version",
+      "prague",
+      "--optimize",
+      "true",
+      "--optimizer-runs",
+      "10000",
+      "--no-metadata",
+      "--out",
+      outDir,
+      "--cache-path",
+      cacheDir,
+    ],
+    { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (result.status !== 0) {
+    const output = [result.stdout?.toString("utf8"), result.stderr?.toString("utf8"), result.error?.message]
+      .filter((part): part is string => part !== undefined && part !== "")
+      .join("\n");
+    cleanup();
+    throw new TestContractCompilationError(sourcePath, result.status, output);
+  }
+  return { outDir, cleanup };
+}
+
+function loadCompiledCreationBytecode(compilation: TemporaryCompilation, sourceFile: string, contractName: string): Hex {
+  const artifactPath = join(compilation.outDir, `${sourceFile}.sol`, `${contractName}.json`);
+  try {
+    const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as Partial<ForgeArtifact>;
+    const bytecode = artifact.bytecode?.object;
+    if (typeof bytecode !== "string" || !bytecode.startsWith("0x")) {
+      throw new Error("artifact has no hex creation bytecode");
+    }
+    return bytecode as Hex;
+  } catch (error) {
+    throw new TestContractArtifactError(sourceFile, contractName, error instanceof Error ? error.message : "artifact was unreadable");
+  }
 }
 
 /**
@@ -159,24 +249,13 @@ export async function deployCanonical(
  * `out/VerifyingPaymaster.sol/VerifyingPaymaster.json` artifact for it — and
  * this task must not add an import there to manufacture one (no
  * modifications to the Solidity surface). `forge build <path> --out
- * <tmp> --cache-path <tmp>` still reads this project's `foundry.toml`
- * (remappings, the pinned solc/`bytecode_hash = "none"` settings) exactly as
- * a normal build would; it just writes the result somewhere temporary
- * instead of the tracked `out/`, so nothing in the repo changes.
+ * <tmp> --cache-path <tmp>` uses the same bytecode-affecting settings as the
+ * repository, but pins them on the command line too: solc 0.8.28, offline,
+ * Prague, optimizer 10000, and no metadata. It writes only temporary output,
+ * which the deploy helper removes in `finally`, instead of changing `out/`.
  */
-function compileVerifyingPaymaster(): { readonly outDir: string } {
-  const outDir = mkdtempSync(join(tmpdir(), "glaux-verifying-paymaster-out-"));
-  const cacheDir = mkdtempSync(join(tmpdir(), "glaux-verifying-paymaster-cache-"));
-  const result = spawnSync(
-    "forge",
-    ["build", "lib/account-abstraction/contracts/samples/VerifyingPaymaster.sol", "--out", outDir, "--cache-path", cacheDir],
-    { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  if (result.status !== 0) {
-    const stderr = result.stderr?.toString("utf8") ?? "";
-    throw new Error(`forge build of VerifyingPaymaster.sol failed (exit ${String(result.status)}): ${stderr}`);
-  }
-  return { outDir };
+function compileVerifyingPaymaster(): TemporaryCompilation {
+  return compileTestFixture("lib/account-abstraction/contracts/samples/VerifyingPaymaster.sol");
 }
 
 export interface DeployedVerifyingPaymaster {
@@ -198,8 +277,13 @@ export async function deployVerifyingPaymaster(
   deployerPrivateKey: Hex,
   verifyingSigner: Address,
 ): Promise<DeployedVerifyingPaymaster> {
-  const { outDir } = compileVerifyingPaymaster();
-  const bytecode = loadCreationBytecode("VerifyingPaymaster", "VerifyingPaymaster", outDir);
+  const compilation = compileVerifyingPaymaster();
+  let bytecode: Hex;
+  try {
+    bytecode = loadCompiledCreationBytecode(compilation, "VerifyingPaymaster", "VerifyingPaymaster");
+  } finally {
+    compilation.cleanup();
+  }
   const deployerAddress = privateKeyToAddress(deployerPrivateKey);
   const initcode = concat([
     bytecode,
@@ -221,6 +305,56 @@ export async function deployVerifyingPaymaster(
   assert.strictEqual(receipt.status, "success", `VerifyingPaymaster deployment reverted (tx ${hash}).`);
   assert.ok(receipt.contractAddress, "VerifyingPaymaster deployment receipt carried no contractAddress");
   return { address: receipt.contractAddress };
+}
+
+export interface DeployedSponsorshipFixtures {
+  readonly observer: Address;
+  readonly counter: Address;
+}
+
+/**
+ * Deploys the exact observer and state-changing target used by the Solidity
+ * zero-balance reference proof. They are compiled out of tree for the same
+ * reason as `VerifyingPaymaster`: the SDK test needs their bytecode, while the
+ * project build must not gain test-only imports or a wider Solidity surface.
+ */
+export async function deploySponsorshipFixtures(
+  client: PublicClient,
+  deployerPrivateKey: Hex,
+  account: Address,
+): Promise<DeployedSponsorshipFixtures> {
+  const compilation = compileTestFixture("test/EntryPoint4337.t.sol");
+  let observerBytecode: Hex;
+  let counterBytecode: Hex;
+  try {
+    observerBytecode = loadCompiledCreationBytecode(compilation, "EntryPoint4337.t", "SponsorshipObserver");
+    counterBytecode = loadCompiledCreationBytecode(compilation, "Execute.t", "Counter");
+  } finally {
+    compilation.cleanup();
+  }
+
+  const deployerAddress = privateKeyToAddress(deployerPrivateKey);
+  const deploy = async (initcode: Hex): Promise<Address> => {
+    const [chainId, nonce, gasPrice] = await Promise.all([
+      client.getChainId(),
+      client.getTransactionCount({ address: deployerAddress }),
+      client.getGasPrice(),
+    ]);
+    const gas = await client.estimateGas({ account: deployerAddress, data: initcode });
+    const signedTransaction = await signTransaction({
+      privateKey: deployerPrivateKey,
+      transaction: { chainId, nonce, value: 0n, gas, gasPrice, data: initcode },
+    });
+    const hash = await sendRawTransaction(client, { serializedTransaction: signedTransaction });
+    const receipt = await client.waitForTransactionReceipt({ hash });
+    assert.strictEqual(receipt.status, "success", `sponsorship fixture deployment reverted (tx ${hash}).`);
+    assert.ok(receipt.contractAddress, "sponsorship fixture deployment receipt carried no contractAddress");
+    return receipt.contractAddress;
+  };
+
+  const observer = await deploy(concat([observerBytecode, encodeAbiParameters([{ type: "address" }, { type: "address" }], [ENTRYPOINT, account])]));
+  const counter = await deploy(counterBytecode);
+  return { observer, counter };
 }
 
 const VERIFYING_PAYMASTER_ABI = [

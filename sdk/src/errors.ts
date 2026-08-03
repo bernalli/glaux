@@ -539,7 +539,8 @@ export class PaymasterNotConfiguredError extends Error {
  * Used (as the fallback event's `cause`, never actually thrown — see
  * `../gas/policy.js`'s `GasPolicy.plan`) when neither sponsorship nor
  * self-funded ERC-4337 is viable: the account's own native balance cannot
- * cover the self-funded path's required prefund. `GasPolicy` degrades to
+ * cover the prefund still missing after its EntryPoint deposit is consumed.
+ * `GasPolicy` degrades to
  * `selfRelay` at that point — the structural fallback the design (§2) treats
  * as always available, because direct execution (`../execute/direct.js`) is
  * permissionless and needs no prefund from the account at all.
@@ -550,7 +551,7 @@ export class SelfFundingUnavailableError extends Error {
 
   constructor(required: bigint, available: bigint) {
     super(
-      `account balance ${available} is insufficient for the self-funded ERC-4337 path's required prefund ${required}.`,
+      `account balance ${available} is insufficient for the self-funded ERC-4337 path's remaining prefund ${required}.`,
     );
     this.name = "SelfFundingUnavailableError";
     this.required = required;
