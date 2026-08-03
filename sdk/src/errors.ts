@@ -182,6 +182,7 @@ export class ExecutionStateReadError extends Error {
   readonly target:
     | "block number"
     | "chain id"
+    | "account code"
     | "execution nonce"
     | "factor slot"
     | "relayer transaction nonce"
@@ -203,6 +204,27 @@ export class ExecutionStateReadError extends Error {
     this.name = "ExecutionStateReadError";
     this.target = target;
     this.slotIndex = slotIndex;
+  }
+}
+
+/**
+ * Thrown when a direct-execution snapshot proves that the account has no code.
+ *
+ * This is intentionally not an `ExecutionStateReadError`: the node answered
+ * the reads coherently, and that answer establishes a known account state
+ * rather than leaving the client with unknown chain state.
+ */
+export class ExecutionAccountNotBornError extends Error {
+  readonly account: Address;
+  readonly blockNumber: bigint;
+
+  constructor(account: Address, blockNumber: bigint) {
+    super(
+      `account ${account} has no code at block ${blockNumber}; direct execution requires a born Glaux account.`,
+    );
+    this.name = "ExecutionAccountNotBornError";
+    this.account = account;
+    this.blockNumber = blockNumber;
   }
 }
 

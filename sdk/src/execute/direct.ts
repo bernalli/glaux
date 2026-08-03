@@ -1,6 +1,7 @@
 import {
   BaseError,
   ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   encodeFunctionData,
   type Address,
   type Hex,
@@ -15,6 +16,7 @@ import type { Signer } from "../signers/signer.js";
 import {
   ExecutionExpiredError,
   ExecutionGasEstimationError,
+  ExecutionAccountNotBornError,
   ExecutionRevertedError,
   ExecutionSimulationError,
   ExecutionStateReadError,
@@ -136,9 +138,37 @@ function toStateReadError(
   return error instanceof ExecutionStateReadError ? error : new ExecutionStateReadError(target, slotIndex);
 }
 
+/**
+ * `readContract` reports an `eth_call` with no return bytes as this error.
+ * Keep it separate while resolving a snapshot: it may mean a just-confirmed
+ * account birth is newer than a previously cached block number, whereas a
+ * transport error remains unknown state and must fail closed immediately.
+ */
+class EmptyExecutionStateReadError extends Error {
+  readonly target: ExecutionStateReadError["target"];
+  readonly slotIndex: number | undefined;
+
+  constructor(target: ExecutionStateReadError["target"], slotIndex?: number) {
+    super("direct-execution contract read returned no data");
+    this.target = target;
+    this.slotIndex = slotIndex;
+  }
+}
+
+function isZeroDataContractRead(error: unknown): boolean {
+  return (
+    error instanceof ContractFunctionZeroDataError ||
+    (error instanceof BaseError &&
+      error.walk((candidate) => candidate instanceof ContractFunctionZeroDataError) !== null)
+  );
+}
+
 async function readSnapshotBlockNumber(client: PublicClient): Promise<bigint> {
   try {
-    const blockNumber: unknown = await client.getBlockNumber();
+    // Viem caches this action for the polling interval by default. A cached
+    // height can predate a transaction whose receipt the caller already
+    // observed, so it is not a suitable execution snapshot.
+    const blockNumber: unknown = await client.getBlockNumber({ cacheTime: 0 });
     if (typeof blockNumber !== "bigint" || blockNumber < 0n) {
       throw new ExecutionStateReadError("block number");
     }
@@ -168,9 +198,12 @@ async function readExecutionNonce(client: PublicClient, account: Address, blockN
       functionName: "execNonce",
       blockNumber,
     });
+    if (nonce === undefined) throw new EmptyExecutionStateReadError("execution nonce");
     if (!isExecutionNonce(nonce)) throw new ExecutionStateReadError("execution nonce");
     return nonce;
   } catch (error) {
+    if (error instanceof EmptyExecutionStateReadError) throw error;
+    if (isZeroDataContractRead(error)) throw new EmptyExecutionStateReadError("execution nonce");
     throw toStateReadError(error, "execution nonce");
   }
 }
@@ -189,11 +222,14 @@ async function readFactorSlot(
       args: [index],
       blockNumber,
     });
+    if (result === undefined) throw new EmptyExecutionStateReadError("factor slot", index);
     if (!Array.isArray(result) || result.length !== 2 || !isUint(result[0], 255) || !isHexBytes(result[1])) {
       throw new ExecutionStateReadError("factor slot", index);
     }
     return { verifierType: result[0], data: result[1] };
   } catch (error) {
+    if (error instanceof EmptyExecutionStateReadError) throw error;
+    if (isZeroDataContractRead(error)) throw new EmptyExecutionStateReadError("factor slot", index);
     throw toStateReadError(error, "factor slot", index);
   }
 }
@@ -208,6 +244,53 @@ async function readAllSlots(
     slots.push(await readFactorSlot(client, account, index, blockNumber));
   }
   return slots;
+}
+
+async function accountHasCodeAtSnapshot(client: PublicClient, account: Address, blockNumber: bigint): Promise<boolean> {
+  try {
+    const code: unknown = await client.getCode({ address: account, blockNumber });
+    if (code === undefined || code === "0x") return false;
+    if (!isHexBytes(code)) throw new ExecutionStateReadError("account code");
+    return true;
+  } catch (error) {
+    throw toStateReadError(error, "account code");
+  }
+}
+
+interface ExecutionStateSnapshot {
+  readonly nonce: bigint;
+  readonly slots: readonly FactorSlotReadback[];
+}
+
+/**
+ * Reads the nonce and all factor slots at one freshly resolved block. If that
+ * block has no account code, resolve one more uncached height and start the
+ * entire read set again. This accommodates a provider/client head race after
+ * a confirmed birth without retrying an unreadable RPC response or mixing
+ * values from two snapshots.
+ */
+async function readExecutionState(client: PublicClient, account: Address): Promise<ExecutionStateSnapshot> {
+  let blockNumber = await readSnapshotBlockNumber(client);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const nonce = await readExecutionNonce(client, account, blockNumber);
+      const slots = await readAllSlots(client, account, blockNumber);
+      return { nonce, slots };
+    } catch (error) {
+      if (!(error instanceof EmptyExecutionStateReadError)) throw error;
+
+      if (await accountHasCodeAtSnapshot(client, account, blockNumber)) {
+        throw new ExecutionStateReadError(error.target, error.slotIndex);
+      }
+      if (attempt === 1) {
+        throw new ExecutionAccountNotBornError(account, blockNumber);
+      }
+      blockNumber = await readSnapshotBlockNumber(client);
+    }
+  }
+
+  throw new ExecutionStateReadError("execution nonce");
 }
 
 async function readRelayerNonce(client: PublicClient, relayer: Address): Promise<number> {
@@ -300,6 +383,8 @@ function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Signer): n
  * @throws {OperationExpiredError} if `validUntil === 0`.
  * @throws {ExecutionStateReadError} if the snapshot, nonce, or a factor slot
  * cannot be read in a well-formed response.
+ * @throws {ExecutionAccountNotBornError} if the account has no code at a
+ * freshly resolved execution snapshot.
  * @throws {UnrecognizedSignerError} if a signer's key material matches none
  * of the account's three installed slots.
  * @throws {DuplicateExecutionSignerError} if both signers occupy one slot.
@@ -310,10 +395,8 @@ export async function signExecution(params: SignExecutionParams): Promise<Signed
     throw new OperationExpiredError();
   }
 
-  const blockNumber = await readSnapshotBlockNumber(client);
   const chainId = await readChainId(client);
-  const nonce = await readExecutionNonce(client, account, blockNumber);
-  const slots = await readAllSlots(client, account, blockNumber);
+  const { nonce, slots } = await readExecutionState(client, account);
 
   const slotIndices = signers.map((signer) => matchSlotIndex(slots, signer)) as [number, number];
   if (slotIndices[0] === slotIndices[1]) {

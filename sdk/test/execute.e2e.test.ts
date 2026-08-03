@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseEther, type Address, type Hex, type PublicClient } from "viem";
+import { ContractFunctionZeroDataError, parseEther, type Address, type Hex, type PublicClient } from "viem";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { signExecution, submitExecution, withRelayerRefund } from "../src/execute/direct.js";
 import {
   DuplicateExecutionSignerError,
+  ExecutionAccountNotBornError,
   ExecutionExpiredError,
   ExecutionSimulationError,
   ExecutionStateReadError,
@@ -43,13 +44,32 @@ function signingStubClient(
   paper: Signer,
   device: Signer,
   cloud: Signer,
-  options: { readonly unreadNonce?: boolean; readonly unreadSlot?: number } = {},
-): { client: PublicClient; sent: () => number; readBlockNumbers: () => readonly bigint[] } {
+  options: {
+    readonly unreadNonce?: boolean;
+    readonly unreadSlot?: number;
+    readonly unborn?: boolean;
+    readonly snapshotBlockNumbers?: readonly bigint[];
+    readonly noCodeAtSnapshot?: bigint;
+  } = {},
+): {
+  client: PublicClient;
+  sent: () => number;
+  readBlockNumbers: () => readonly bigint[];
+  snapshotCacheTimes: () => readonly number[];
+} {
   let sends = 0;
+  let snapshotReads = 0;
   const blockNumbers: bigint[] = [];
+  const snapshotCacheTimes: number[] = [];
   const slots = [paper, device, cloud];
   const client = {
-    getBlockNumber: async () => 123n,
+    getBlockNumber: async ({ cacheTime }: { cacheTime?: number } = {}) => {
+      snapshotCacheTimes.push(cacheTime!);
+      const snapshots = options.snapshotBlockNumbers ?? [123n];
+      const snapshot = snapshots[Math.min(snapshotReads, snapshots.length - 1)]!;
+      snapshotReads += 1;
+      return snapshot;
+    },
     getChainId: async () => 31337,
     readContract: async ({
       functionName,
@@ -61,18 +81,28 @@ function signingStubClient(
       blockNumber?: bigint;
     }) => {
       blockNumbers.push(blockNumber!);
+      if (blockNumber === options.noCodeAtSnapshot) {
+        throw new ContractFunctionZeroDataError({ functionName });
+      }
       if (functionName === "execNonce") return options.unreadNonce ? undefined : 0n;
       const index = args?.[0];
       if (index === undefined || options.unreadSlot === index) return undefined;
       const signer = slots[index];
       return [signer!.verifierType, signer!.keyData()];
     },
+    getCode: async ({ blockNumber }: { blockNumber?: bigint } = {}) =>
+      options.unborn || blockNumber === options.noCodeAtSnapshot ? undefined : "0x01",
     request: async ({ method }: { method: string }) => {
       if (method === "eth_sendRawTransaction") sends += 1;
       return "0x";
     },
   } as unknown as PublicClient;
-  return { client, sent: () => sends, readBlockNumbers: () => blockNumbers };
+  return {
+    client,
+    sent: () => sends,
+    readBlockNumbers: () => blockNumbers,
+    snapshotCacheTimes: () => snapshotCacheTimes,
+  };
 }
 
 function loadP256OracleBytecode(): Hex {
@@ -143,7 +173,7 @@ describe("execute direct path fail-closed guards", () => {
     expect(sends).toBe(0);
   });
 
-  it("refuses an unreadable execution nonce without broadcasting", async () => {
+  it("distinguishes an unreadable execution nonce from a proven un-born account without broadcasting", async () => {
     const stub = signingStubClient(paper, device, cloud, { unreadNonce: true });
 
     await expect(
@@ -160,6 +190,41 @@ describe("execute direct path fail-closed guards", () => {
     } satisfies Partial<ExecutionStateReadError>);
 
     expect(stub.sent()).toBe(0);
+    const unborn = signingStubClient(paper, device, cloud, { unreadNonce: true, unborn: true });
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: unborn.client,
+        calls,
+        validUntil: 1,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionAccountNotBornError",
+      account: STUB_ACCOUNT,
+      blockNumber: 123n,
+    } satisfies Partial<ExecutionAccountNotBornError>);
+
+    expect(unborn.sent()).toBe(0);
+  });
+
+  it("pins nonce and every factor-slot read to one fresh snapshot", async () => {
+    const stub = signingStubClient(paper, device, cloud, {
+      snapshotBlockNumbers: [122n, 123n],
+      noCodeAtSnapshot: 122n,
+    });
+
+    await signExecution({
+      account: STUB_ACCOUNT,
+      client: stub.client,
+      calls,
+      validUntil: 1,
+      signers: [paper, cloud],
+    });
+
+    expect(stub.readBlockNumbers()).toEqual([122n, 123n, 123n, 123n, 123n]);
+    expect(stub.snapshotCacheTimes()).toEqual([0, 0]);
   });
 
   it("refuses an unreadable factor slot without broadcasting", async () => {
@@ -180,21 +245,6 @@ describe("execute direct path fail-closed guards", () => {
     } satisfies Partial<ExecutionStateReadError>);
 
     expect(stub.sent()).toBe(0);
-  });
-
-  it("pins nonce and every factor-slot read to one block", async () => {
-    const stub = signingStubClient(paper, device, cloud);
-
-    await signExecution({
-      account: STUB_ACCOUNT,
-      client: stub.client,
-      calls,
-      validUntil: 1,
-      signers: [paper, cloud],
-    });
-
-    expect(stub.readBlockNumbers()).toHaveLength(4);
-    expect(stub.readBlockNumbers().every((blockNumber) => blockNumber === 123n)).toBe(true);
   });
 
   it("rejects a duplicate resolved slot before requesting either signature", async () => {
