@@ -5,6 +5,7 @@ import {
   encodeFunctionData,
   type Address,
   type Hex,
+  type Log,
   type PublicClient,
 } from "viem";
 import { sendRawTransaction } from "viem/actions";
@@ -259,6 +260,42 @@ async function accountHasCodeAtSnapshot(client: PublicClient, account: Address, 
   }
 }
 
+/**
+ * Reads all factor slots at one freshly resolved block. A no-data response is
+ * treated specially only to distinguish a just-born account whose provider
+ * head lagged from an actually unreadable response: resolve one more
+ * uncached height, then either return one coherent snapshot or fail closed.
+ *
+ * Exported for `../execute/userop.js`: its signature's `SlotSig.slotIndex`
+ * fields have the same wire-level trust boundary as direct execution, so the
+ * two paths must share both strict slot decoding and the fresh pinned-read
+ * discipline.
+ */
+export async function readFactorSlotsAtFreshSnapshot(
+  client: PublicClient,
+  account: Address,
+): Promise<readonly FactorSlotReadback[]> {
+  let blockNumber = await readSnapshotBlockNumber(client);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await readAllSlots(client, account, blockNumber);
+    } catch (error) {
+      if (!(error instanceof EmptyExecutionStateReadError)) throw error;
+
+      if (await accountHasCodeAtSnapshot(client, account, blockNumber)) {
+        throw new ExecutionStateReadError(error.target, error.slotIndex);
+      }
+      if (attempt === 1) {
+        throw new ExecutionAccountNotBornError(account, blockNumber);
+      }
+      blockNumber = await readSnapshotBlockNumber(client);
+    }
+  }
+
+  throw new ExecutionStateReadError("factor slot");
+}
+
 interface ExecutionStateSnapshot {
   readonly nonce: bigint;
   readonly slots: readonly FactorSlotReadback[];
@@ -345,6 +382,46 @@ export async function readNonNegativeFee(
 }
 
 /** Exported for reuse by `../execute/userop.js`'s own `handleOps` broadcast. */
+export interface ExecutionReceiptReadback {
+  readonly status: "success" | "reverted";
+  readonly logs: readonly Log[];
+}
+
+/**
+ * Reads one mined transaction receipt and verifies the two pieces SDK
+ * execution paths need from it: a known status and a present log array.
+ * Exported so the ERC-4337 path can decode its operation outcome from this
+ * exact receipt rather than racing a second receipt read.
+ */
+export async function readExecutionReceiptWithLogs(
+  client: PublicClient,
+  txHash: Hex,
+): Promise<ExecutionReceiptReadback> {
+  try {
+    const receipt: unknown = await client.waitForTransactionReceipt({ hash: txHash });
+    if (
+      typeof receipt !== "object" ||
+      receipt === null ||
+      !("status" in receipt) ||
+      !("logs" in receipt) ||
+      !Array.isArray(receipt.logs)
+    ) {
+      throw new ExecutionStateReadError("transaction receipt");
+    }
+    if (receipt.status === "success" || receipt.status === "reverted") {
+      return { status: receipt.status, logs: receipt.logs as readonly Log[] };
+    }
+    throw new ExecutionStateReadError("transaction receipt");
+  } catch (error) {
+    throw toStateReadError(error, "transaction receipt");
+  }
+}
+
+/**
+ * Status-only receipt read retained unchanged for direct execution callers.
+ * Direct execution never consumes receipt logs, so an absent log array must
+ * not alter its established receipt-status behaviour.
+ */
 export async function readExecutionReceipt(client: PublicClient, txHash: Hex): Promise<"success" | "reverted"> {
   try {
     const receipt: unknown = await client.waitForTransactionReceipt({ hash: txHash });

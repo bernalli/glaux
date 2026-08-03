@@ -357,6 +357,26 @@ export class UserOpGasEstimationError extends Error {
 }
 
 /**
+ * Thrown before encoding a UserOperation whose EntryPoint gas field exceeds
+ * v0.7's `uint120` ceiling. `PackedUserOperation` physically reserves 128
+ * bits, but EntryPoint rejects the top eight with AA94; producing one would
+ * therefore create an artifact guaranteed to fail on-chain.
+ */
+export class UserOpGasValueOutOfRangeError extends Error {
+  readonly field: string;
+  readonly value: bigint;
+  readonly max: bigint;
+
+  constructor(field: string, value: bigint, max: bigint) {
+    super(`ERC-4337 ${field} ${value} exceeds the EntryPoint uint120 maximum ${max}.`);
+    this.name = "UserOpGasValueOutOfRangeError";
+    this.field = field;
+    this.value = value;
+    this.max = max;
+  }
+}
+
+/**
  * Thrown when `submitUserOpDirect`'s pre-flight simulation of `handleOps`
  * could not be confirmed because simulation failed without a decodable
  * revert, or returned no usable result. Distinct from `UserOpFailedError`:
@@ -426,6 +446,26 @@ export class UserOpTransactionRevertedError extends Error {
 }
 
 /**
+ * Thrown when `handleOps` itself mined successfully but EntryPoint recorded
+ * the submitted UserOperation as reverted. This is distinct from
+ * `UserOpTransactionRevertedError`: EntryPoint deliberately catches an
+ * account-call failure, consumes the operation, and emits
+ * `UserOperationEvent(success=false)` while leaving the outer transaction
+ * successful.
+ */
+export class UserOpExecutionFailedError extends Error {
+  readonly txHash: Hex;
+  readonly userOpHash: Hex;
+
+  constructor(txHash: Hex, userOpHash: Hex) {
+    super(`user operation ${userOpHash} failed during handleOps transaction ${txHash}.`);
+    this.name = "UserOpExecutionFailedError";
+    this.txHash = txHash;
+    this.userOpHash = userOpHash;
+  }
+}
+
+/**
  * Thrown when a mined `handleOps` transaction's receipt reports success but
  * no `UserOperationEvent` for the expected `userOpHash` can be found in its
  * logs. `submitUserOpDirect` and its callers must read the real cost the
@@ -435,10 +475,16 @@ export class UserOpTransactionRevertedError extends Error {
  */
 export class UserOpEventNotFoundError extends Error {
   readonly userOpHash: Hex;
+  readonly txHash: Hex | undefined;
 
-  constructor(userOpHash: Hex) {
-    super(`no UserOperationEvent found for userOpHash ${userOpHash} in the transaction's logs.`);
+  constructor(userOpHash: Hex, txHash?: Hex) {
+    super(
+      txHash === undefined
+        ? `no UserOperationEvent found for userOpHash ${userOpHash} in the transaction's logs.`
+        : `no UserOperationEvent found for userOpHash ${userOpHash} in transaction ${txHash}'s logs.`,
+    );
     this.name = "UserOpEventNotFoundError";
     this.userOpHash = userOpHash;
+    this.txHash = txHash;
   }
 }

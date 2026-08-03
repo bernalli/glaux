@@ -15,7 +15,13 @@ import {
   submitUserOpDirect,
   type PackedUserOperation,
 } from "../src/execute/userop.js";
-import { OperationExpiredError, UserOpFailedError } from "../src/errors.js";
+import {
+  OperationExpiredError,
+  UserOpEventNotFoundError,
+  UserOpExecutionFailedError,
+  UserOpFailedError,
+  UserOpGasValueOutOfRangeError,
+} from "../src/errors.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
@@ -36,7 +42,9 @@ const RELAYER_PK: Hex = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e
 const BENEFICIARY: Address = "0x000000000000000000000000000000000000beef";
 
 const FRESH_RECIPIENT: Address = "0x000000000000000000000000000000000000f00d";
+const REVERTING_TARGET: Address = "0x000000000000000000000000000000000000c0de";
 const STUB_ACCOUNT: Address = "0x1111111111111111111111111111111111111111";
+const STUB_TX_HASH: Hex = "0x1111111111111111111111111111111111111111111111111111111111111111";
 
 interface BornAccount {
   readonly account: Address;
@@ -128,6 +136,87 @@ describe("userop build/sign fail-closed guards", () => {
     ).rejects.toThrow(OperationExpiredError);
 
     expect(requestsIssued).toBe(0);
+  });
+
+  it("pins all ERC-4337 factor-slot reads to one uncached snapshot block", async () => {
+    const paper = new LocalSecp256k1Signer(PAPER_PK);
+    const device = new LocalP256Signer(DEVICE_PK);
+    const cloud = new LocalSecp256k1Signer(CLOUD_PK);
+    const slots = [paper, device, cloud];
+    const slotReadBlocks: bigint[] = [];
+    const snapshotCacheTimes: number[] = [];
+    const stubClient = {
+      getBlockNumber: async ({ cacheTime }: { cacheTime?: number } = {}) => {
+        snapshotCacheTimes.push(cacheTime!);
+        return 123n;
+      },
+      readContract: async ({
+        functionName,
+        args,
+        blockNumber,
+      }: {
+        functionName: string;
+        args?: readonly number[];
+        blockNumber?: bigint;
+      }) => {
+        if (functionName === "getNonce") return 0n;
+        const index = args?.[0];
+        slotReadBlocks.push(blockNumber!);
+        const signer = slots[index!];
+        return [signer!.verifierType, signer!.keyData()];
+      },
+      getBlock: async () => ({ baseFeePerGas: 1n }),
+      getGasPrice: async () => 1n,
+      estimateMaxPriorityFeePerGas: async () => 1n,
+      estimateGas: async () => 1n,
+    } as unknown as PublicClient;
+    const op = await buildUserOp({
+      account: STUB_ACCOUNT,
+      client: stubClient,
+      calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
+      validUntil: 1,
+    });
+
+    await signUserOp({
+      op,
+      entryPoint: ENTRYPOINT,
+      chainId: 31337n,
+      client: stubClient,
+      signers: [paper, cloud],
+    });
+
+    expect(slotReadBlocks).toEqual([123n, 123n, 123n]);
+    expect(snapshotCacheTimes).toEqual([0]);
+  });
+
+  it("refuses a buffered EntryPoint gas field above uint120 before ABI encoding", async () => {
+    const stubClient = {
+      readContract: async () => 0n,
+      getBlock: async () => ({ baseFeePerGas: 1n }),
+      getGasPrice: async () => 1n,
+      estimateMaxPriorityFeePerGas: async () => 1n,
+      estimateGas: async () => 1n << 120n,
+    } as unknown as PublicClient;
+
+    await expect(
+      buildUserOp({
+        account: STUB_ACCOUNT,
+        client: stubClient,
+        calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
+        validUntil: 1,
+      }),
+    ).rejects.toBeInstanceOf(UserOpGasValueOutOfRangeError);
+  });
+
+  it("keeps a missing submitted-operation event typed and correlated to its transaction", () => {
+    const userOpHash = "0x2222222222222222222222222222222222222222222222222222222222222222" as Hex;
+
+    expect(() => extractUserOperationEvent([], userOpHash, STUB_TX_HASH)).toThrow(UserOpEventNotFoundError);
+    try {
+      extractUserOperationEvent([], userOpHash, STUB_TX_HASH);
+    } catch (error) {
+      expect(error).toMatchObject({ userOpHash, txHash: STUB_TX_HASH });
+    }
   });
 });
 
@@ -255,6 +344,54 @@ describe("userop e2e: self-funded ERC-4337 path against a real EntryPoint v0.7",
       expect(thrown).toBeInstanceOf(UserOpFailedError);
       const error = thrown as UserOpFailedError;
       expect(error.reason).toBe("AA24 signature error");
+    },
+    60_000,
+  );
+
+  it(
+    "throws a typed error when EntryPoint records the submitted operation as reverted",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      const born = await bornAndFundedAccount(url, client, test, "1");
+      // Start as STOP so buildUserOp's deliberately fail-closed estimate can
+      // succeed, then switch to REVERT after the operation is signed. This
+      // models an inclusion-time target change without weakening that guard.
+      await test.setCode({ address: REVERTING_TARGET, bytecode: "0x00" });
+
+      const op = await buildUserOp({
+        account: born.account,
+        client,
+        calls: [{ to: REVERTING_TARGET, value: 0n, data: "0x" }],
+        validUntil: Math.floor(Date.now() / 1000) + 3600,
+      });
+      const chainId = BigInt(await client.getChainId());
+      const signed = await signUserOp({
+        op,
+        entryPoint: ENTRYPOINT,
+        chainId,
+        client,
+        signers: [born.paper, born.cloud],
+      });
+      const userOpHash = computeUserOpHash(signed, ENTRYPOINT, chainId);
+      // PUSH1 0x00, PUSH1 0x00, REVERT: execution reaches the account, but
+      // EntryPoint deliberately catches the account-call failure and emits a
+      // successful outer receipt with UserOperationEvent(success=false).
+      await test.setCode({ address: REVERTING_TARGET, bytecode: "0x60006000fd" });
+
+      let thrown: unknown;
+      try {
+        await submitUserOpDirect(client, RELAYER_PK, BENEFICIARY, signed);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UserOpExecutionFailedError);
+      const error = thrown as UserOpExecutionFailedError;
+      expect(error.userOpHash).toBe(userOpHash);
+      const receipt = await client.waitForTransactionReceipt({ hash: error.txHash });
+      expect(receipt.status).toBe("success");
+      expect(extractUserOperationEvent(receipt.logs, userOpHash).success).toBe(false);
     },
     60_000,
   );

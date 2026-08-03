@@ -23,8 +23,10 @@ import {
   OperationExpiredError,
   DuplicateExecutionSignerError,
   UserOpEventNotFoundError,
+  UserOpExecutionFailedError,
   UserOpFailedError,
   UserOpGasEstimationError,
+  UserOpGasValueOutOfRangeError,
   UserOpSimulationError,
   UserOpSubmissionRevertedError,
   UserOpTransactionRevertedError,
@@ -32,7 +34,8 @@ import {
 import {
   matchSlotIndex,
   readChainId,
-  readExecutionReceipt,
+  readExecutionReceiptWithLogs,
+  readFactorSlotsAtFreshSnapshot,
   readLatestBlock,
   readNonNegativeFee,
   readRelayerNonce,
@@ -212,6 +215,14 @@ const PRE_VERIFICATION_GAS = 100_000n;
 const CALL_GAS_BUFFER_NUMERATOR = 3n;
 const CALL_GAS_BUFFER_DENOMINATOR = 2n;
 const CALL_GAS_BUFFER_FLAT = 50_000n;
+const ENTRYPOINT_GAS_VALUE_MAX = (1n << 120n) - 1n;
+
+function requireEntryPointGasValue(field: string, value: bigint): bigint {
+  if (value < 0n || value > ENTRYPOINT_GAS_VALUE_MAX) {
+    throw new UserOpGasValueOutOfRangeError(field, value, ENTRYPOINT_GAS_VALUE_MAX);
+  }
+  return value;
+}
 
 async function readEntryPointNonce(client: PublicClient, account: Address): Promise<bigint> {
   let nonce: unknown;
@@ -242,7 +253,7 @@ async function estimateCallGas(client: PublicClient, account: Address, callData:
   } catch {
     throw new UserOpGasEstimationError();
   }
-  if (typeof estimate !== "bigint") {
+  if (typeof estimate !== "bigint" || estimate < 0n) {
     throw new UserOpGasEstimationError();
   }
   return estimate;
@@ -291,6 +302,12 @@ export async function buildUserOp(params: BuildUserOpParams): Promise<PackedUser
   const callGasLimit = (callGasEstimate * CALL_GAS_BUFFER_NUMERATOR) / CALL_GAS_BUFFER_DENOMINATOR + CALL_GAS_BUFFER_FLAT;
   const baseFee = latestBlock.baseFeePerGas ?? gasPrice;
   const maxFeePerGas = baseFee * 2n + priorityFee;
+
+  requireEntryPointGasValue("verificationGasLimit", VERIFICATION_GAS_LIMIT);
+  requireEntryPointGasValue("callGasLimit", callGasLimit);
+  requireEntryPointGasValue("preVerificationGas", PRE_VERIFICATION_GAS);
+  requireEntryPointGasValue("maxPriorityFeePerGas", priorityFee);
+  requireEntryPointGasValue("maxFeePerGas", maxFeePerGas);
 
   return {
     sender: account,
@@ -388,40 +405,14 @@ export async function fetchUserOpHash(
 }
 
 /**
- * Reads the account's three installed factor slots at the current block.
- * Deliberately simpler than `./direct.js`'s `readExecutionState`: that
- * function's retry-once-on-unborn dance exists for signing a batch against
- * an account that might have JUST been born in the same test; `signUserOp`
- * is only ever called against an already-born account building a SECOND,
- * later operation, so an unreadable slot here is treated as a plain fail
- * closed read error rather than a possible race with birth.
+ * Reads the account's three installed factor slots through direct execution's
+ * strict fresh-snapshot helper. The `SlotSig.slotIndex` wire fields have the
+ * same trust boundary on both paths, so accepting a mixed-block snapshot (or
+ * malformed uint8/bytes return) here would be just as unsafe as direct
+ * execution.
  */
 async function readAccountSlots(client: PublicClient, account: Address): Promise<readonly FactorSlotReadback[]> {
-  const slots: FactorSlotReadback[] = [];
-  for (const index of [0, 1, 2] as const) {
-    let result: unknown;
-    try {
-      result = await client.readContract({
-        address: account,
-        abi: GLAUX_ACCOUNT_ABI,
-        functionName: "getSlot",
-        args: [index],
-      });
-    } catch (error) {
-      throw error instanceof ExecutionStateReadError ? error : new ExecutionStateReadError("factor slot", index);
-    }
-    if (
-      result === undefined ||
-      !Array.isArray(result) ||
-      result.length !== 2 ||
-      typeof result[0] !== "number" ||
-      typeof result[1] !== "string"
-    ) {
-      throw new ExecutionStateReadError("factor slot", index);
-    }
-    slots.push({ verifierType: result[0], data: result[1] as Hex });
-  }
-  return slots;
+  return readFactorSlotsAtFreshSnapshot(client, account);
 }
 
 export interface SignUserOpParams {
@@ -599,9 +590,14 @@ export async function submitUserOpDirect(
   });
 
   const txHash = await sendRawTransaction(client, { serializedTransaction: signedTransaction });
-  const receiptStatus = await readExecutionReceipt(client, txHash);
-  if (receiptStatus !== "success") {
+  const receipt = await readExecutionReceiptWithLogs(client, txHash);
+  if (receipt.status !== "success") {
     throw new UserOpTransactionRevertedError(txHash);
+  }
+  const userOpHash = computeUserOpHash(op, ENTRYPOINT, BigInt(chainId));
+  const event = extractUserOperationEvent(receipt.logs, userOpHash, txHash);
+  if (!event.success) {
+    throw new UserOpExecutionFailedError(txHash, userOpHash);
   }
   return txHash;
 }
@@ -627,9 +623,10 @@ export interface UserOperationEventData {
 export function extractUserOperationEvent(
   logs: readonly Log[],
   userOpHash: Hex,
+  txHash?: Hex,
 ): UserOperationEventData {
   for (const log of logs) {
-    if (log.address.toLowerCase() !== ENTRYPOINT.toLowerCase()) continue;
+    if (typeof log.address !== "string" || log.address.toLowerCase() !== ENTRYPOINT.toLowerCase()) continue;
     try {
       const decoded = decodeEventLog({
         abi: ENTRYPOINT_ABI,
@@ -647,7 +644,7 @@ export function extractUserOperationEvent(
       continue;
     }
   }
-  throw new UserOpEventNotFoundError(userOpHash);
+  throw new UserOpEventNotFoundError(userOpHash, txHash);
 }
 
 /**
