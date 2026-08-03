@@ -1,4 +1,4 @@
-import { encodeAbiParameters, type Address, type Hex } from "viem";
+import { bytesToHex, encodeAbiParameters, hexToBytes, size, type Address, type Hex } from "viem";
 import { privateKeyToAddress, sign } from "viem/accounts";
 import { VERIFIER_SECP256K1 } from "../core/types.js";
 import { InvalidDigestLengthError } from "../errors.js";
@@ -27,9 +27,9 @@ export class LocalSecp256k1Signer implements Signer {
   }
 
   async sign(digest: Hex): Promise<Hex> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(digest)) {
+    if (size(digest) !== 32) {
       throw new InvalidDigestLengthError();
     }
-    return sign({ hash: digest, privateKey: this.privateKey, to: "hex" });
+    return sign({ hash: bytesToHex(hexToBytes(digest)), privateKey: this.privateKey, to: "hex" });
   }
 }

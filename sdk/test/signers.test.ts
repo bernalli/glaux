@@ -7,6 +7,7 @@ import {
   keccak256,
   numberToHex,
   recoverAddress,
+  size,
   stringToBytes,
   type Hex,
 } from "viem";
@@ -127,6 +128,15 @@ describe("LocalSecp256k1Signer", () => {
     await expect(signer.sign(`${digest}00` as Hex)).rejects.toThrow(InvalidDigestLengthError);
   });
 
+  it("accepts an odd-nibble digest that viem decodes to 32 bytes", async () => {
+    const signer = new LocalSecp256k1Signer(ANVIL_PK);
+    const digest = `0x${"1".repeat(63)}` as Hex;
+
+    expect(size(digest)).toBe(32);
+    expect(hexToBytes(digest)).toHaveLength(32);
+    await expect(signer.sign(digest)).resolves.toMatch(/^0x[0-9a-f]{130}$/);
+  });
+
   it("registrationProof signs registrationDigest and recovers to the signer's address", async () => {
     const signer = new LocalSecp256k1Signer(ANVIL_PK);
     const proof = await registrationProof(signer, 2);
@@ -161,6 +171,14 @@ describe("LocalP256Signer", () => {
 
   it("rejects malformed private-key lengths at construction", () => {
     expect(() => new LocalP256Signer(P256_PK.slice(0, -2) as Hex)).toThrow(InvalidP256PrivateKeyError);
+  });
+
+  it("accepts an odd-nibble private key that viem decodes to 32 bytes", () => {
+    const privateKey = `0x${"1".repeat(63)}` as Hex;
+
+    expect(size(privateKey)).toBe(32);
+    expect(hexToBytes(privateKey)).toHaveLength(32);
+    expect(() => new LocalP256Signer(privateKey)).not.toThrow();
   });
 
   it("sign() reproduces the sdk_parity fixture's proven-accepted P-256 signature byte-for-byte", async () => {
@@ -205,6 +223,15 @@ describe("LocalP256Signer", () => {
 
     await expect(signer.sign(digest.slice(0, -2) as Hex)).rejects.toThrow(InvalidDigestLengthError);
     await expect(signer.sign(`${digest}00` as Hex)).rejects.toThrow(InvalidDigestLengthError);
+  });
+
+  it("accepts an odd-nibble digest that viem decodes to 32 bytes", async () => {
+    const signer = new LocalP256Signer(P256_PK);
+    const digest = `0x${"1".repeat(63)}` as Hex;
+
+    expect(size(digest)).toBe(32);
+    expect(hexToBytes(digest)).toHaveLength(32);
+    await expect(signer.sign(digest)).resolves.toMatch(/^0x[0-9a-f]{128}$/);
   });
 
   it("normalizes a signature whose raw (un-normalized) s falls in the high half of the curve order", async () => {
