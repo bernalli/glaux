@@ -33,5 +33,5 @@ export const DOMAINS = {
  * address that the delegated EOA points at.
  */
 export function designator(): Hex {
-  return concat(["0xef0100", ROUTER]);
+  return concat(["0xef0100", ROUTER]).toLowerCase() as Hex;
 }

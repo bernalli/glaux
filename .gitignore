@@ -3,7 +3,6 @@
 .env
 .env.*
 node_modules/
-sdk/dist/
 out/
 cache/
 broadcast/**/dry-run/
