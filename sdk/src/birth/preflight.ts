@@ -1,0 +1,77 @@
+import { concat, keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
+import { ROUTER } from "../core/constants.js";
+import { BirthPreflightError } from "../errors.js";
+
+// Mirrors `GlauxStorage.SLOT`/`IMPL_SLOT` and `scripts/submit_birth.py`'s
+// `STORAGE_SLOT`/`IMPL_SLOT`: a header word followed by three `FactorSlot`
+// entries (verifierType, then the `bytes data` head) at STORAGE_SLOT+1..+6.
+// Computed independently here (not imported from `../eligibility/probes.js`)
+// so a derivation bug in that module cannot also hide in this preflight —
+// the same isolation `sdk/test/eligibility.test.ts` already applies.
+const STORAGE_SLOT = BigInt(keccak256(stringToBytes("glaux.account.v1.storage")));
+const IMPL_SLOT: Hex = keccak256(stringToBytes("glaux.account.v1.implementation"));
+
+function isZeroWord(word: Hex | undefined): boolean {
+  return word === undefined || BigInt(word) === 0n;
+}
+
+/**
+ * Aborts before broadcasting if `account` is not a pristine EOA — port of
+ * `scripts/submit_birth.py:preflight_fresh_account`, hardened per audit
+ * finding H-2 (threat-model residual 17). See `BirthPreflightError`'s
+ * documentation for the full rationale.
+ *
+ * Two halves, both required, mirroring the Python function exactly:
+ * 1. Code must be empty OR exactly the EIP-7702 designator this account
+ *    would carry once delegated to the canonical `ROUTER`
+ *    (`0xef0100 ‖ ROUTER`) — the retry case for a birth whose `initialize()`
+ *    call reverted, which EIP-7702 still applies the authorization for.
+ *    Any other non-empty code refuses.
+ * 2. `IMPL_SLOT` AND all seven namespaced words at `STORAGE_SLOT..+6` (the
+ *    header plus the `verifierType`/`data`-head pair of each of the three
+ *    `FactorSlot` entries) must be zero. Checking fewer than all eight lets a
+ *    hostile prior delegate plant a forged `bytes data` length in an
+ *    unchecked word and pass undetected.
+ *
+ * Always checks against the canonical `ROUTER`, not a caller-supplied one:
+ * this SDK only ever builds and submits blobs for the one canonical
+ * deployment (see `buildBirthBlob`), so there is no other router a genuine
+ * blob from this SDK could name.
+ *
+ * Read-only: one `eth_getCode`, then up to eight `eth_getStorageAt` calls.
+ * Resolves if `account` passes both checks; throws otherwise.
+ *
+ * @throws {BirthPreflightError}
+ */
+export async function preflightFreshAccount(client: PublicClient, account: Address): Promise<void> {
+  const expectedDesignator = concat(["0xef0100", ROUTER]).toLowerCase() as Hex;
+  const code = await client.getCode({ address: account });
+  const normalizedCode = code === undefined ? "0x" : code.toLowerCase();
+  if (normalizedCode !== "0x" && normalizedCode !== expectedDesignator) {
+    throw new BirthPreflightError(
+      `${account} already has code that is not the EIP-7702 designator for the canonical router (${ROUTER}) ` +
+        "— it must be a fresh EOA that was never an EIP-7702 delegate, or the retry of a birth that reverted " +
+        "while already delegated to this router (threat-model residual 17). Never migrate an EOA delegated to " +
+        "a different target.",
+    );
+  }
+
+  const implWord = await client.getStorageAt({ address: account, slot: IMPL_SLOT });
+  if (!isZeroWord(implWord)) {
+    throw new BirthPreflightError(
+      `${account} has a non-zero Glaux implementation slot — its storage was pre-planted (threat-model residual 17).`,
+    );
+  }
+
+  for (let offset = 0; offset < 7; offset += 1) {
+    const slot = toHex(STORAGE_SLOT + BigInt(offset), { size: 32 });
+    const word = await client.getStorageAt({ address: account, slot });
+    if (!isZeroWord(word)) {
+      const kind = offset === 0 ? "storage header word" : `FactorSlot word (STORAGE_SLOT+${offset})`;
+      throw new BirthPreflightError(
+        `${account} has a non-zero Glaux ${kind} at slot ${slot} — its storage was pre-planted ` +
+          "(threat-model residual 17).",
+      );
+    }
+  }
+}

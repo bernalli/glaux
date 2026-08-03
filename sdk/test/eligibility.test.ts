@@ -1,102 +1,12 @@
 import { readFileSync } from "node:fs";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { dirname, join } from "node:path";
-import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import {
-  createPublicClient,
-  createTestClient,
-  http,
-  keccak256,
-  stringToBytes,
-  toHex,
-  type Address,
-  type Hex,
-  type PublicClient,
-  type TestClient,
-} from "viem";
-import { afterEach, describe, expect, it } from "vitest";
+import { keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient, type TestClient } from "viem";
+import { describe, expect, it } from "vitest";
 import { ENTRYPOINT, IMPL, ROUTER, designator } from "../src/core/constants.js";
 import { checkChain } from "../src/eligibility/verdict.js";
 import fixtures from "../../test/fixtures/sdk_parity.json" with { type: "json" };
-
-// Every scenario below spawns its own anvil and MUST tear it down, on pass or
-// fail, so failures never leak a listening process or claim a fixed port.
-const runningAnvils = new Set<ChildProcessByStdio<null, Readable, Readable>>();
-
-async function stopAnvil(child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> {
-  if (child.exitCode !== null) return;
-  const exited = (timeoutMs: number): Promise<boolean> =>
-    new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(false), timeoutMs);
-      child.once("exit", () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
-  child.kill("SIGTERM");
-  if (await exited(1_000)) return;
-  child.kill("SIGKILL");
-  if (!(await exited(1_000))) throw new Error("anvil did not exit after SIGKILL");
-}
-
-afterEach(async () => {
-  await Promise.all([...runningAnvils].map(stopAnvil));
-  runningAnvils.clear();
-});
-
-interface AnvilHandle {
-  readonly url: string;
-}
-
-const LISTENING_RE = /Listening on 127\.0\.0\.1:(\d+)/;
-
-/**
- * Spawns a fresh anvil on an OS-assigned port (`--port 0`, so parallel runs
- * never collide) pinned to `--hardfork prague`. Pinning matters: a bare
- * modern anvil already answers P-256 at `0x100` natively (its own default
- * "latest" hardfork has picked up EIP-7951/RIP-7212), which would make the
- * "ineligible" and "rejects a permissive verifier" cases below untestable —
- * `anvil_setCode` cannot override a host-implemented precompile, so the only
- * way to put a *contract* at `0x100` under test control is a hardfork old
- * enough not to have the precompile baked in. `prague` already has EIP-7702
- * (needed for the eip7702 probe) but predates the P-256 precompile.
- */
-async function spawnAnvil(): Promise<AnvilHandle> {
-  const child = spawn("anvil", ["--port", "0", "--hardfork", "prague"], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  runningAnvils.add(child);
-  child.once("exit", () => runningAnvils.delete(child));
-
-  const url = await new Promise<string>((resolve, reject) => {
-    let buffer = "";
-    const onData = (chunk: Buffer): void => {
-      buffer += chunk.toString("utf8");
-      const match = LISTENING_RE.exec(buffer);
-      if (match?.[1]) {
-        child.stdout.off("data", onData);
-        child.off("exit", onExit);
-        resolve(`http://127.0.0.1:${match[1]}`);
-      }
-    };
-    const onExit = (code: number | null): void => {
-      reject(new Error(`anvil exited before it started listening (code ${code ?? "unknown"})`));
-    };
-    child.stdout.on("data", onData);
-    child.once("error", reject);
-    child.once("exit", onExit);
-  });
-
-  return { url };
-}
-
-function clientsFor(url: string): { client: PublicClient; test: TestClient } {
-  const transport = http(url);
-  const client = createPublicClient({ transport });
-  const test = createTestClient({ mode: "anvil", transport });
-  return { client, test };
-}
+import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 
 // Contract-derived P-256 probe vector, emitted by test/SdkParity.t.sol.
 const P256_VERIFIER: Address = "0x0000000000000000000000000000000000000100";
