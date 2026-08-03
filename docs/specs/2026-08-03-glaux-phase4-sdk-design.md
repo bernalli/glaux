@@ -92,10 +92,15 @@ internals of the others.
   the layer that must be bit-identical to the Solidity, and the layer parity
   fixtures pin down.
 - **`signers`** — a pluggable `Signer` interface: raw secp256k1 (paper factor,
-  tests), P-256 via WebAuthn/passkey (device factor), cloud co-signer. The
-  SDK never holds a long-lived private key; whoever implements the interface
-  signs. DER→raw normalization and low-s live here (client-guidance rules
-  become code).
+  tests), raw P-256 (device factor), cloud co-signer. The SDK never holds a
+  long-lived private key; whoever implements the interface signs. DER→raw
+  normalization and low-s live here (client-guidance rules become code).
+  **Compatibility note (corrected during planning)**: the contract verifies a
+  *raw* P-256 signature over the digest, so the device factor must be a key
+  that signs bare 32-byte digests — a native Secure Enclave key qualifies; a
+  browser WebAuthn passkey does **not** (it signs the WebAuthn envelope, not
+  the digest). Browser-passkey support would require an on-chain WebAuthn
+  verifier type: out of scope, recorded as a future verifier candidate.
 - **`birth`** — ephemeral birth key generation, birth-blob construction
   (authorization with `chainId 0`), the pre-birth preflight (port of
   `preflight_fresh_account` as hardened by audit finding H-2: IMPL_SLOT plus
