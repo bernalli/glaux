@@ -49,7 +49,7 @@ export function encodeSlotSig(sig: SlotSig): Hex {
  * shape" (`GlauxAccount`'s `MAX_SIGNATURE_BLOB_LENGTH` comment).
  *
  * @throws {OperationExpiredError} if `validUntil === 0` — see the error's
- * documentation for why the user-operation path rejects zero at build time.
+ * documentation for why every Glaux operation path rejects zero at build time.
  */
 export function encodeUserOpSignature(
   validUntil: number,

@@ -1,5 +1,5 @@
 /**
- * Thrown when a caller supplies `validUntil === 0` to a user-operation digest or
+ * Thrown when a caller supplies `validUntil === 0` to an operation digest or
  * signature encoder.
  *
  * The ERC-4337 EntryPoint packs `validUntil` into the returned `validationData`
@@ -9,18 +9,15 @@
  * that built such a signature anyway would only discover it is unusable after a
  * round trip through a bundler. Failing at build time is strictly earlier.
  *
- * This is deliberately scoped to the user-operation path: on the direct
- * `executeWithSigs`/`isValidSignature` paths, `validUntil === 0` is an ordinary
- * (already-expired) deadline like any other timestamp in the past, not a
- * forbidden value — see the `@dev` notes on those functions in
- * `src/GlauxAccount.sol`.
+ * Zero is unusable on every Glaux operation path: direct execution reverts it
+ * as expired, ERC-4337 returns signature-validation failure, and ERC-1271
+ * returns its invalid sentinel. Rejecting it while building prevents clients
+ * from producing a signature the contract cannot use.
  */
 export class OperationExpiredError extends Error {
   constructor() {
     super(
-      "validUntil must not be 0: the ERC-4337 EntryPoint reads a packed 0 as " +
-        '"no expiry", and GlauxAccount refuses to validate a user operation ' +
-        "signed with it.",
+      "validUntil must not be 0: Glaux rejects it on every operation path.",
     );
     this.name = "OperationExpiredError";
   }

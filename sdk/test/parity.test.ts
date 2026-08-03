@@ -73,16 +73,15 @@ it("encodeUserOpSignature fixture sabotage is detectable", () => {
   const d = fixtures.encodedUserOpSignature;
   const first = d.sigs[0];
   const second = d.sigs[1];
-  if (first === undefined || second === undefined) {
-    throw new Error("fixture sigs must have exactly two entries");
-  }
+  expect(first, "fixture sigs must have exactly two entries").toBeDefined();
+  expect(second, "fixture sigs must have exactly two entries").toBeDefined();
   const sigs: [SlotSig, SlotSig] = [
-    { slotIndex: first.slotIndex, signature: first.signature as Hex },
-    { slotIndex: second.slotIndex, signature: second.signature as Hex },
+    { slotIndex: first!.slotIndex, signature: first!.signature as Hex },
+    { slotIndex: second!.slotIndex, signature: second!.signature as Hex },
   ];
   expect(encodeUserOpSignature(d.validUntil, sigs)).toBe(d.encoded);
   const sabotagedSigs: [SlotSig, SlotSig] = [
-    { slotIndex: first.slotIndex, signature: flip(first.signature) },
+    { slotIndex: first!.slotIndex, signature: flip(first!.signature) },
     sigs[1],
   ];
   expect(encodeUserOpSignature(d.validUntil, sabotagedSigs)).not.toBe(d.encoded);

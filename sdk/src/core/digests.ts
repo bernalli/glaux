@@ -77,6 +77,9 @@ function hashCalls(calls: readonly Call[]): Hex {
  * Layout ported from `GlauxAccount.executeWithSigs`/`GlauxFixture._execDigestAtNonce`:
  * EIP-191 v0x00 with the account itself as validator, over
  * `keccak256(abi.encode(EXEC_DOMAIN, chainId, account, execNonce, keccak256(abi.encode(calls)), validUntil))`.
+ * This binds the chain id, account, nonce, calls, and deadline.
+ *
+ * @throws {OperationExpiredError} if `validUntil === 0`.
  */
 export function execDigest(
   account: Address,
@@ -85,6 +88,9 @@ export function execDigest(
   calls: readonly Call[],
   validUntil: number,
 ): Hex {
+  if (validUntil === 0) {
+    throw new OperationExpiredError();
+  }
   const structHash = keccak256(
     encodeAbiParameters(
       [
@@ -128,10 +134,17 @@ export function userOpDigest(account: Address, userOpHash: Hex, validUntil: numb
  * from `GlauxAccount.isValidSignature`/`GlauxFixture._msgDigest`: EIP-191
  * v0x00 with the account as validator, over
  * `keccak256(abi.encode(MSG_DOMAIN, chainId, account, hash, validUntil))`.
- * Unlike `initDigest`/`execDigest`/`userOpDigest`, this is the one Glaux
- * digest that binds `chainId` — see the `@dev` note on `GlauxStorage.MSG_DOMAIN`.
+ * Like `execDigest`, this binds `chainId`; `userOpDigest` instead binds the
+ * EntryPoint-provided `userOpHash`, whose own construction is chain-specific.
+ * `initDigest` is deliberately chain-agnostic so it can be signed before the
+ * account exists.
+ *
+ * @throws {OperationExpiredError} if `validUntil === 0`.
  */
 export function msgDigest(account: Address, chainId: bigint, hash: Hex, validUntil: number): Hex {
+  if (validUntil === 0) {
+    throw new OperationExpiredError();
+  }
   const structHash = keccak256(
     encodeAbiParameters(
       [
