@@ -118,15 +118,25 @@ function decodeHeader(word: bigint): DecodedHeader {
   };
 }
 
+/** JSON-RPC `DATA` values are whole-byte hex strings.  Do not trust the
+ * TypeScript declaration on a remote response: invalid wire data is a read
+ * failure, not an observation about the account's state. */
+function isHexBytes(value: unknown): value is Hex {
+  return typeof value === "string" && /^0x(?:[0-9a-fA-F]{2})*$/u.test(value);
+}
+
+function isStorageWord(value: unknown): value is Hex {
+  return isHexBytes(value) && value.length === 66;
+}
+
 async function readWord(client: PublicClient, chain: string, account: Address, slot: bigint): Promise<bigint> {
-  let word: Hex | undefined;
   try {
-    word = await client.getStorageAt({ address: account, slot: toHex(slot, { size: 32 }) });
+    const word: unknown = await client.getStorageAt({ address: account, slot: toHex(slot, { size: 32 }) });
+    if (!isStorageWord(word)) throw new ReconciliationReadError(chain, "storage word");
+    return BigInt(word);
   } catch {
     throw new ReconciliationReadError(chain, "storage word");
   }
-  if (word === undefined) throw new ReconciliationReadError(chain, "storage word");
-  return BigInt(word);
 }
 
 async function readCode(
@@ -136,7 +146,9 @@ async function readCode(
   target: "account code" | "implementation code",
 ): Promise<Hex | undefined> {
   try {
-    return await client.getCode({ address });
+    const code: unknown = await client.getCode({ address });
+    if (code !== undefined && !isHexBytes(code)) throw new ReconciliationReadError(chain, target);
+    return code;
   } catch {
     throw new ReconciliationReadError(chain, target);
   }
@@ -222,7 +234,9 @@ type RawCallOutcome = { readonly kind: "value"; readonly value: Hex } | { readon
 async function callRaw(client: PublicClient, chain: string, account: Address, data: Hex): Promise<RawCallOutcome> {
   try {
     const result = await client.call({ to: account, data });
-    return { kind: "value", value: result.data ?? "0x" };
+    const returnData: unknown = result.data;
+    if (!isHexBytes(returnData)) throw new ReconciliationReadError(chain, "getter call");
+    return { kind: "value", value: returnData };
   } catch (error) {
     const revertError =
       error instanceof BaseError ? error.walk((candidate) => candidate instanceof ExecutionRevertedError) : null;

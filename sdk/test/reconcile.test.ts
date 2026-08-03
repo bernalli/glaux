@@ -63,6 +63,23 @@ const LONG_32_BYTES: Hex = toHex(65n, { size: 32 });
 const ZERO_WORD: Hex = toHex(0n, { size: 32 });
 
 const CANDIDATE_ACCOUNT: Address = "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720";
+const VALID_IMPLEMENTATION_WORD: Hex = toHex(1n, { size: 32 });
+
+/**
+ * A complete, readable raw state for testing failures after the raw-first
+ * phase. The getter is injected so these tests can isolate RPC-wire and
+ * transport handling without claiming malformed wire data is a chain verdict.
+ */
+function clientWithValidRawState(
+  call: (args: { readonly data?: Hex }) => Promise<{ readonly data?: unknown }>,
+): PublicClient {
+  return {
+    getCode: async ({ address }: { address: Address }) =>
+      address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
+    getStorageAt: async () => VALID_IMPLEMENTATION_WORD,
+    call,
+  } as unknown as PublicClient;
+}
 
 function dynamicDataSlot(headSlot: bigint): Hex {
   return keccak256(toHex(headSlot, { size: 32 }));
@@ -314,14 +331,52 @@ describe("reconcile", () => {
     60_000,
   );
 
-  it("throws ReconciliationReadError, not a verdict, when a raw read genuinely fails at the transport level", async () => {
-    const brokenClient = {
-      getCode: async () => {
-        throw new Error("ECONNREFUSED");
-      },
-    } as unknown as PublicClient;
+  it("throws ReconciliationReadError when a getter RPC transport call rejects after valid raw reads", async () => {
+    const client = clientWithValidRawState(async () => {
+      throw new Error("ECONNREFUSED");
+    });
 
-    await expect(reconcile([{ name: "broken", client: brokenClient }], CANDIDATE_ACCOUNT)).rejects.toBeInstanceOf(
+    await expect(reconcile([{ name: "broken", client }], CANDIDATE_ACCOUNT)).rejects.toMatchObject({
+      name: "ReconciliationReadError",
+      target: "getter call",
+    } satisfies Partial<ReconciliationReadError>);
+  });
+
+  it("throws ReconciliationReadError when a getter returns invalid RPC hex after valid raw reads", async () => {
+    const client = clientWithValidRawState(async () => ({ data: "0xzz" }));
+
+    await expect(reconcile([{ name: "broken", client }], CANDIDATE_ACCOUNT)).rejects.toMatchObject({
+      name: "ReconciliationReadError",
+      target: "getter call",
+    } satisfies Partial<ReconciliationReadError>);
+  });
+
+  it("reports unreadable when a getter returns valid hex that cannot ABI-decode", async () => {
+    const client = clientWithValidRawState(async () => ({ data: "0x" }));
+
+    const result = await reconcile([{ name: "malformed-abi", client }], CANDIDATE_ACCOUNT);
+
+    expect(result.verdict).toBe("unreadable");
+    expect(result.perChain).toHaveLength(1);
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.active).toBe(true);
+    expect(state.getterMismatches).toHaveLength(1);
+    expect(state.getterMismatches[0]).toContain("implementation()");
+  });
+
+  it.each([
+    ["code", { getCode: async (): Promise<string> => "0xzz" }],
+    [
+      "storage",
+      {
+        getCode: async (): Promise<Hex> => designator(),
+        getStorageAt: async (): Promise<string> => "0xzz",
+      },
+    ],
+  ] as const)("throws ReconciliationReadError when raw %s RPC data is malformed", async (_target, malformedClient) => {
+    const client = malformedClient as unknown as PublicClient;
+
+    await expect(reconcile([{ name: "broken", client }], CANDIDATE_ACCOUNT)).rejects.toBeInstanceOf(
       ReconciliationReadError,
     );
   });
