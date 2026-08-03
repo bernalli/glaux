@@ -18,15 +18,30 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { ENTRYPOINT, IMPL, ROUTER, designator } from "../src/core/constants.js";
 import { checkChain } from "../src/eligibility/verdict.js";
+import fixtures from "../../test/fixtures/sdk_parity.json" with { type: "json" };
 
 // Every scenario below spawns its own anvil and MUST tear it down, on pass or
 // fail, so failures never leak a listening process or claim a fixed port.
 const runningAnvils = new Set<ChildProcessByStdio<null, Readable, Readable>>();
 
-afterEach(() => {
-  for (const child of runningAnvils) {
-    child.kill();
-  }
+async function stopAnvil(child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> {
+  if (child.exitCode !== null) return;
+  const exited = (timeoutMs: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  child.kill("SIGTERM");
+  if (await exited(1_000)) return;
+  child.kill("SIGKILL");
+  if (!(await exited(1_000))) throw new Error("anvil did not exit after SIGKILL");
+}
+
+afterEach(async () => {
+  await Promise.all([...runningAnvils].map(stopAnvil));
   runningAnvils.clear();
 });
 
@@ -83,17 +98,13 @@ function clientsFor(url: string): { client: PublicClient; test: TestClient } {
   return { client, test };
 }
 
-// ---------------------------------------------------------------------------
-// P-256 fixtures: the same known-answer vector as `test/P256Fixture.sol`
-// (`P256_DIG`/`P256_R`/`P256_S`/`P256_QX`/`P256_QY`) — a valid signature whose
-// private key is public, meant only for probing.
-// ---------------------------------------------------------------------------
+// Contract-derived P-256 probe vector, emitted by test/SdkParity.t.sol.
 const P256_VERIFIER: Address = "0x0000000000000000000000000000000000000100";
-const P256_DIGEST: Hex = "0x547c05d9093cf1004d4426a5d03202cf500c22777a87f05c18ac247e38fc572e";
-const P256_R: Hex = "0x56464d0bb7014173461871178e264acd5e981572bc495d8978bb5b16ca4895bb";
-const P256_S: Hex = "0x1018fa59ce5f3bdd39e7df090dd93309be390b068a7cd3123a492cccd3524e5d";
-const P256_QX: Hex = "0xc9b91be23306ebbd29f0f1718a1db88a151200eb10c6aad04aa24f8006704de6";
-const P256_QY: Hex = "0x0accddfa8e09bddc03677b1f83a1d4aced4155d44ca7c1fd5226b8d312b7de6f";
+const P256_DIGEST = fixtures.p256Probe.digest as Hex;
+const P256_R = fixtures.p256Probe.r as Hex;
+const P256_S = fixtures.p256Probe.s as Hex;
+const P256_QX = fixtures.p256Probe.qx as Hex;
+const P256_QY = fixtures.p256Probe.qy as Hex;
 
 /**
  * Deployed bytecode of the vendored daimo `P256Verifier`, read from the forge
@@ -132,20 +143,46 @@ const MARKER_CODE: Hex = "0x00";
 // so a derivation bug in that module cannot also hide in this test.
 const STORAGE_SLOT = BigInt(keccak256(stringToBytes("glaux.account.v1.storage")));
 const IMPL_SLOT: Hex = keccak256(stringToBytes("glaux.account.v1.implementation"));
-const STORAGE_HEADER_WORDS = 7;
 const NON_ZERO_WORD: Hex = toHex(1n, { size: 32 });
+const LONG_32_BYTES: Hex = toHex(65n, { size: 32 });
+const SECP256K1_TYPE: Hex = toHex(1n, { size: 32 });
+const VALID_SECP256K1_DATA: readonly Hex[] = [
+  toHex(0x1234567890abcdef1234567890abcdef12345678n, { size: 32 }),
+  toHex(0x234567890abcdef1234567890abcdef123456789n, { size: 32 }),
+  toHex(0x34567890abcdef1234567890abcdef123456789an, { size: 32 }),
+];
 
 const CANDIDATE_ACCOUNT: Address = "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720";
 
-/** Etches `designator()` plus non-zero namespaced storage at `account` — a fabricated birth. */
+function dynamicDataSlot(headSlot: bigint): Hex {
+  return keccak256(toHex(headSlot, { size: 32 }));
+}
+
+async function setPassingEnvironment(test: TestClient): Promise<void> {
+  await test.setCode({ address: P256_VERIFIER, bytecode: loadP256OracleBytecode() });
+  await test.setCode({ address: ROUTER, bytecode: MARKER_CODE });
+  await test.setCode({ address: IMPL, bytecode: MARKER_CODE });
+  await test.setCode({ address: ENTRYPOINT, bytecode: MARKER_CODE });
+}
+
+/** Etches a coherent (but fabricated) initialized account state. */
 async function fabricateBornAccount(test: TestClient, account: Address): Promise<void> {
   await test.setCode({ address: account, bytecode: designator() });
-  await test.setStorageAt({ address: account, index: IMPL_SLOT, value: NON_ZERO_WORD });
-  for (let offset = 0; offset < STORAGE_HEADER_WORDS; offset += 1) {
+  await test.setStorageAt({ address: account, index: IMPL_SLOT, value: toHex(BigInt(IMPL), { size: 32 }) });
+  await test.setStorageAt({ address: account, index: toHex(STORAGE_SLOT, { size: 32 }), value: NON_ZERO_WORD });
+  for (let index = 0; index < 3; index += 1) {
+    const typeSlot = STORAGE_SLOT + 1n + BigInt(index * 2);
+    const dataHeadSlot = typeSlot + 1n;
     await test.setStorageAt({
       address: account,
-      index: toHex(STORAGE_SLOT + BigInt(offset), { size: 32 }),
-      value: NON_ZERO_WORD,
+      index: toHex(typeSlot, { size: 32 }),
+      value: SECP256K1_TYPE,
+    });
+    await test.setStorageAt({ address: account, index: toHex(dataHeadSlot, { size: 32 }), value: LONG_32_BYTES });
+    await test.setStorageAt({
+      address: account,
+      index: dynamicDataSlot(dataHeadSlot),
+      value: VALID_SECP256K1_DATA[index]!,
     });
   }
 }
@@ -156,10 +193,7 @@ describe("checkChain", () => {
     async () => {
       const { url } = await spawnAnvil();
       const { client, test } = clientsFor(url);
-      await test.setCode({ address: P256_VERIFIER, bytecode: loadP256OracleBytecode() });
-      await test.setCode({ address: ROUTER, bytecode: MARKER_CODE });
-      await test.setCode({ address: IMPL, bytecode: MARKER_CODE });
-      await test.setCode({ address: ENTRYPOINT, bytecode: MARKER_CODE });
+      await setPassingEnvironment(test);
 
       const result = await checkChain(client, CANDIDATE_ACCOUNT);
 
@@ -181,10 +215,11 @@ describe("checkChain", () => {
   );
 
   it(
-    "is born when the account carries the designator and non-zero namespaced storage",
+    "is born only when the account carries coherent operational state",
     async () => {
       const { url } = await spawnAnvil();
       const { client, test } = clientsFor(url);
+      await setPassingEnvironment(test);
       await fabricateBornAccount(test, CANDIDATE_ACCOUNT);
 
       const result = await checkChain(client, CANDIDATE_ACCOUNT);
@@ -192,6 +227,49 @@ describe("checkChain", () => {
       expect(result.verdict).toBe("born");
       expect(result.probes.accountBorn).toBe(true);
       expect(result.reasons).toEqual([]);
+    },
+    20_000,
+  );
+
+  it(
+    "does not mistake all-ones storage poison for a born account",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      await setPassingEnvironment(test);
+      await test.setCode({ address: CANDIDATE_ACCOUNT, bytecode: designator() });
+      await test.setStorageAt({ address: CANDIDATE_ACCOUNT, index: IMPL_SLOT, value: NON_ZERO_WORD });
+      for (let offset = 0; offset < 7; offset += 1) {
+        await test.setStorageAt({
+          address: CANDIDATE_ACCOUNT,
+          index: toHex(STORAGE_SLOT + BigInt(offset), { size: 32 }),
+          value: NON_ZERO_WORD,
+        });
+      }
+
+      const result = await checkChain(client, CANDIDATE_ACCOUNT);
+
+      expect(result.probes.accountBorn).toBe(false);
+      expect(result.verdict).toBe("eligible");
+    },
+    20_000,
+  );
+
+  it(
+    "keeps failed environment reasons even when the account is already born",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      await test.setCode({ address: ROUTER, bytecode: MARKER_CODE });
+      await test.setCode({ address: IMPL, bytecode: MARKER_CODE });
+      await test.setCode({ address: ENTRYPOINT, bytecode: MARKER_CODE });
+      await fabricateBornAccount(test, CANDIDATE_ACCOUNT);
+
+      const result = await checkChain(client, CANDIDATE_ACCOUNT);
+
+      expect(result.probes.accountBorn).toBe(true);
+      expect(result.verdict).toBe("ineligible");
+      expect(result.reasons.some((reason) => reason.startsWith("p256:"))).toBe(true);
     },
     20_000,
   );
@@ -260,4 +338,36 @@ describe("checkChain", () => {
     },
     20_000,
   );
+
+  it("reports a flipped-arm transport failure instead of treating it as rejection", async () => {
+    const positive = `0x${P256_DIGEST.slice(2)}${P256_R.slice(2)}${P256_S.slice(2)}${P256_QX.slice(2)}${P256_QY.slice(2)}` as Hex;
+    const flipped = `0x${(fixtures.p256Probe.flippedDigest as Hex).slice(2)}${P256_R.slice(2)}${P256_S.slice(2)}${P256_QX.slice(2)}${P256_QY.slice(2)}` as Hex;
+    let positiveExecuted = false;
+    let flippedAttempted = false;
+    const client = {
+      call: async ({ data }: { data?: Hex }) => {
+        if (data === positive) {
+          positiveExecuted = true;
+          return { data: NON_ZERO_WORD };
+        }
+        if (data === flipped) {
+          flippedAttempted = true;
+          throw new Error("negative arm RPC unavailable");
+        }
+        throw new Error("unexpected P-256 calldata");
+      },
+      estimateGas: async (request: { authorizationList?: unknown }) => (request.authorizationList ? 2n : 1n),
+      getCode: async () => MARKER_CODE,
+    } as unknown as PublicClient;
+
+    const result = await checkChain(client);
+
+    expect(positiveExecuted).toBe(true);
+    expect(flippedAttempted).toBe(true);
+    expect(result.probes.p256).toBe(false);
+    expect(result.verdict).toBe("ineligible");
+    expect(result.reasons).toEqual([
+      expect.stringContaining("p256: verifier probe transport failure"),
+    ]);
+  });
 });

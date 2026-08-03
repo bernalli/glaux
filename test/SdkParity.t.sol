@@ -5,6 +5,7 @@ import {GlauxFixture} from "./GlauxFixture.sol";
 import {GlauxDelegate} from "../src/GlauxDelegate.sol";
 import {GlauxAccount} from "../src/GlauxAccount.sol";
 import {GlauxStorage, Call, FactorSlot, SlotSig} from "../src/GlauxStorage.sol";
+import {SignatureVerify} from "../src/lib/SignatureVerify.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 
@@ -30,6 +31,21 @@ contract SdkParityTest is GlauxFixture {
     address internal constant EXEC_CALL_TO = address(0xCA11);
     uint256 internal constant EXEC_CALL_VALUE = 1 ether;
     bytes internal constant EXEC_CALL_DATA = hex"12345678";
+
+    // These are emitted for the SDK's live verifier probe. They are mirrored
+    // below through SignatureVerify.p256VerifierAvailable(): an empty verifier
+    // plus exact-call mocks makes this test fail if the contract vector or its
+    // flipped negative arm ever differs from the emitted fixture.
+    bytes32 internal constant P256_PROBE_DIGEST =
+        0x867725ff3c347f7537e90a9166778796299dcc35b965e51a431e53a9d4b2b5a4;
+    uint256 internal constant P256_PROBE_R =
+        0x980d841a72d73ef73cfd9baadc862485aecac52b199bbd3df24e834f737ed46c;
+    uint256 internal constant P256_PROBE_S =
+        0x4ac2a1c22aa9ff18958b5d11775f7dced116f8f5a6c95f2d859bf6f0035df385;
+    uint256 internal constant P256_PROBE_QX =
+        0x6e116efa770f5c5455124d86df9b00525dab28db280c3c8f33bb64c0ef313489;
+    uint256 internal constant P256_PROBE_QY =
+        0x8961e3da77e0f8d247f099835070289b64906c509ec256eec976858516ae8d81;
 
     struct Vectors {
         FactorSlot[3] slots;
@@ -240,6 +256,20 @@ contract SdkParityTest is GlauxFixture {
         );
     }
 
+    function _p256ProbeJson() internal pure returns (string memory) {
+        string memory json = string.concat("{\n      ", _entry("digest", P256_PROBE_DIGEST));
+        json = string.concat(json, ",\n      ", _entry("r", bytes32(P256_PROBE_R)));
+        json = string.concat(json, ",\n      ", _entry("s", bytes32(P256_PROBE_S)));
+        json = string.concat(json, ",\n      ", _entry("qx", bytes32(P256_PROBE_QX)));
+        json = string.concat(json, ",\n      ", _entry("qy", bytes32(P256_PROBE_QY)));
+        return string.concat(
+            json,
+            ",\n      ",
+            _entry("flippedDigest", P256_PROBE_DIGEST ^ bytes32(uint256(1))),
+            "\n    }"
+        );
+    }
+
     function _vectors() internal view returns (Vectors memory v) {
         v.slots = _slots();
         v.registrationData = v.slots[1].data;
@@ -314,33 +344,22 @@ contract SdkParityTest is GlauxFixture {
     }
 
     function _json(Vectors memory v) internal view returns (string memory) {
-        return string.concat(
-            "{\n  ",
-            _entry("router", address(router)),
-            ",\n  ",
-            _entry("implementation", address(impl)),
-            ",\n  ",
-            _entry("account", account),
-            ",\n  \"domains\": ",
-            _domainsJson(),
-            ",\n  \"eip191Sample\": ",
-            _eip191SampleJson(),
-            ",\n  \"registrationDigest\": ",
-            _registrationDigestJson(v),
-            ",\n  \"initDigest\": ",
-            _initDigestJson(v),
-            ",\n  \"execDigest\": ",
-            _execDigestJson(v),
-            ",\n  \"userOpDigest\": ",
-            _userOpDigestJson(v),
-            ",\n  \"msgDigest\": ",
-            _msgDigestJson(v),
-            ",\n  \"encodedSlotSigP256\": ",
-            _encodedSlotSigP256Json(v),
-            ",\n  \"encodedUserOpSignature\": ",
-            _encodedUserOpSignatureJson(v),
-            "\n}\n"
+        string memory json = string.concat("{\n  ", _entry("router", address(router)));
+        json = string.concat(json, ",\n  ", _entry("implementation", address(impl)));
+        json = string.concat(json, ",\n  ", _entry("account", account));
+        json = string.concat(json, ",\n  \"domains\": ", _domainsJson());
+        json = string.concat(json, ",\n  \"eip191Sample\": ", _eip191SampleJson());
+        json = string.concat(json, ",\n  \"registrationDigest\": ", _registrationDigestJson(v));
+        json = string.concat(json, ",\n  \"p256Probe\": ", _p256ProbeJson());
+        json = string.concat(json, ",\n  \"initDigest\": ", _initDigestJson(v));
+        json = string.concat(json, ",\n  \"execDigest\": ", _execDigestJson(v));
+        json = string.concat(json, ",\n  \"userOpDigest\": ", _userOpDigestJson(v));
+        json = string.concat(json, ",\n  \"msgDigest\": ", _msgDigestJson(v));
+        json = string.concat(json, ",\n  \"encodedSlotSigP256\": ", _encodedSlotSigP256Json(v));
+        json = string.concat(
+            json, ",\n  \"encodedUserOpSignature\": ", _encodedUserOpSignatureJson(v)
         );
+        return string.concat(json, "\n}\n");
     }
 
     /// @dev Run with GLAUX_WRITE_SDK_PARITY_FIXTURE=true to (re)generate the
@@ -354,5 +373,27 @@ contract SdkParityTest is GlauxFixture {
         _proveUserOp(v);
         _proveMessage(v);
         vm.writeFile(FIXTURE, _json(v));
+    }
+
+    /// @dev The internal SignatureVerify constants have no getter. Exact calldata
+    ///      mocks against empty code prove this emitted vector is the one the
+    ///      contract itself asks, including the digest^1 negative arm.
+    function test_p256ProbeFixtureMatchesSignatureVerify() public {
+        bytes memory positive = abi.encodePacked(
+            P256_PROBE_DIGEST, P256_PROBE_R, P256_PROBE_S, P256_PROBE_QX, P256_PROBE_QY
+        );
+        bytes memory negative = abi.encodePacked(
+            P256_PROBE_DIGEST ^ bytes32(uint256(1)),
+            P256_PROBE_R,
+            P256_PROBE_S,
+            P256_PROBE_QX,
+            P256_PROBE_QY
+        );
+        vm.etch(address(0x100), hex"");
+        vm.mockCall(address(0x100), positive, abi.encode(uint256(1)));
+        vm.mockCall(address(0x100), negative, abi.encode(uint256(0)));
+        assertTrue(
+            SignatureVerify.p256VerifierAvailable(), "emitted P-256 probe differs from contract"
+        );
     }
 }

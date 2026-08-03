@@ -1,5 +1,6 @@
 import { keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
 import { designator } from "../core/constants.js";
+import fixtures from "../../../test/fixtures/sdk_parity.json" with { type: "json" };
 
 /**
  * RIP-7212 / EIP-7951 P-256 verifier precompile address. Mirrors
@@ -8,17 +9,15 @@ import { designator } from "../core/constants.js";
 export const P256_VERIFIER: Address = "0x0000000000000000000000000000000000000100";
 
 /**
- * Known-answer P-256 vector: a valid signature `(r, s)` over `digest` by
- * public key `(qx, qy)`, whose private key is public. Mirrors
- * `test/P256Fixture.sol` (`P256_DIG`/`P256_R`/`P256_S`/`P256_QX`/`P256_QY`) —
- * a fixed vector meant only for probing the precompile, never for installing
- * as a real factor.
+ * Known-answer P-256 vector emitted by `test/SdkParity.t.sol` from the
+ * `SignatureVerify` probe. The parity test fails if this vector no longer
+ * drives the contract's positive and flipped-negative calls.
  */
-const PROBE_DIGEST: Hex = "0x547c05d9093cf1004d4426a5d03202cf500c22777a87f05c18ac247e38fc572e";
-const PROBE_R: Hex = "0x56464d0bb7014173461871178e264acd5e981572bc495d8978bb5b16ca4895bb";
-const PROBE_S: Hex = "0x1018fa59ce5f3bdd39e7df090dd93309be390b068a7cd3123a492cccd3524e5d";
-const PROBE_QX: Hex = "0xc9b91be23306ebbd29f0f1718a1db88a151200eb10c6aad04aa24f8006704de6";
-const PROBE_QY: Hex = "0x0accddfa8e09bddc03677b1f83a1d4aced4155d44ca7c1fd5226b8d312b7de6f";
+const PROBE_DIGEST = fixtures.p256Probe.digest as Hex;
+const PROBE_R = fixtures.p256Probe.r as Hex;
+const PROBE_S = fixtures.p256Probe.s as Hex;
+const PROBE_QX = fixtures.p256Probe.qx as Hex;
+const PROBE_QY = fixtures.p256Probe.qy as Hex;
 
 function stripPrefix(hex: Hex): string {
   return hex.slice(2);
@@ -33,14 +32,24 @@ function flipLowestBit(digest: Hex): Hex {
   return toHex(BigInt(digest) ^ 1n, { size: 32 });
 }
 
-async function p256Answers(client: PublicClient, digest: Hex): Promise<boolean> {
-  const { data } = await client
-    .call({ to: P256_VERIFIER, data: encodeP256Calldata(digest) })
-    .catch(() => ({ data: undefined as Hex | undefined }));
+type P256Answer = "success" | "rejected" | "transportFailure";
+
+export interface P256ProbeResult {
+  available: boolean;
+  transportFailure: boolean;
+}
+
+async function p256Answers(client: PublicClient, digest: Hex): Promise<P256Answer> {
+  let data: Hex | undefined;
+  try {
+    ({ data } = await client.call({ to: P256_VERIFIER, data: encodeP256Calldata(digest) }));
+  } catch {
+    return "transportFailure";
+  }
   // Mirrors `SignatureVerify._p256Verify`: only a full 32-byte word equal to
-  // 1 counts as success. A short/empty return (no code at the address, or a
-  // conforming verifier's rejection) and anything else both read as failure.
-  return data !== undefined && data.length === 66 && BigInt(data) === 1n;
+  // 1 counts as success. A completed call returning anything else is verifier
+  // rejection; it is deliberately distinct from a call that never executed.
+  return data !== undefined && data.length === 66 && BigInt(data) === 1n ? "success" : "rejected";
 }
 
 /**
@@ -52,12 +61,18 @@ async function p256Answers(client: PublicClient, digest: Hex): Promise<boolean> 
  * every signature ever presented to that slot. See that function's `@dev`
  * note for the full hazard this closes.
  */
-export async function probeP256(client: PublicClient): Promise<boolean> {
-  const [accepted, rejectedFlipped] = await Promise.all([
+export async function probeP256Result(client: PublicClient): Promise<P256ProbeResult> {
+  const [accepted, flipped] = await Promise.all([
     p256Answers(client, PROBE_DIGEST),
-    p256Answers(client, flipLowestBit(PROBE_DIGEST)).then((accepts) => !accepts),
+    p256Answers(client, flipLowestBit(PROBE_DIGEST)),
   ]);
-  return accepted && rejectedFlipped;
+  const transportFailure = accepted === "transportFailure" || flipped === "transportFailure";
+  return { available: !transportFailure && accepted === "success" && flipped === "rejected", transportFailure };
+}
+
+/** True only when both contract-mirroring verifier calls execute and discriminate. */
+export async function probeP256(client: PublicClient): Promise<boolean> {
+  return (await probeP256Result(client)).available;
 }
 
 const EIP7702_PROBE_TARGET: Address = "0x000000000000000000000000000000000000dEaD";
@@ -105,37 +120,97 @@ export async function probeDeployedCode(client: PublicClient, address: Address):
 
 // Mirrors `GlauxStorage.SLOT`/`IMPL_SLOT` and `scripts/submit_birth.py`'s
 // `STORAGE_SLOT`/`IMPL_SLOT`: a header word followed by three `FactorSlot`
-// entries (verifierType, then the `bytes data` head) at STORAGE_SLOT+1..+6 —
-// eight namespaced words in total, alongside IMPL_SLOT.
+// entries (verifierType, then the `bytes data` head) at STORAGE_SLOT+1..+6.
 const STORAGE_SLOT = BigInt(keccak256(stringToBytes("glaux.account.v1.storage")));
 const IMPL_SLOT: Hex = keccak256(stringToBytes("glaux.account.v1.implementation"));
-const STORAGE_HEADER_WORDS = 7;
+const UINT160_MAX = (1n << 160n) - 1n;
+const P256_P = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
+const P256_A = P256_P - 3n;
+const P256_B = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bn;
 
-function isNonZeroWord(word: Hex | undefined): boolean {
-  return word !== undefined && BigInt(word) !== 0n;
+function wordValue(word: Hex | undefined): bigint | undefined {
+  return word === undefined ? undefined : BigInt(word);
+}
+
+function dynamicDataSlot(headSlot: bigint): Hex {
+  return keccak256(toHex(headSlot, { size: 32 }));
+}
+
+function isValidSecp256k1Key(word: bigint | undefined): boolean {
+  return word !== undefined && word !== 0n && word <= UINT160_MAX;
+}
+
+function isValidP256Key(qx: bigint | undefined, qy: bigint | undefined): boolean {
+  if (qx === undefined || qy === undefined || qx >= P256_P || qy >= P256_P || (qx === 0n && qy === 0n)) {
+    return false;
+  }
+  const lhs = (qy * qy) % P256_P;
+  const rhs = ((((qx * qx) % P256_P) * qx + P256_A * qx + P256_B) % P256_P + P256_P) % P256_P;
+  return lhs === rhs;
+}
+
+async function hasValidFactorSlot(
+  client: PublicClient,
+  account: Address,
+  typeSlot: bigint,
+  dataHeadSlot: bigint,
+): Promise<boolean> {
+  const [verifierType, dataHead] = await Promise.all([
+    client.getStorageAt({ address: account, slot: toHex(typeSlot, { size: 32 }) }),
+    client.getStorageAt({ address: account, slot: toHex(dataHeadSlot, { size: 32 }) }),
+  ]);
+  const type = wordValue(verifierType);
+  const head = wordValue(dataHead);
+  if (head === undefined || (head & 1n) !== 1n) return false;
+
+  if (type === 1n && head === 65n) {
+    return isValidSecp256k1Key(
+      wordValue(await client.getStorageAt({ address: account, slot: dynamicDataSlot(dataHeadSlot) })),
+    );
+  }
+  if (type === 2n && head === 129n) {
+    const dataSlot = BigInt(dynamicDataSlot(dataHeadSlot));
+    const [qx, qy] = await Promise.all([
+      client.getStorageAt({ address: account, slot: toHex(dataSlot, { size: 32 }) }),
+      client.getStorageAt({ address: account, slot: toHex(dataSlot + 1n, { size: 32 }) }),
+    ]);
+    return isValidP256Key(wordValue(qx), wordValue(qy));
+  }
+  return false;
 }
 
 /**
- * True when `account`'s code is exactly the EIP-7702 delegation designator
- * for Glaux's router AND its namespaced storage is non-zero — the same
- * pristine-account gate `scripts/submit_birth.py:preflight_fresh_account`
- * runs before a birth blob can be submitted, read here in reverse: this
- * account already went through it. `eth_getCode` returns lowercase, and so
- * does `designator()`, so this is a plain string comparison — never
- * checksum either side.
+ * True only when `account` has the exact delegation designator and coherent
+ * operational Glaux state: a code-bearing implementation, an initialized
+ * layout header, and three well-formed factor slots. This is intentionally
+ * stricter than non-zero storage: poisoned words are not evidence that an
+ * account can execute or recover funds. `eth_getCode` returns lowercase, and
+ * so does `designator()`, so this is a plain string comparison.
  */
 export async function probeAccountBorn(client: PublicClient, account: Address): Promise<boolean> {
   const code = await client.getCode({ address: account });
   if (code !== designator()) return false;
   const implWord = await client.getStorageAt({ address: account, slot: IMPL_SLOT });
-  if (!isNonZeroWord(implWord)) return false;
-  const headerWords = await Promise.all(
-    Array.from({ length: STORAGE_HEADER_WORDS }, (_, offset) =>
-      client.getStorageAt({
-        address: account,
-        slot: toHex(STORAGE_SLOT + BigInt(offset), { size: 32 }),
-      }),
-    ),
+  const implementation = wordValue(implWord);
+  if (implementation === undefined || implementation === 0n || implementation > UINT160_MAX) return false;
+  const implementationCode = await client.getCode({ address: toHex(implementation, { size: 20 }) });
+  if (implementationCode === undefined || implementationCode === "0x") return false;
+
+  const header = wordValue(
+    await client.getStorageAt({ address: account, slot: toHex(STORAGE_SLOT, { size: 32 }) }),
   );
-  return headerWords.every(isNonZeroWord);
+  if (header === undefined || (header & 0xffn) !== 1n) return false;
+
+  return (
+    await Promise.all(
+      Array.from({ length: 3 }, (_, index) =>
+        hasValidFactorSlot(
+          client,
+          account,
+          STORAGE_SLOT + 1n + BigInt(index * 2),
+          STORAGE_SLOT + 2n + BigInt(index * 2),
+        ),
+      ),
+    )
+  ).every(Boolean);
 }

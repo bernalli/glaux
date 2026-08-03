@@ -1,6 +1,12 @@
 import type { Address, PublicClient } from "viem";
 import { CREATE2_DEPLOYER, ENTRYPOINT, IMPL, ROUTER } from "../core/constants.js";
-import { P256_VERIFIER, probeAccountBorn, probeDeployedCode, probeEip7702, probeP256 } from "./probes.js";
+import {
+  P256_VERIFIER,
+  probeAccountBorn,
+  probeDeployedCode,
+  probeEip7702,
+  probeP256Result,
+} from "./probes.js";
 
 /**
  * One boolean per live check `checkChain` runs. `accountBorn` is present only
@@ -50,13 +56,13 @@ const ENVIRONMENT_PROBE_KEYS = Object.keys(REASONS) as EnvironmentProbeKey[];
  * Runs every live probe against `client` and, if `account` is given, checks
  * whether that specific address has already been born. Read-only throughout:
  * two `eth_call`s to `0x100`, two `eth_estimateGas`s, four `eth_getCode`s,
- * and — only with `account` — one more `eth_getCode` plus eight
- * `eth_getStorageAt`s.
+ * and — only with `account` — its code, implementation code, and the storage
+ * words needed to validate the initialized factor layout.
  */
 export async function checkChain(client: PublicClient, account?: Address): Promise<ChainEligibility> {
-  const [p256, eip7702, create2Deployer, entryPoint, routerDeployed, implDeployed, accountBorn] =
+  const [p256Result, eip7702, create2Deployer, entryPoint, routerDeployed, implDeployed, accountBorn] =
     await Promise.all([
-      probeP256(client),
+      probeP256Result(client),
       probeEip7702(client),
       probeDeployedCode(client, CREATE2_DEPLOYER),
       probeDeployedCode(client, ENTRYPOINT),
@@ -66,7 +72,7 @@ export async function checkChain(client: PublicClient, account?: Address): Promi
     ]);
 
   const probes: ChainEligibilityProbes = {
-    p256,
+    p256: p256Result.available,
     eip7702,
     create2Deployer,
     entryPoint,
@@ -75,13 +81,17 @@ export async function checkChain(client: PublicClient, account?: Address): Promi
     ...(account !== undefined ? { accountBorn: accountBorn as boolean } : {}),
   };
 
-  if (accountBorn === true) {
-    return { verdict: "born", probes, reasons: [] };
-  }
-
   const failed = ENVIRONMENT_PROBE_KEYS.filter((key) => !probes[key]);
   if (failed.length === 0) {
-    return { verdict: "eligible", probes, reasons: [] };
+    return { verdict: accountBorn === true ? "born" : "eligible", probes, reasons: [] };
   }
-  return { verdict: "ineligible", probes, reasons: failed.map((key) => REASONS[key]) };
+  return {
+    verdict: "ineligible",
+    probes,
+    reasons: failed.map((key) =>
+      key === "p256" && p256Result.transportFailure
+        ? `p256: verifier probe transport failure at ${P256_VERIFIER}; eligibility cannot be established.`
+        : REASONS[key],
+    ),
+  };
 }
