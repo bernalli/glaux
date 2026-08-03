@@ -16,7 +16,10 @@ import {
   ExecutionExpiredError,
   ExecutionGasEstimationError,
   ExecutionRevertedError,
+  ExecutionSimulationError,
+  ExecutionStateReadError,
   ExecutionTransactionRevertedError,
+  DuplicateExecutionSignerError,
   OperationExpiredError,
   UnrecognizedSignerError,
 } from "../errors.js";
@@ -113,18 +116,157 @@ interface FactorSlotReadback {
   readonly data: Hex;
 }
 
-async function readAllSlots(client: PublicClient, account: Address): Promise<readonly FactorSlotReadback[]> {
-  const slots = await Promise.all(
-    [0, 1, 2].map((index) =>
-      client.readContract({
-        address: account,
-        abi: GLAUX_ACCOUNT_ABI,
-        functionName: "getSlot",
-        args: [index],
-      }),
-    ),
-  );
-  return slots.map(([verifierType, data]) => ({ verifierType, data }));
+function isHexBytes(value: unknown): value is Hex {
+  return typeof value === "string" && /^0x(?:[0-9a-fA-F]{2})*$/u.test(value);
+}
+
+function isUint(value: unknown, max: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;
+}
+
+function isExecutionNonce(value: unknown): value is bigint {
+  return typeof value === "bigint" && value >= 0n && value <= (1n << 64n) - 1n;
+}
+
+function toStateReadError(
+  error: unknown,
+  target: ExecutionStateReadError["target"],
+  slotIndex?: number,
+): ExecutionStateReadError {
+  return error instanceof ExecutionStateReadError ? error : new ExecutionStateReadError(target, slotIndex);
+}
+
+async function readSnapshotBlockNumber(client: PublicClient): Promise<bigint> {
+  try {
+    const blockNumber: unknown = await client.getBlockNumber();
+    if (typeof blockNumber !== "bigint" || blockNumber < 0n) {
+      throw new ExecutionStateReadError("block number");
+    }
+    return blockNumber;
+  } catch (error) {
+    throw toStateReadError(error, "block number");
+  }
+}
+
+async function readChainId(client: PublicClient): Promise<number> {
+  try {
+    const chainId: unknown = await client.getChainId();
+    if (!isUint(chainId, Number.MAX_SAFE_INTEGER)) {
+      throw new ExecutionStateReadError("chain id");
+    }
+    return chainId;
+  } catch (error) {
+    throw toStateReadError(error, "chain id");
+  }
+}
+
+async function readExecutionNonce(client: PublicClient, account: Address, blockNumber: bigint): Promise<bigint> {
+  try {
+    const nonce: unknown = await client.readContract({
+      address: account,
+      abi: GLAUX_ACCOUNT_ABI,
+      functionName: "execNonce",
+      blockNumber,
+    });
+    if (!isExecutionNonce(nonce)) throw new ExecutionStateReadError("execution nonce");
+    return nonce;
+  } catch (error) {
+    throw toStateReadError(error, "execution nonce");
+  }
+}
+
+async function readFactorSlot(
+  client: PublicClient,
+  account: Address,
+  index: number,
+  blockNumber: bigint,
+): Promise<FactorSlotReadback> {
+  try {
+    const result: unknown = await client.readContract({
+      address: account,
+      abi: GLAUX_ACCOUNT_ABI,
+      functionName: "getSlot",
+      args: [index],
+      blockNumber,
+    });
+    if (!Array.isArray(result) || result.length !== 2 || !isUint(result[0], 255) || !isHexBytes(result[1])) {
+      throw new ExecutionStateReadError("factor slot", index);
+    }
+    return { verifierType: result[0], data: result[1] };
+  } catch (error) {
+    throw toStateReadError(error, "factor slot", index);
+  }
+}
+
+async function readAllSlots(
+  client: PublicClient,
+  account: Address,
+  blockNumber: bigint,
+): Promise<readonly FactorSlotReadback[]> {
+  const slots: FactorSlotReadback[] = [];
+  for (const index of [0, 1, 2]) {
+    slots.push(await readFactorSlot(client, account, index, blockNumber));
+  }
+  return slots;
+}
+
+async function readRelayerNonce(client: PublicClient, relayer: Address): Promise<number> {
+  try {
+    const nonce: unknown = await client.getTransactionCount({ address: relayer });
+    if (!isUint(nonce, Number.MAX_SAFE_INTEGER)) {
+      throw new ExecutionStateReadError("relayer transaction nonce");
+    }
+    return nonce;
+  } catch (error) {
+    throw toStateReadError(error, "relayer transaction nonce");
+  }
+}
+
+interface LatestBlockReadback {
+  readonly baseFeePerGas: bigint | null;
+}
+
+async function readLatestBlock(client: PublicClient): Promise<LatestBlockReadback> {
+  try {
+    const block: unknown = await client.getBlock();
+    if (
+      typeof block !== "object" ||
+      block === null ||
+      !("baseFeePerGas" in block) ||
+      (block.baseFeePerGas !== null && (typeof block.baseFeePerGas !== "bigint" || block.baseFeePerGas < 0n))
+    ) {
+      throw new ExecutionStateReadError("latest block");
+    }
+    return { baseFeePerGas: block.baseFeePerGas };
+  } catch (error) {
+    throw toStateReadError(error, "latest block");
+  }
+}
+
+async function readNonNegativeFee(
+  read: () => Promise<bigint>,
+  target: "gas price" | "priority fee",
+): Promise<bigint> {
+  try {
+    const fee: unknown = await read();
+    if (typeof fee !== "bigint" || fee < 0n) throw new ExecutionStateReadError(target);
+    return fee;
+  } catch (error) {
+    throw toStateReadError(error, target);
+  }
+}
+
+async function readExecutionReceipt(client: PublicClient, txHash: Hex): Promise<"success" | "reverted"> {
+  try {
+    const receipt: unknown = await client.waitForTransactionReceipt({ hash: txHash });
+    if (typeof receipt !== "object" || receipt === null || !("status" in receipt)) {
+      throw new ExecutionStateReadError("transaction receipt");
+    }
+    if (receipt.status === "success" || receipt.status === "reverted") return receipt.status;
+    throw new ExecutionStateReadError("transaction receipt");
+  } catch (error) {
+    throw toStateReadError(error, "transaction receipt");
+  }
 }
 
 /**
@@ -156,8 +298,11 @@ function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Signer): n
  * ahead of them, to guarantee "no request issued" for a zero deadline.
  *
  * @throws {OperationExpiredError} if `validUntil === 0`.
+ * @throws {ExecutionStateReadError} if the snapshot, nonce, or a factor slot
+ * cannot be read in a well-formed response.
  * @throws {UnrecognizedSignerError} if a signer's key material matches none
  * of the account's three installed slots.
+ * @throws {DuplicateExecutionSignerError} if both signers occupy one slot.
  */
 export async function signExecution(params: SignExecutionParams): Promise<SignedExecution> {
   const { account, client, calls, validUntil, signers } = params;
@@ -165,13 +310,15 @@ export async function signExecution(params: SignExecutionParams): Promise<Signed
     throw new OperationExpiredError();
   }
 
-  const [chainId, nonce, slots] = await Promise.all([
-    client.getChainId(),
-    client.readContract({ address: account, abi: GLAUX_ACCOUNT_ABI, functionName: "execNonce" }),
-    readAllSlots(client, account),
-  ]);
+  const blockNumber = await readSnapshotBlockNumber(client);
+  const chainId = await readChainId(client);
+  const nonce = await readExecutionNonce(client, account, blockNumber);
+  const slots = await readAllSlots(client, account, blockNumber);
 
   const slotIndices = signers.map((signer) => matchSlotIndex(slots, signer)) as [number, number];
+  if (slotIndices[0] === slotIndices[1]) {
+    throw new DuplicateExecutionSignerError(slotIndices[0]);
+  }
   const digest = execDigest(account, BigInt(chainId), nonce, calls, validUntil);
   const signatures = await Promise.all(signers.map((signer) => signer.sign(digest)));
 
@@ -245,6 +392,7 @@ function toExecutionError(error: unknown): Error {
  *
  * @throws {ExecutionExpiredError} if the contract reverts `OperationExpired`.
  * @throws {ExecutionRevertedError} if the simulation reverts for any other decodable reason.
+ * @throws {ExecutionSimulationError} if simulation cannot be confirmed.
  * @throws {ExecutionGasEstimationError} if a gas estimate cannot be obtained after a successful simulation.
  * @throws {ExecutionTransactionRevertedError} if the mined transaction's receipt reports failure.
  */
@@ -257,25 +405,41 @@ export async function submitExecution(
   const args = toExecuteArgs(signed);
 
   try {
-    await client.simulateContract({
+    const simulation: unknown = await client.simulateContract({
       address: signed.account,
       abi: GLAUX_ACCOUNT_ABI,
       functionName: "executeWithSigs",
       args,
       account: relayerAddress,
     });
+    if (
+      typeof simulation !== "object" ||
+      simulation === null ||
+      !("request" in simulation) ||
+      typeof simulation.request !== "object" ||
+      simulation.request === null
+    ) {
+      throw new ExecutionSimulationError();
+    }
   } catch (error) {
-    throw toExecutionError(error);
+    if (error instanceof ExecutionSimulationError) throw error;
+    if (error instanceof BaseError) {
+      const revertError = error.walk(
+        (candidate) => candidate instanceof ContractFunctionRevertedError,
+      ) as ContractFunctionRevertedError | null;
+      if (revertError !== null) throw toExecutionError(error);
+    }
+    throw new ExecutionSimulationError();
   }
 
   const data = encodeFunctionData({ abi: GLAUX_ACCOUNT_ABI, functionName: "executeWithSigs", args });
 
   const [chainId, nonce, latestBlock, gasPrice, priorityFee] = await Promise.all([
-    client.getChainId(),
-    client.getTransactionCount({ address: relayerAddress }),
-    client.getBlock(),
-    client.getGasPrice(),
-    client.estimateMaxPriorityFeePerGas(),
+    readChainId(client),
+    readRelayerNonce(client, relayerAddress),
+    readLatestBlock(client),
+    readNonNegativeFee(() => client.getGasPrice(), "gas price"),
+    readNonNegativeFee(() => client.estimateMaxPriorityFeePerGas(), "priority fee"),
   ]);
 
   let estimate: bigint;
@@ -306,8 +470,8 @@ export async function submitExecution(
   });
 
   const txHash = await sendRawTransaction(client, { serializedTransaction: signedTransaction });
-  const receipt = await client.waitForTransactionReceipt({ hash: txHash });
-  if (receipt.status !== "success") {
+  const receiptStatus = await readExecutionReceipt(client, txHash);
+  if (receiptStatus !== "success") {
     throw new ExecutionTransactionRevertedError(txHash);
   }
   return txHash;

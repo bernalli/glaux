@@ -6,9 +6,17 @@ import { parseEther, type Address, type Hex, type PublicClient } from "viem";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { signExecution, submitExecution, withRelayerRefund } from "../src/execute/direct.js";
-import { ExecutionExpiredError, OperationExpiredError } from "../src/errors.js";
+import {
+  DuplicateExecutionSignerError,
+  ExecutionExpiredError,
+  ExecutionSimulationError,
+  ExecutionStateReadError,
+  OperationExpiredError,
+  UnrecognizedSignerError,
+} from "../src/errors.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
+import type { Signer } from "../src/signers/signer.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import { deployCanonical } from "./helpers/deploy.js";
 
@@ -29,6 +37,43 @@ const RELAYER_PK: Hex = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e
 const RELAYER_ADDRESS: Address = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
 
 const FRESH_RECIPIENT: Address = "0x000000000000000000000000000000000000f00d";
+const STUB_ACCOUNT: Address = "0x1111111111111111111111111111111111111111";
+
+function signingStubClient(
+  paper: Signer,
+  device: Signer,
+  cloud: Signer,
+  options: { readonly unreadNonce?: boolean; readonly unreadSlot?: number } = {},
+): { client: PublicClient; sent: () => number; readBlockNumbers: () => readonly bigint[] } {
+  let sends = 0;
+  const blockNumbers: bigint[] = [];
+  const slots = [paper, device, cloud];
+  const client = {
+    getBlockNumber: async () => 123n,
+    getChainId: async () => 31337,
+    readContract: async ({
+      functionName,
+      args,
+      blockNumber,
+    }: {
+      functionName: string;
+      args?: readonly number[];
+      blockNumber?: bigint;
+    }) => {
+      blockNumbers.push(blockNumber!);
+      if (functionName === "execNonce") return options.unreadNonce ? undefined : 0n;
+      const index = args?.[0];
+      if (index === undefined || options.unreadSlot === index) return undefined;
+      const signer = slots[index];
+      return [signer!.verifierType, signer!.keyData()];
+    },
+    request: async ({ method }: { method: string }) => {
+      if (method === "eth_sendRawTransaction") sends += 1;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+  return { client, sent: () => sends, readBlockNumbers: () => blockNumbers };
+}
 
 function loadP256OracleBytecode(): Hex {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +112,136 @@ async function bornAndFundedAccount(
 
   return { client, account: blob.account, paper, device, cloud };
 }
+
+describe("execute direct path fail-closed guards", () => {
+  const paper = new LocalSecp256k1Signer(PAPER_PK);
+  const device = new LocalP256Signer(DEVICE_PK);
+  const cloud = new LocalSecp256k1Signer(CLOUD_PK);
+  const calls = [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" as Hex }];
+
+  it("refuses an absent simulation result before a raw transaction can be sent", async () => {
+    let sends = 0;
+    const client = {
+      simulateContract: async () => undefined,
+      request: async ({ method }: { method: string }) => {
+        if (method === "eth_sendRawTransaction") sends += 1;
+        return "0x";
+      },
+    } as unknown as PublicClient;
+    const signed = {
+      account: STUB_ACCOUNT,
+      calls,
+      validUntil: 1,
+      nonce: 0n,
+      sigs: [
+        { slotIndex: 0, signature: "0x" as Hex },
+        { slotIndex: 1, signature: "0x" as Hex },
+      ] as const,
+    };
+
+    await expect(submitExecution(client, RELAYER_PK, signed)).rejects.toBeInstanceOf(ExecutionSimulationError);
+    expect(sends).toBe(0);
+  });
+
+  it("refuses an unreadable execution nonce without broadcasting", async () => {
+    const stub = signingStubClient(paper, device, cloud, { unreadNonce: true });
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        calls,
+        validUntil: 1,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionStateReadError",
+      target: "execution nonce",
+    } satisfies Partial<ExecutionStateReadError>);
+
+    expect(stub.sent()).toBe(0);
+  });
+
+  it("refuses an unreadable factor slot without broadcasting", async () => {
+    const stub = signingStubClient(paper, device, cloud, { unreadSlot: 1 });
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        calls,
+        validUntil: 1,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionStateReadError",
+      target: "factor slot",
+      slotIndex: 1,
+    } satisfies Partial<ExecutionStateReadError>);
+
+    expect(stub.sent()).toBe(0);
+  });
+
+  it("pins nonce and every factor-slot read to one block", async () => {
+    const stub = signingStubClient(paper, device, cloud);
+
+    await signExecution({
+      account: STUB_ACCOUNT,
+      client: stub.client,
+      calls,
+      validUntil: 1,
+      signers: [paper, cloud],
+    });
+
+    expect(stub.readBlockNumbers()).toHaveLength(4);
+    expect(stub.readBlockNumbers().every((blockNumber) => blockNumber === 123n)).toBe(true);
+  });
+
+  it("rejects a duplicate resolved slot before requesting either signature", async () => {
+    let signaturesRequested = 0;
+    const duplicateSigner: Signer = {
+      verifierType: paper.verifierType,
+      keyData: () => paper.keyData(),
+      sign: async (digest) => {
+        signaturesRequested += 1;
+        return paper.sign(digest);
+      },
+    };
+    const stub = signingStubClient(duplicateSigner, device, cloud);
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        calls,
+        validUntil: 1,
+        signers: [duplicateSigner, duplicateSigner],
+      }),
+    ).rejects.toMatchObject({
+      name: "DuplicateExecutionSignerError",
+      slotIndex: 0,
+    } satisfies Partial<DuplicateExecutionSignerError>);
+
+    expect(signaturesRequested).toBe(0);
+  });
+
+  it("rejects a signer whose key is not installed in any factor slot", async () => {
+    const uninstalled = new LocalSecp256k1Signer(DEPLOYER_PK);
+    const stub = signingStubClient(paper, device, cloud);
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        calls,
+        validUntil: 1,
+        signers: [paper, uninstalled],
+      }),
+    ).rejects.toBeInstanceOf(UnrecognizedSignerError);
+
+    expect(stub.sent()).toBe(0);
+  });
+});
 
 describe("execute e2e: direct executeWithSigs path", () => {
   it(

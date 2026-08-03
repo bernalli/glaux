@@ -174,6 +174,71 @@ export class UnrecognizedSignerError extends Error {
 }
 
 /**
+ * Thrown when `signExecution` cannot obtain a well-formed value needed to
+ * bind a quorum to the account's current state. This is deliberately distinct
+ * from a recognized but unsuitable state: unknown state must never be signed.
+ */
+export class ExecutionStateReadError extends Error {
+  readonly target:
+    | "block number"
+    | "chain id"
+    | "execution nonce"
+    | "factor slot"
+    | "relayer transaction nonce"
+    | "latest block"
+    | "gas price"
+    | "priority fee"
+    | "transaction receipt";
+  readonly slotIndex: number | undefined;
+
+  constructor(
+    target: ExecutionStateReadError["target"],
+    slotIndex?: number,
+  ) {
+    const location = target === "factor slot" ? `factor slot ${slotIndex}` : target;
+    super(
+      `could not read ${location} for direct execution; the RPC response was absent, malformed, or failed. ` +
+        "Refusing to continue with unknown chain state.",
+    );
+    this.name = "ExecutionStateReadError";
+    this.target = target;
+    this.slotIndex = slotIndex;
+  }
+}
+
+/**
+ * Thrown when the direct-execution pre-flight could not be confirmed because
+ * simulation failed without a contract revert, or returned no usable result.
+ * This differs from `ExecutionRevertedError`: the latter proves the chain
+ * evaluated the operation and rejected it; this error means that is unknown.
+ */
+export class ExecutionSimulationError extends Error {
+  constructor() {
+    super(
+      "could not confirm the direct execution pre-flight simulation; the RPC response was absent, malformed, or failed. Refusing to broadcast.",
+    );
+    this.name = "ExecutionSimulationError";
+  }
+}
+
+/**
+ * Thrown when both supplied execution signers resolve to the same installed
+ * factor slot. `GlauxAccount._checkTwoSigs` requires two distinct slots, so
+ * emitting this quorum would be known to fail on-chain.
+ */
+export class DuplicateExecutionSignerError extends Error {
+  readonly slotIndex: number;
+
+  constructor(slotIndex: number) {
+    super(
+      `both execution signers resolve to factor slot ${slotIndex}; two distinct installed factor slots are required.`,
+    );
+    this.name = "DuplicateExecutionSignerError";
+    this.slotIndex = slotIndex;
+  }
+}
+
+/**
  * Thrown when `submitExecution`'s pre-flight simulation of `executeWithSigs`
  * reverts with `OperationExpired(uint48 validUntil, uint256 blockTimestamp)`
  * — the CONTRACT's own rejection of an expired operation, decoded from the
