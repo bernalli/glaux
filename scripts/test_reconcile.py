@@ -9,15 +9,28 @@ the same bytes. Either side changing alone turns the fixture red.
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from eth_abi import decode as abi_decode
+from eth_abi import encode as abi_encode
+from eth_utils import to_checksum_address
 from reconcile import (
     BASE_SLOT,
     IMPL_SLOT,
+    MAX_FACTOR_DATA_LENGTH,
+    SEL_EXEC_NONCE,
+    SEL_GET_SLOT,
+    SEL_IMPLEMENTATION,
+    SEL_UPDATE_NONCE,
+    ChainState,
+    FactorDataTooLong,
+    compare,
     data_slot,
     decode_bytes,
     decode_header,
     header_slot,
+    inspect_chain,
     type_slot,
 )
 
@@ -83,3 +96,132 @@ def test_long_form_spanning_two_words_decodes(fx: dict, storage) -> None:
     # The P-256 slot (index 1) is 64 bytes: exactly the two-word long form.
     data = decode_bytes(storage, data_slot(1))
     assert len(data) == 64
+
+
+# --- The factor data cap (audit finding I-3) ------------------------------
+#
+# The long-form length lives in a storage word an attacker can plant, and it
+# decides how many further words the decoder reads. Uncapped, one planted word
+# buys an unbounded number of RPC reads; the TypeScript port measured 5001
+# reads before it was capped. These tests pin the Python side to the same
+# behaviour: refuse past the cap, without reading the payload at all.
+
+
+def test_planted_over_long_length_is_refused_before_any_payload_read() -> None:
+    reads: list[int] = []
+
+    def read(slot: int) -> int:
+        reads.append(slot)
+        return 2 * 160000 + 1  # long form claiming 160000 bytes = 5000 words
+
+    with pytest.raises(FactorDataTooLong) as excinfo:
+        decode_bytes(read, data_slot(0))
+    assert excinfo.value.length == 160000
+    # Exactly the header word: the refusal happens before the read loop, so a
+    # planted length costs the caller one RPC round trip, not five thousand.
+    assert reads == [data_slot(0)]
+
+
+def test_the_cap_admits_sixty_four_bytes_and_refuses_sixty_five(
+    fx: dict, storage
+) -> None:
+    # The committed fixture is ground truth from Solidity's real storage
+    # layout. Do not replace it with a hand-written bytes encoder: that would
+    # merely duplicate the decoder assumptions this boundary test must check.
+    slot = data_slot(1)
+    payload = bytes.fromhex(fx["expected"]["slots"][1]["data"].removeprefix("0x"))
+    assert len(payload) == MAX_FACTOR_DATA_LENGTH == 64
+    assert decode_bytes(storage, slot) == payload
+
+    # The decoder must reject from this header alone. Indexing the one-entry
+    # table makes any accidental payload read fail instead of returning zeros.
+    over_cap = {slot: 2 * (MAX_FACTOR_DATA_LENGTH + 1) + 1}
+    with pytest.raises(FactorDataTooLong) as excinfo:
+        decode_bytes(lambda requested: over_cap[requested], slot)
+    assert excinfo.value.length == MAX_FACTOR_DATA_LENGTH + 1
+
+
+ACCOUNT = to_checksum_address("0x" + "aa" * 20)
+ROUTER = to_checksum_address("0x" + "b0" * 20)
+IMPL = to_checksum_address("0x" + "c0" * 20)
+DESIGNATOR = bytes.fromhex("ef0100") + bytes.fromhex(ROUTER[2:])
+
+
+class _FakeEth:
+    """Duck-typed stand-in for ``w3.eth`` over a planted storage table.
+
+    The poisoned slot's getter deliberately returns the account's real,
+    non-empty factor data while raw decoding refuses its hostile length word.
+    Returning empty data here would make the fake agree with the raw fallback,
+    suppress the getter-comparison note, and turn the ordering proof vacuous.
+    """
+
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes]) -> None:
+        self._storage = storage
+        self._slots = slots
+
+    def get_code(self, address: str) -> bytes:
+        return DESIGNATOR if address == ACCOUNT else bytes.fromhex("6000")
+
+    def get_storage_at(self, _address: str, position: int) -> bytes:
+        return self._storage.get(position, 0).to_bytes(32, "big")
+
+    def call(self, tx: dict[str, Any]) -> bytes:
+        data = bytes(tx["data"])
+        selector = data[:4]
+        if selector == SEL_UPDATE_NONCE:
+            return (7).to_bytes(32, "big")
+        if selector == SEL_EXEC_NONCE:
+            return (3).to_bytes(32, "big")
+        if selector == SEL_IMPLEMENTATION:
+            return abi_encode(["address"], [IMPL])
+        if selector == SEL_GET_SLOT:
+            i = abi_decode(["uint8"], data[4:])[0]
+            verifier_type = self._storage.get(type_slot(i), 0)
+            return abi_encode(["uint8", "bytes"], [verifier_type, self._slots[i]])
+        raise AssertionError(f"unexpected getter call {selector.hex()}")
+
+
+class _FakeWeb3:
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes]) -> None:
+        self.eth = _FakeEth(storage, slots)
+
+
+def test_inspect_chain_orders_raw_anomaly_before_getter_comparison(fx: dict) -> None:
+    storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    storage[data_slot(1)] = 2 * 160000 + 1  # the planted length
+
+    # These are the real compiler-fixture payloads. In particular, slot 1 must
+    # stay non-empty and differ from the raw side's unreadable-data fallback;
+    # otherwise this test stops exercising getter-note ordering.
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+
+    state: ChainState = inspect_chain(
+        _FakeWeb3(storage, getter_slots), "sepolia", ACCOUNT
+    )
+
+    anomaly_note = (
+        "slot 1: raw factor data length 160000 exceeds Glaux's "
+        f"{MAX_FACTOR_DATA_LENGTH}-byte maximum"
+    )
+    getter_note = f"slot 1: raw {(2, '0x')} vs getter {(2, getter_slots[1].hex())}"
+    assert anomaly_note in state.getter_mismatches
+    assert getter_note in state.getter_mismatches
+    assert state.getter_mismatches.index(anomaly_note) < state.getter_mismatches.index(
+        getter_note
+    )
+    assert state.slots[0] == (
+        1,
+        fx["expected"]["slots"][0]["data"],
+    )
+    assert state.slots[1] == (2, "0x")
+    assert state.slots[2] == (
+        1,
+        fx["expected"]["slots"][2]["data"],
+    )
+    assert compare([state], None) == 2

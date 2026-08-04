@@ -41,6 +41,9 @@ from eth_utils import keccak, to_checksum_address
 BASE_SLOT: int = int.from_bytes(keccak(text="glaux.account.v1.storage"), "big")
 IMPL_SLOT: int = int.from_bytes(keccak(text="glaux.account.v1.implementation"), "big")
 DESIGNATOR_PREFIX: bytes = bytes.fromhex("ef0100")
+# ``SignatureVerify`` accepts only 32-byte secp256k1 key data or 64-byte
+# P-256 coordinates, so a contract-born factor can never write more than 64.
+MAX_FACTOR_DATA_LENGTH: int = 64
 
 SEL_UPDATE_NONCE: bytes = keccak(text="updateNonce()")[:4]
 SEL_EXEC_NONCE: bytes = keccak(text="execNonce()")[:4]
@@ -75,18 +78,41 @@ def decode_header(word: int) -> tuple[bool, int, int]:
     return bool(word & 0xFF), (word >> 8) & (2**64 - 1), (word >> 72) & (2**64 - 1)
 
 
+class FactorDataTooLong(Exception):
+    """A factor slot's length word claims more data than a factor can hold.
+
+    Carries the offending ``length`` so the caller can report it verbatim: it
+    is attacker-plantable evidence about the account, not a value to act on.
+    """
+
+    def __init__(self, length: int) -> None:
+        super().__init__(
+            f"raw factor data length {length} exceeds Glaux's "
+            f"{MAX_FACTOR_DATA_LENGTH}-byte maximum"
+        )
+        self.length: int = length
+
+
 def decode_bytes(read: Reader, slot: int) -> bytes:
     """Decode a Solidity ``bytes`` value at ``slot``.
 
     Short form: payload left-aligned in the header word, ``2 * len`` in the
     low byte (even). Long form: ``2 * len + 1`` in the header word (odd),
     payload words starting at ``keccak256(slot)``.
+
+    Raises ``FactorDataTooLong`` when the long-form length exceeds
+    ``MAX_FACTOR_DATA_LENGTH``.
     """
     header = read(slot)
     if header & 1 == 0:
         length = (header & 0xFF) // 2
         return header.to_bytes(32, "big")[:length]
     length = (header - 1) // 2
+    # The length word is storage an attacker can plant, and it drives the read
+    # loop below: bound it BEFORE deriving the payload base or issuing a single
+    # payload read, or one planted word buys an unbounded number of RPC reads.
+    if length > MAX_FACTOR_DATA_LENGTH:
+        raise FactorDataTooLong(length)
     base = int.from_bytes(keccak(slot.to_bytes(32, "big")), "big")
     out = b""
     for j in range((length + 31) // 32):
@@ -137,12 +163,21 @@ def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
     )
 
     initialized, update_nonce, exec_nonce = decode_header(read(header_slot()))
-    slots = tuple(
-        (read(type_slot(i)), "0x" + decode_bytes(read, data_slot(i)).hex())
-        for i in range(3)
-    )
-
     mismatches: list[str] = []
+    raw_slots: list[tuple[int, str]] = []
+    for i in range(3):
+        verifier_type = read(type_slot(i))
+        try:
+            data = "0x" + decode_bytes(read, data_slot(i)).hex()
+        except FactorDataTooLong as exc:
+            # One slot with a planted length must not blind the other two: the
+            # anomaly is itself a finding (it makes the raw side unreadable and
+            # so disagree with the getters), the remaining slots still read.
+            data = "0x"
+            mismatches.append(f"slot {i}: {exc}")
+        raw_slots.append((verifier_type, data))
+    slots = tuple(raw_slots)
+
     try:
         got = int.from_bytes(_call_getter(w3, account, SEL_UPDATE_NONCE), "big")
         if got != update_nonce:
