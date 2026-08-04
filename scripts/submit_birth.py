@@ -24,6 +24,8 @@ from typing import Any
 
 from eth_abi import encode
 from eth_account import Account
+from eth_account.typed_transactions.set_code_transaction import Authorization
+from eth_keys.datatypes import Signature
 from eth_utils import keccak, to_bytes, to_checksum_address
 from web3 import Web3
 
@@ -87,6 +89,50 @@ def build_initialize_calldata(blob: dict[str, Any]) -> bytes:
     return INITIALIZE_SELECTOR + encoded_args
 
 
+def assert_blob_authorization(blob: dict[str, Any]) -> None:
+    """Bind an interchange blob's EIP-7702 authorization to its account.
+
+    This is the Python counterpart of the SDK's ``assertCanonicalBlob``
+    authorization checks. The pre-birth storage gate must inspect the EOA the
+    tuple actually authorizes, not merely an unrelated ``blob["account"]``.
+    ``chainId == 0`` is equally mandatory: otherwise the retained blob stops
+    being replayable on every chain, which is Glaux birth's core invariant.
+    """
+    authorization = blob["authorization"]
+    account = to_checksum_address(blob["account"])
+    router = to_checksum_address(blob["router"])
+    target = to_checksum_address(authorization["address"])
+    if target != router:
+        sys.exit("refusing to submit: birth blob authorization target differs from its router")
+    if authorization["chainId"] != 0:
+        sys.exit("refusing to submit: birth blob authorization chainId must be 0 for cross-chain replay")
+
+    try:
+        unsigned = Authorization(
+            authorization["chainId"],
+            to_bytes(hexstr=target),
+            authorization["nonce"],
+        )
+        signature = Signature(
+            vrs=(
+                authorization["yParity"],
+                int(authorization["r"], 16),
+                int(authorization["s"], 16),
+            )
+        )
+        signer = signature.recover_public_key_from_msg_hash(
+            unsigned.hash()
+        ).to_checksum_address()
+    except Exception as exc:
+        raise SystemExit(
+            "refusing to submit: birth blob authorization signature is malformed"
+        ) from exc
+    if signer != account:
+        sys.exit(
+            "refusing to submit: birth blob authorization signer does not equal blob account"
+        )
+
+
 def preflight_fresh_account(
     w3: Web3, account_address: str, router_address: str
 ) -> None:
@@ -140,6 +186,7 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
 
     Returns the transaction receipt as a plain dict (status, tx hash, gas used).
     """
+    assert_blob_authorization(blob)
     relayer = Account.from_key(relayer_key)
     account_address = to_checksum_address(blob["account"])
     preflight_fresh_account(w3, account_address, blob["authorization"]["address"])

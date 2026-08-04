@@ -4,9 +4,14 @@ import { preflightFreshAccount } from "../src/birth/preflight.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { IMPL_CODE_HASH } from "../src/core/constants.js";
 import type { BirthBlob } from "../src/core/types.js";
-import { BirthGasEstimationError, BirthPreflightReadError, ChainIdMismatchError } from "../src/errors.js";
+import {
+  BirthGasEstimationError,
+  BirthPreflightReadError,
+  ChainIdMismatchError,
+  InvalidBirthBlobError,
+} from "../src/errors.js";
 
-const ACCOUNT = "0x1111111111111111111111111111111111111111" as Address;
+const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Address;
 const ZERO_WORD = `0x${"00".repeat(32)}` as Hex;
 const RELAYER = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
 
@@ -20,8 +25,8 @@ const BLOB: BirthBlob = {
     address: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
     nonce: 0,
     yParity: 0,
-    r: `0x${"22".repeat(32)}`,
-    s: `0x${"33".repeat(32)}`,
+    r: "0xd85ba67a8ce9cd387b44acf700176415ced15a38159594775e25cbcbfb46a0be",
+    s: "0x195da6c632682dc5cbefb7b35315f857e347708a97f2d85ebba264969783728e",
   },
   initData: "0x",
   birthSig: "0x",
@@ -96,4 +101,47 @@ it("refuses a submit endpoint that disagrees with the caller-selected chain befo
 
   await expect(submitBirth(client, RELAYER, BLOB, 31337)).rejects.toBeInstanceOf(ChainIdMismatchError);
   expect(otherAction).toBe(false);
+});
+
+it("rejects an authorization whose recovered signer is not blob.account before preflight", async () => {
+  let preflightRead = false;
+  const client = {
+    getChainId: async () => 31337,
+    request: async () => {
+      preflightRead = true;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+
+  await expect(
+    submitBirth(client, RELAYER, { ...BLOB, account: "0x1111111111111111111111111111111111111111" }, 31337),
+  ).rejects.toMatchObject({
+    name: "InvalidBirthBlobError",
+    field: "authorization signer",
+  } satisfies Partial<InvalidBirthBlobError>);
+  expect(preflightRead).toBe(false);
+});
+
+it("rejects a chain-specific authorization before preflight", async () => {
+  let preflightRead = false;
+  const client = {
+    getChainId: async () => 31337,
+    request: async () => {
+      preflightRead = true;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+
+  await expect(
+    submitBirth(
+      client,
+      RELAYER,
+      { ...BLOB, authorization: { ...BLOB.authorization, chainId: 31337 } },
+      31337,
+    ),
+  ).rejects.toMatchObject({
+    name: "InvalidBirthBlobError",
+    field: "authorization chain id",
+  } satisfies Partial<InvalidBirthBlobError>);
+  expect(preflightRead).toBe(false);
 });

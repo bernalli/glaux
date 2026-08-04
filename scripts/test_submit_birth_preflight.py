@@ -8,14 +8,26 @@ FactorSlot entries — are zero (threat-model residual 17). These tests stub
 `w3` so nothing touches the network.
 """
 
+from typing import Any
+
 import pytest
-from submit_birth import IMPL_SLOT, STORAGE_SLOT, preflight_fresh_account
+from eth_account import Account
+from submit_birth import (
+    IMPL_SLOT,
+    STORAGE_SLOT,
+    assert_blob_authorization,
+    preflight_fresh_account,
+    submit_birth,
+)
 
 ZERO_WORD = b"\x00" * 32
 NON_ZERO_WORD = b"\x00" * 31 + b"\x01"
 ACCOUNT = "0x000000000000000000000000000000000000AA"
 ROUTER = "0x" + "00" * 19 + "B0"
 ROUTER_DESIGNATOR = bytes.fromhex("ef0100") + bytes.fromhex(ROUTER[2:])
+# Throwaway relayer key, never funded on any chain: `submit_birth` only reaches
+# `Account.from_key` AFTER the authorization gate, so a rejected blob never uses it.
+RELAYER_KEY = "0x" + "33" * 32
 
 
 class _StubEth:
@@ -85,3 +97,77 @@ def test_pre_planted_factor_slot_verifier_type_is_rejected() -> None:
     w3 = _StubWeb3(code=b"", slots={STORAGE_SLOT + 1: NON_ZERO_WORD})
     with pytest.raises(SystemExit):
         preflight_fresh_account(w3, ACCOUNT, ROUTER)
+
+
+def _authorization_blob() -> dict:
+    private_key = "0x" + "11" * 32
+    account = Account.from_key(private_key).address
+    authorization = Account.sign_authorization(
+        {"chainId": 0, "address": ROUTER, "nonce": 0}, private_key
+    )
+    return {
+        "account": account,
+        "router": ROUTER,
+        "authorization": {
+            "chainId": authorization.chain_id,
+            "address": "0x" + authorization.address.hex(),
+            "nonce": authorization.nonce,
+            "yParity": authorization.y_parity,
+            "r": hex(authorization.r),
+            "s": hex(authorization.s),
+        },
+    }
+
+
+def test_authorization_signer_and_zero_chain_id_are_accepted() -> None:
+    assert_blob_authorization(_authorization_blob())
+
+
+def test_authorization_for_a_different_eoa_is_rejected() -> None:
+    blob = _authorization_blob()
+    blob["account"] = "0x" + "22" * 20
+    with pytest.raises(SystemExit, match="signer does not equal blob account"):
+        assert_blob_authorization(blob)
+
+
+def test_chain_specific_authorization_is_rejected() -> None:
+    blob = _authorization_blob()
+    blob["authorization"]["chainId"] = 1
+    with pytest.raises(SystemExit, match="chainId must be 0"):
+        assert_blob_authorization(blob)
+
+
+class _ExplodingEth:
+    """Any RPC access at all is a test failure, not a stubbed answer."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(
+            f"submit_birth touched the chain (w3.eth.{name}) instead of refusing the blob"
+        )
+
+
+class _ExplodingWeb3:
+    def __init__(self) -> None:
+        self.eth = _ExplodingEth()
+
+
+def test_submit_birth_refuses_an_authorization_signed_by_another_key() -> None:
+    """The authorization gate must hold on the PUBLIC path, not only when called directly.
+
+    `submit_birth` runs `assert_blob_authorization` ahead of the pre-birth
+    storage preflight and of any transaction building, so a blob whose
+    EIP-7702 tuple was signed by a key other than `blob["account"]` must be
+    refused without a single RPC call: the `_ExplodingWeb3` stub turns any
+    read — `get_code`, `get_storage_at`, `chain_id`, the gas estimate — into a
+    failure, which is what makes "nothing downstream was reached" an assertion
+    rather than an assumption.
+    """
+    blob = _authorization_blob()
+    blob["account"] = "0x" + "22" * 20
+    blob["implementation"] = "0x" + "33" * 20
+    blob["expectedCodeHash"] = "0x" + "44" * 32
+    blob["initData"] = "0x"
+    blob["birthSig"] = "0x"
+
+    with pytest.raises(SystemExit, match="signer does not equal blob account"):
+        submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)

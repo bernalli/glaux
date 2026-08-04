@@ -260,6 +260,8 @@ def compare(states: list[ChainState], expected_router: str | None) -> int:
     cross-chain: executions are per-chain by design. What must agree is
     ``updateNonce``, the factor slots, the implementation pointer and its live
     code hash, and the router."""
+    if not states:
+        raise ValueError("reconciliation requires at least one observed chain")
     exit_code = 0
     active = [s for s in states if s.active]
     for s in active:

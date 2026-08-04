@@ -5,14 +5,21 @@ import { describe, expect, it } from "vitest";
 import { ContractFunctionZeroDataError, parseEther, toHex, type Address, type Hex, type PublicClient } from "viem";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
-import { signExecution, submitExecution, withRelayerRefund } from "../src/execute/direct.js";
+import {
+  DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS,
+  signExecution,
+  submitExecution,
+  withRelayerRefund,
+} from "../src/execute/direct.js";
 import {
   ChainIdMismatchError,
   DuplicateExecutionSignerError,
   ExecutionAccountNotBornError,
   ExecutionExpiredError,
+  ExecutionNonceMismatchError,
   ExecutionSimulationError,
   ExecutionStateReadError,
+  ExecutionValidityWindowError,
   OperationExpiredError,
   UnrecognizedSignerError,
 } from "../src/errors.js";
@@ -51,6 +58,8 @@ function signingStubClient(
     readonly unborn?: boolean;
     readonly snapshotBlockNumbers?: readonly bigint[];
     readonly noCodeAtSnapshot?: bigint;
+    readonly getterNonce?: bigint;
+    readonly rawNonce?: bigint;
   } = {},
 ): {
   client: PublicClient;
@@ -85,11 +94,22 @@ function signingStubClient(
       if (blockNumber === options.noCodeAtSnapshot) {
         throw new ContractFunctionZeroDataError({ functionName });
       }
-      if (functionName === "execNonce") return options.unreadNonce ? undefined : 0n;
+      if (functionName === "execNonce") return options.unreadNonce ? undefined : (options.getterNonce ?? 0n);
       const index = args?.[0];
       if (index === undefined || options.unreadSlot === index) return undefined;
       const signer = slots[index];
       return [signer!.verifierType, signer!.keyData()];
+    },
+    getStorageAt: async ({
+      slot,
+      blockNumber,
+    }: {
+      slot: Hex;
+      blockNumber?: bigint;
+    }) => {
+      expect(slot).toBe("0xc645ef19799bcce32b2c21e3256a200e9914fa1c588f704be7391b93be01ae7f");
+      blockNumbers.push(blockNumber!);
+      return toHex((options.rawNonce ?? options.getterNonce ?? 0n) << 72n, { size: 32 });
     },
     getCode: async ({ blockNumber }: { blockNumber?: bigint } = {}) =>
       options.unborn || blockNumber === options.noCodeAtSnapshot ? undefined : "0x01",
@@ -174,6 +194,111 @@ describe("execute direct path fail-closed guards", () => {
   const cloud = new LocalSecp256k1Signer(CLOUD_PK);
   const calls = [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" as Hex }];
 
+  it("rejects a deadline beyond the default local validity ceiling before any RPC or signature", async () => {
+    let signaturesRequested = 0;
+    const signer: Signer = {
+      verifierType: paper.verifierType,
+      keyData: () => paper.keyData(),
+      sign: async (digest) => {
+        signaturesRequested += 1;
+        return paper.sign(digest);
+      },
+    };
+    const stub = signingStubClient(signer, device, cloud);
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        expectedChainId: 31337,
+        calls,
+        validUntil: Math.floor(Date.now() / 1000) + DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS + 60,
+        signers: [signer, cloud],
+      }),
+    ).rejects.toBeInstanceOf(ExecutionValidityWindowError);
+
+    expect(stub.readBlockNumbers()).toEqual([]);
+    expect(signaturesRequested).toBe(0);
+  });
+
+  it("signs past the one-hour default when the caller explicitly widens the validity window", async () => {
+    const stub = signingStubClient(paper, device, cloud);
+    const validUntil = Math.floor(Date.now() / 1000) + DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS * 2;
+
+    const signed = await signExecution({
+      account: STUB_ACCOUNT,
+      client: stub.client,
+      expectedChainId: 31337,
+      calls,
+      validUntil,
+      maxValidityWindowSeconds: DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS * 4,
+      signers: [paper, cloud],
+    });
+
+    // The widened deadline reaches the signed material unchanged: an override
+    // that were ignored (or the ceiling nailed to one hour) would fail here,
+    // where every other validity-window test only ever asserts a refusal.
+    expect(signed.validUntil).toBe(validUntil);
+    expect(signed.sigs.map((sig) => sig.slotIndex)).toEqual([0, 2]);
+
+    // Non-vacuity: the very same deadline is refused without the override, so
+    // the acceptance above is the override's doing and not a deadline that
+    // happened to sit inside the default ceiling anyway.
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        expectedChainId: 31337,
+        calls,
+        validUntil,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toBeInstanceOf(ExecutionValidityWindowError);
+  });
+
+  it("rejects a future execNonce lie when the same-block raw header still reports the current nonce", async () => {
+    const stub = signingStubClient(paper, device, cloud, { getterNonce: 1n, rawNonce: 0n });
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        expectedChainId: 31337,
+        calls,
+        validUntil: 1,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionNonceMismatchError",
+      path: "direct",
+      source: "raw storage",
+      expected: 0n,
+      actual: 1n,
+    } satisfies Partial<ExecutionNonceMismatchError>);
+  });
+
+  it("rejects a consistently forged nonce when it disagrees with an independent caller expectation", async () => {
+    const stub = signingStubClient(paper, device, cloud, { getterNonce: 1n, rawNonce: 1n });
+
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        expectedChainId: 31337,
+        expectedNonce: 0n,
+        calls,
+        validUntil: 1,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionNonceMismatchError",
+      path: "direct",
+      source: "caller expectation",
+      expected: 0n,
+      actual: 1n,
+    } satisfies Partial<ExecutionNonceMismatchError>);
+  });
+
   it("refuses an absent simulation result before a raw transaction can be sent", async () => {
     let sends = 0;
     const client = {
@@ -251,7 +376,7 @@ describe("execute direct path fail-closed guards", () => {
       signers: [paper, cloud],
     });
 
-    expect(stub.readBlockNumbers()).toEqual([122n, 123n, 123n, 123n, 123n]);
+    expect(stub.readBlockNumbers()).toEqual([122n, 123n, 123n, 123n, 123n, 123n]);
     expect(stub.snapshotCacheTimes()).toEqual([0, 0]);
   });
 

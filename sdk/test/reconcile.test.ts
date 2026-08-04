@@ -3,14 +3,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { concat, keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
+import {
+  concat,
+  encodeAbiParameters,
+  keccak256,
+  stringToBytes,
+  toHex,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { designator } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { ReconciliationReadError } from "../src/errors.js";
-import { reconcile, type ActiveChainState } from "../src/reconcile/reconcile.js";
+import { compareChainStates, reconcile, type ActiveChainState } from "../src/reconcile/reconcile.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import { deployCanonical } from "./helpers/deploy.js";
 
@@ -74,6 +83,32 @@ const VALID_IMPLEMENTATION_WORD: Hex = toHex(1n, { size: 32 });
 const CODELESS_ROUTER: Address = "0x000000000000000000000000000000000000dEaD";
 const CODELESS_DESIGNATOR = concat(["0xef0100", CODELESS_ROUTER]).toLowerCase() as Hex;
 const UPDATE_NONCE_SELECTOR = keccak256(stringToBytes("updateNonce()")).slice(0, 10) as Hex;
+const EXEC_NONCE_SELECTOR = keccak256(stringToBytes("execNonce()")).slice(0, 10) as Hex;
+const IMPLEMENTATION_SELECTOR = keccak256(stringToBytes("implementation()")).slice(0, 10) as Hex;
+const GET_SLOT_SELECTOR = keccak256(stringToBytes("getSlot(uint8)")).slice(0, 10) as Hex;
+
+/**
+ * A `getSlot` return that is canonical ABI except for one junk byte in the
+ * padding that follows its two-byte `bytes` payload. viem masks that byte away
+ * and hands back exactly the raw state; `eth_abi` decodes in strict mode and
+ * raises `NonEmptyPaddingBytes` on these identical bytes, which is Python exit
+ * 2. The sibling Python test plants this same vector.
+ */
+const DIRTY_GET_SLOT_RETURN: Hex = concat([
+  toHex(1n, { size: 32 }), // uint8 verifierType, matching the raw type slot
+  toHex(0x40n, { size: 32 }), // offset of the bytes payload
+  toHex(2n, { size: 32 }), // payload length
+  `0xaabb${"00".repeat(29)}7f` as Hex, // payload, then junk in its padding
+]);
+
+/** The same return with its padding zeroed: what the real account emits. */
+const CLEAN_GET_SLOT_RETURN: Hex = encodeAbiParameters(
+  [{ type: "uint8" }, { type: "bytes" }],
+  [1, "0xaabb"],
+);
+
+/** Solidity's short form for the same two bytes: payload, zeroed padding, `2 * len`. */
+const SHORT_FORM_TWO_BYTE_WORD: Hex = `0xaabb${"00".repeat(29)}04`;
 
 /**
  * A complete, readable raw state for testing failures after the raw-first
@@ -88,6 +123,39 @@ function clientWithValidRawState(
       address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
     getStorageAt: async () => VALID_IMPLEMENTATION_WORD,
     call,
+  } as unknown as PublicClient;
+}
+
+/**
+ * A chain whose raw state is fully readable and whose getters agree with it
+ * value for value, except that `getSlot(0)` answers with `getSlotZeroReturn`.
+ * Raw slot 0 carries exactly the two bytes a lenient decoder reads out of the
+ * dirty-padding vector, so in these tests nothing but the canonicality of the
+ * return encoding can move the verdict.
+ */
+function clientWithGetSlotReturn(getSlotZeroReturn: Hex): PublicClient {
+  const storage = new Map<string, Hex>([
+    [IMPL_SLOT.toLowerCase(), VALID_IMPLEMENTATION_WORD],
+    [toHex(STORAGE_SLOT, { size: 32 }), headerWord(true, 3n, 7n)],
+    [toHex(typeSlot(0), { size: 32 }), SECP256K1_TYPE],
+    [toHex(typeSlot(1), { size: 32 }), SECP256K1_TYPE],
+    [toHex(typeSlot(2), { size: 32 }), SECP256K1_TYPE],
+    [toHex(dataHeadSlot(0), { size: 32 }), SHORT_FORM_TWO_BYTE_WORD],
+  ]);
+  const emptySlotReturn = encodeAbiParameters([{ type: "uint8" }, { type: "bytes" }], [1, "0x"]);
+  return {
+    getCode: async ({ address }: { address: Address }) =>
+      address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
+    getStorageAt: async ({ slot }: { slot: Hex }) => storage.get(slot.toLowerCase()) ?? ZERO_WORD,
+    call: async ({ data }: { data: Hex }) => {
+      if (data === UPDATE_NONCE_SELECTOR) return { data: toHex(3n, { size: 32 }) };
+      if (data === EXEC_NONCE_SELECTOR) return { data: toHex(7n, { size: 32 }) };
+      if (data === IMPLEMENTATION_SELECTOR) return { data: VALID_IMPLEMENTATION_WORD };
+      if (data.startsWith(GET_SLOT_SELECTOR)) {
+        return { data: BigInt(`0x${data.slice(10)}`) === 0n ? getSlotZeroReturn : emptySlotReturn };
+      }
+      throw new Error(`unexpected getter call ${data}`);
+    },
   } as unknown as PublicClient;
 }
 
@@ -189,6 +257,11 @@ async function birthOnBothChains(chainA: PublicClient, chainB: PublicClient, url
 }
 
 describe("reconcile", () => {
+  it("refuses to call an empty observation set consistent", async () => {
+    expect(() => compareChainStates([])).toThrow(RangeError);
+    await expect(reconcile([], CANDIDATE_ACCOUNT)).rejects.toThrow(RangeError);
+  });
+
   it(
     "reports consistent for one blob born identically on two chains, and the real Python tool agrees",
     async () => {
@@ -413,6 +486,60 @@ describe("reconcile", () => {
     expect(state.active).toBe(true);
     expect(state.getterMismatches).toHaveLength(1);
     expect(state.getterMismatches[0]).toContain("implementation()");
+  });
+
+  it("reports unreadable when implementation() returns an address word with dirty high padding", async () => {
+    const dirtyImplementationWord = `0x01${"00".repeat(30)}01` as Hex;
+    const client = clientWithValidRawState(async ({ data }) => {
+      if (data === UPDATE_NONCE_SELECTOR || data === EXEC_NONCE_SELECTOR) {
+        return { data: ZERO_WORD };
+      }
+      if (data === IMPLEMENTATION_SELECTOR) {
+        return { data: dirtyImplementationWord };
+      }
+      return {
+        data: encodeAbiParameters([{ type: "uint8" }, { type: "bytes" }], [1, "0x"]),
+      };
+    });
+
+    const result = await reconcile([{ name: "dirty-implementation-padding", client }], CANDIDATE_ACCOUNT);
+
+    expect(result.verdict).toBe("unreadable");
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.getterMismatches).toHaveLength(1);
+    expect(state.getterMismatches[0]).toContain("implementation()");
+    expect(state.getterMismatches[0]).toContain("non-zero ABI padding");
+  });
+
+  it("reports unreadable when getSlot returns non-zero padding after its bytes payload", async () => {
+    const client = clientWithGetSlotReturn(DIRTY_GET_SLOT_RETURN);
+
+    const result = await reconcile([{ name: "dirty-get-slot-padding", client }], CANDIDATE_ACCOUNT);
+
+    // Parity invariant: this identical return vector is TypeScript `unreadable`
+    // here and Python exit 2 in the sibling reconcile test. Raw slot 0 holds
+    // exactly the two bytes this return decodes to once the junk byte is
+    // masked away, so a lenient decoder finds getter and raw in perfect
+    // agreement and answers `consistent` where the Python tool exits 2.
+    expect(result.verdict).toBe("unreadable");
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.slots[0]!.data).toBe("0xaabb");
+    expect(state.getterMismatches).toHaveLength(1);
+    expect(state.getterMismatches[0]).toContain("getSlot(0)");
+  });
+
+  it("still reports consistent for that same getSlot return with its padding zeroed", async () => {
+    // The twin of the test above. Without it, refusing every `getSlot` return
+    // outright would satisfy the parity assertion and leave the rest of this
+    // mock-driven suite green -- only the live two-chain tests would catch it.
+    const client = clientWithGetSlotReturn(CLEAN_GET_SLOT_RETURN);
+
+    const result = await reconcile([{ name: "clean-get-slot-padding", client }], CANDIDATE_ACCOUNT);
+
+    expect(result.verdict).toBe("consistent");
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.slots[0]!.data).toBe("0xaabb");
+    expect(state.getterMismatches).toEqual([]);
   });
 
   it("bounds a poisoned long bytes length and reports unreadable without unbounded storage reads", async () => {

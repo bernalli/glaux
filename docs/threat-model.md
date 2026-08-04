@@ -621,6 +621,35 @@ two would pass. The pre-birth verification therefore reads **all** namespaced
 words (the implementation pointer, the header, and the six slot words
 `BASE+1..BASE+6`) and requires every one to be zero.
 
+### 18. A hostile RPC can solicit a future-nonce execution *(narrowed client-side, not closed)*
+
+Both outbound execution paths put an RPC-supplied sequential nonce under the
+factor signatures. Direct execution signs the account's `execNonce`; ERC-4337
+signs EntryPoint's `getNonce(account, 0)` inside `userOpHash`. A hostile endpoint
+can answer with the real value plus one and retain the resulting signed payload.
+It is invalid immediately, but after one legitimate execution advances that
+nonce it becomes valid and permissionlessly submittable until `validUntil`.
+For a value-moving batch this is a delayed double spend, not merely a failed
+transaction. Direct submission exposes the blob to the RPC during preflight
+simulation, while a 4337 bundler/submission endpoint necessarily receives the
+signed UserOperation.
+
+The SDK now reads each nonce twice at one pinned block: through the getter and
+through raw storage (the packed Glaux header for direct execution; the vendored
+EntryPoint v0.7 nonce mapping for 4337). It refuses disagreement, optionally
+requires an independently obtained `expectedNonce`, and defaults to refusing a
+`validUntil` more than one hour beyond the client's local clock. The local clock
+is deliberate: asking the suspect RPC for a timestamp would add no independent
+bound.
+
+This does **not** close the residual. A fully hostile endpoint can forge getter
+and raw-storage replies consistently. The default deadline only limits how long
+the harvested future-nonce payload can become useful, and it remains replayable
+inside that hour; an integrator can explicitly widen the ceiling. The nonce is
+authenticated only when `expectedNonce` comes from a genuinely independent
+trusted state view. The normative integration rule and override warning are in
+`client-guidance.md`.
+
 ## Formerly out of scope, shipped in Phase 2
 
 The receiver hooks (ERC-721/ERC-1155), ERC-165 and ERC-1271 were v1's two

@@ -236,7 +236,13 @@ Birth follows the sequence in `GlauxDelegate.initialize` and the
   `GlauxDelegate`, never the implementation. Delegating straight to the
   implementation used to hand the account to anyone; the H-1 fix now makes that
   configuration fail-closed (`initializeAccount` reverts `NotDuringBirth`), but a
-  bricked account is still a lost one — get the address right.
+  bricked account is still a lost one — get the address right. For every retained
+  or imported blob, recover the authorization tuple's signer and require it to
+  equal `blob.account` *before* running the freshness preflight against that
+  address; also require `authorization.chainId == 0`. The SDK and Python submitter
+  enforce both checks. Without the signer binding, the preflight can inspect one
+  EOA while the transaction delegates another; without zero chain id, the blob is
+  silently unusable on every other chain.
 
 1. Generate the ephemeral birth EOA client-side.
 2. Sign the single EIP-7702 authorization tuple naming the **router**
@@ -498,6 +504,38 @@ per-branch by whichever quorum each branch still recognizes. If one branch
 installed logic that broke `applyUpdate`, that branch cannot be recovered
 at all. Plan for reconciliation to be a supervised operation, and prefer
 never needing it.
+
+## Execution nonce reads are not an RPC trust root
+
+Both direct execution and ERC-4337 sign a sequential nonce obtained from chain
+state. Treating one RPC response as authentic lets a hostile endpoint return the
+next nonce, collect a signature that is invalid today, and replay it after one
+legitimate execution advances the chain into that nonce. Direct submission
+exposes the signed batch to the endpoint during simulation; a bundler or 4337
+submission endpoint sees the signed UserOperation as part of its ordinary job.
+
+The SDK applies three layers:
+
+1. It pins the nonce getter and a raw-storage read to the same block and requires
+   agreement: the Glaux header word for direct execution, and EntryPoint v0.7's
+   `nonceSequenceNumber[account][0]` word for ERC-4337.
+2. `signExecution`, `buildUserOp`, and `signUserOp` refuse by default when
+   `validUntil` is more than one hour ahead of the client's local clock. A longer
+   operation requires an explicit `maxValidityWindowSeconds` override at every
+   signing/build boundary that enforces the policy.
+3. Integrators that have a nonce from an independent trusted view can pass
+   `expectedNonce`; disagreement fails before factor signatures are requested.
+
+Layer 1 is only a consistency check. A fully hostile endpoint can forge the
+getter and raw word consistently. Layer 2 bounds the exposure but leaves the
+operation replayable inside the accepted hour (or the integrator's explicit
+override). To authenticate the nonce, obtain `expectedNonce` from a genuinely
+independent trust path — for example a local node or a separately administered
+provider — and do not mistake two URLs operated by the same backend for
+independence. Local nonce bookkeeping is usable only if it accounts for failed
+transactions and reorgs. If no independent view exists, keep the default ceiling
+and present the residual plainly; never raise it merely to avoid refreshing an
+expired request.
 
 ## Signing a message is authorizing an action
 
