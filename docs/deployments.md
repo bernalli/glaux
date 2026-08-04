@@ -21,7 +21,7 @@
 > refusal path still reverts as designed. **The public testnet deployments below
 > (Base Sepolia, Sepolia) must be redeployed at the new impl address** before any
 > further birth — the unspent blobs signed against `0x2c271f5a…` are invalid.
-> That redeploy is still gated on a funded `GLAUX_RELAYER_KEY` (the maintainer). History
+> That redeploy is still gated on a funded `GLAUX_RELAYER_KEY`. History
 > below is kept intact, not rewritten.
 
 ## Local two-chain end-to-end (verified)

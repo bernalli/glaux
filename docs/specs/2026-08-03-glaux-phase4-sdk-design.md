@@ -1,6 +1,6 @@
 # Glaux Phase 4 — Client SDK and cross-chain gas account: design
 
-Status: approved by the maintainer 2026-08-03 (brainstorming session; model, language,
+Status: approved 2026-08-03 (brainstorming session; model, language,
 scope and design each ratified explicitly).
 Base branch: `audit/phase3-internal` (contains the Phase 3 audit fixes; not yet
 merged to `main`).
@@ -184,7 +184,7 @@ These are recorded, not lost: they queue behind v0 in the roadmap.
 
 ## 11. Open items this spec depends on
 
-- Merge of `audit/phase3-internal` to `main` (the maintainer) — this branch is cut from
+- Merge of `audit/phase3-internal` to `main` — this branch is cut from
   it, so the SDK work lands after it.
 - Testnet redeploy at impl `0x21b5D576…` (waits on a funded
   `GLAUX_RELAYER_KEY`) — the SDK e2e against public testnets needs it; the
