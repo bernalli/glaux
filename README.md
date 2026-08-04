@@ -1,7 +1,7 @@
 # Glaux
 
-*Glaux (γλαύξ) — the little owl of Minerva, stamped on Athenian tetradrachms
-to guard the coin.*
+*Glaux (γλαύξ) — the little owl the Athenians stamped on their silver
+tetradrachms to guard the coin.*
 
 Minimal, crypto-agile **EIP-7702 smart account**: one address on every EVM
 chain by construction, 2-of-3 threshold security on the operational path, and
