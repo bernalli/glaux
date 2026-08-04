@@ -500,3 +500,52 @@ describe("reconcile", () => {
     );
   });
 });
+
+describe("short-form dirty-padding reconciliation", () => {
+  it("reports unreadable for non-zero padding past the declared payload", async () => {
+    const dirtyShortHeader: Hex =
+      "0xaabb7f0000000000000000000000000000000000000000000000000000000004";
+    const client = {
+      getCode: async ({ address }: { address: Address }) =>
+        address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
+      getStorageAt: async ({ slot }: { slot: Hex }) =>
+        slot === toHex(dataHeadSlot(0), { size: 32 }) ? dirtyShortHeader : ZERO_WORD,
+      call: async () => ({ data: "0x" }),
+    } as unknown as PublicClient;
+
+    const result = await reconcile([{ name: "dirty-short-padding", client }], CANDIDATE_ACCOUNT);
+
+    // Parity invariant: this identical planted word is TypeScript `unreadable`
+    // here and Python exit 2 in the sibling reconcile test.
+    expect(result.verdict).toBe("unreadable");
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.getterMismatches).toContain(
+      "slot 0: raw factor data short-form padding is non-zero past the declared length 2",
+    );
+  });
+
+  it("reports unreadable for junk in the last padding byte, the one before the marker", async () => {
+    // Byte index 30 is the last padding byte. Without this word, shrinking the
+    // check's window to `slice(word, length, 30)` would pass every other test
+    // on both sides: every other planted word carries its junk right after the
+    // payload, so only junk parked here separates the two windows. The sibling
+    // Python test plants the identical word.
+    const junkAtLastPaddingByte: Hex =
+      "0xaabb000000000000000000000000000000000000000000000000000000007f04";
+    const client = {
+      getCode: async ({ address }: { address: Address }) =>
+        address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
+      getStorageAt: async ({ slot }: { slot: Hex }) =>
+        slot === toHex(dataHeadSlot(0), { size: 32 }) ? junkAtLastPaddingByte : ZERO_WORD,
+      call: async () => ({ data: "0x" }),
+    } as unknown as PublicClient;
+
+    const result = await reconcile([{ name: "junk-at-last-padding-byte", client }], CANDIDATE_ACCOUNT);
+
+    expect(result.verdict).toBe("unreadable");
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.getterMismatches).toContain(
+      "slot 0: raw factor data short-form padding is non-zero past the declared length 2",
+    );
+  });
+});

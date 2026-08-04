@@ -81,7 +81,11 @@ def decode_header(word: int) -> tuple[bool, int, int]:
     return bool(word & 0xFF), (word >> 8) & (2**64 - 1), (word >> 72) & (2**64 - 1)
 
 
-class FactorDataTooLong(Exception):
+class MalformedFactorData(Exception):
+    """A factor slot contains storage no Solidity ``bytes`` write can produce."""
+
+
+class FactorDataTooLong(MalformedFactorData):
     """A factor slot's length word claims more data than its form can hold.
 
     Carries the offending ``length`` so the caller can report it verbatim: it
@@ -103,6 +107,17 @@ class FactorDataTooLong(Exception):
         self.length: int = length
 
 
+class FactorDataDirtyPadding(MalformedFactorData):
+    """A short-form factor slot has non-zero bytes after its payload."""
+
+    def __init__(self, length: int) -> None:
+        super().__init__(
+            "raw factor data short-form padding is non-zero past the declared "
+            f"length {length}"
+        )
+        self.length: int = length
+
+
 def decode_bytes(read: Reader, slot: int) -> bytes:
     """Decode a Solidity ``bytes`` value at ``slot``.
 
@@ -112,7 +127,9 @@ def decode_bytes(read: Reader, slot: int) -> bytes:
 
     Raises ``FactorDataTooLong`` when a short-form marker exceeds Solidity's
     31-byte in-word limit or a long-form length exceeds
-    ``MAX_FACTOR_DATA_LENGTH``.
+    ``MAX_FACTOR_DATA_LENGTH``, and ``FactorDataDirtyPadding`` when a
+    short-form word carries non-zero bytes past its declared length. Both
+    derive from ``MalformedFactorData``, which is what callers catch.
     """
     header = read(slot)
     if header & 1 == 0:
@@ -121,7 +138,14 @@ def decode_bytes(read: Reader, slot: int) -> bytes:
         # marker, so a short-form payload can occupy at most the other 31.
         if length > SHORT_BYTES_MAX_LENGTH:
             raise FactorDataTooLong(length, short_form=True)
-        return header.to_bytes(32, "big")[:length]
+        word = header.to_bytes(32, "big")
+        # solc 0.8.28 zeroes this padding on every short-form write, including
+        # overwrites from long form, so non-zero bytes cannot be compiler-written.
+        # Byte index 31 holds the marker and is excluded; only indices from the
+        # declared length through index 30 are padding.
+        if any(word[length:SHORT_BYTES_MAX_LENGTH]):
+            raise FactorDataDirtyPadding(length)
+        return word[:length]
     length = (header - 1) // 2
     # The length word is storage an attacker can plant, and it drives the read
     # loop below: bound it BEFORE deriving the payload base or issuing a single
@@ -184,7 +208,7 @@ def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
         verifier_type = read(type_slot(i))
         try:
             data = "0x" + decode_bytes(read, data_slot(i)).hex()
-        except FactorDataTooLong as exc:
+        except MalformedFactorData as exc:
             # One slot with a planted length must not blind the other two: the
             # anomaly is itself a finding (it makes the raw side unreadable and
             # so disagree with the getters), the remaining slots still read.

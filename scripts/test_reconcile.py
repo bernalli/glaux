@@ -24,6 +24,7 @@ from reconcile import (
     SEL_IMPLEMENTATION,
     SEL_UPDATE_NONCE,
     ChainState,
+    FactorDataDirtyPadding,
     FactorDataTooLong,
     compare,
     data_slot,
@@ -276,4 +277,86 @@ def test_impossible_short_form_drives_python_parity_verdict_to_exit_two(
     assert state.getter_mismatches[0] == (
         "slot 0: raw factor data short-form length 32 exceeds Solidity's "
         "31-byte maximum"
+    )
+
+
+def test_short_form_dirty_padding_is_refused_but_its_zeroed_twin_decodes() -> None:
+    payload = bytes.fromhex("aabb")
+    dirty_word = int.from_bytes(
+        payload + b"\x7f" + b"\x00" * 28 + bytes([2 * len(payload)]), "big"
+    )
+    clean_word = int.from_bytes(
+        payload + b"\x00" * 29 + bytes([2 * len(payload)]), "big"
+    )
+
+    # solc 0.8.28 zeroes short-form padding even on overwrites, so the junk
+    # byte is impossible compiler-written state. Index 31 is the marker and is
+    # excluded: only indices from the declared length through 30 are padding.
+    with pytest.raises(FactorDataDirtyPadding) as excinfo:
+        decode_bytes(lambda _slot: dirty_word, data_slot(0))
+
+    assert excinfo.value.length == len(payload)
+    assert str(excinfo.value) == (
+        "raw factor data short-form padding is non-zero past the declared length 2"
+    )
+    assert decode_bytes(lambda _slot: clean_word, data_slot(0)) == payload
+
+
+def test_empty_short_form_with_a_non_zero_high_byte_is_refused() -> None:
+    dirty_empty_word = int.from_bytes(b"\xff" + b"\x00" * 31, "big")
+
+    with pytest.raises(FactorDataDirtyPadding) as excinfo:
+        decode_bytes(lambda _slot: dirty_empty_word, data_slot(0))
+
+    assert excinfo.value.length == 0
+    assert str(excinfo.value) == (
+        "raw factor data short-form padding is non-zero past the declared length 0"
+    )
+
+
+def test_untouched_all_zero_word_still_decodes_to_empty() -> None:
+    assert decode_bytes(lambda _slot: 0, data_slot(0)) == b""
+
+
+def test_junk_in_the_last_padding_byte_is_refused() -> None:
+    # Index 30 is the LAST padding byte, the one immediately before the marker.
+    # Without this word, shrinking the check's window to ``word[length:30]``
+    # would pass every other test on both sides: the other planted words carry
+    # their junk right after the payload, so only junk parked here can tell the
+    # two windows apart.
+    payload = bytes.fromhex("aabb")
+    word = int.from_bytes(
+        payload + b"\x00" * 28 + b"\x7f" + bytes([2 * len(payload)]), "big"
+    )
+
+    with pytest.raises(FactorDataDirtyPadding) as excinfo:
+        decode_bytes(lambda _slot: word, data_slot(0))
+
+    assert excinfo.value.length == len(payload)
+
+
+def test_dirty_short_form_padding_drives_python_parity_verdict_to_exit_two(
+    fx: dict,
+) -> None:
+    storage = {
+        int(entry["slot"], 16): int(entry["value"], 16) for entry in fx["entries"]
+    }
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    storage[data_slot(0)] = int(
+        "aabb7f0000000000000000000000000000000000000000000000000000000004", 16
+    )
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+
+    state = inspect_chain(_FakeWeb3(storage, getter_slots), "dirty-padding", ACCOUNT)
+
+    # Parity invariant: this identical planted word is Python exit 2 here and
+    # TypeScript `unreadable` in the sibling reconcile test.
+    assert compare([state], None) == 2
+    assert state.getter_mismatches[0] == (
+        "slot 0: raw factor data short-form padding is non-zero past the "
+        "declared length 2"
     )

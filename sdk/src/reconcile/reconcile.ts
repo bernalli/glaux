@@ -190,7 +190,19 @@ async function decodeRawBytes(
         unreadable: `raw factor data short-form length ${length} exceeds Solidity's ${SHORT_BYTES_MAX_LENGTH}-byte maximum`,
       };
     }
-    return { data: slice(toHex(header, { size: 32 }), 0, length) };
+    const word = toHex(header, { size: 32 });
+    const padding = slice(word, length, SHORT_BYTES_MAX_LENGTH);
+    // solc 0.8.28 zeroes this padding on every short-form write, including
+    // overwrites from long form, so non-zero bytes cannot be compiler-written.
+    // Byte index 31 holds the marker and is excluded; only indices from the
+    // declared length through index 30 are padding.
+    if (padding !== "0x" && BigInt(padding) !== 0n) {
+      return {
+        data: "0x",
+        unreadable: `raw factor data short-form padding is non-zero past the declared length ${length}`,
+      };
+    }
+    return { data: slice(word, 0, length) };
   }
   const length = Number((header - 1n) / 2n);
   if (length > MAX_FACTOR_DATA_LENGTH) {
