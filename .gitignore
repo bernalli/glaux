@@ -16,3 +16,9 @@ __pycache__/
 # committed in docs/static-analysis.md, the raw report is a build artifact.
 report.json
 aderyn-report.json
+
+# Working material, not part of the project: agent instructions, project-local
+# skills and the chat archives live only in the local checkout.
+development.md
+.local/
+chat-archives/

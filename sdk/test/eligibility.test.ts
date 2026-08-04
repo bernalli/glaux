@@ -18,8 +18,7 @@ const P256_QY = fixtures.p256Probe.qy as Hex;
 
 /**
  * Deployed bytecode of the vendored daimo `P256Verifier`, read from the forge
- * build artifact (`forge build` must have run first — see this repo's
- * development.md sandbox notes on why that has to happen outside the sandbox).
+ * build artifact (`forge build` must have run before this suite).
  * This is the SAME contract `test/oracle/P256VerifierOracle.sol` etches for
  * the Solidity suite; the SDK etches the identical bytes at the same address
  * over JSON-RPC instead of a forge cheatcode.

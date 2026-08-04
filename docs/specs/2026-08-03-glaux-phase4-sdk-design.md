@@ -173,8 +173,8 @@ aderyn). Pinned toolchain, as everywhere else in the repo.
   roadmap item): new code does not inherit the trust of reviewed code.
 - Client-guidance rules become executable: pre-birth preflight, ROUTER in the
   signing step, raw-first reconciliation ordering, signature normalization.
-- No secrets in the repo; provider keys via environment. The relayer key
-  handling follows `rules/solidity/security.md` (outside the project tree).
+- No secrets in the repo; provider keys via environment, and the relayer key is
+  never read from or written to the working tree.
 
 ## 10. Out of scope (v0)
 

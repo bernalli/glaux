@@ -21,6 +21,7 @@ verification slot.
 | [`docs/client-guidance.md`](docs/client-guidance.md) | Required reading before integrating: several residuals are closed **only** by a client-side rule |
 | [`docs/static-analysis.md`](docs/static-analysis.md) | Slither triage — every finding fixed, suppressed with reasoning, or accounted for |
 | [`docs/deployments.md`](docs/deployments.md) | Deterministic addresses and the end-to-end birth proof |
+| [`docs/development.md`](docs/development.md) | Commands, layout, CI, and the constraints that are not negotiable |
 
 ## Build and test
 
@@ -31,6 +32,8 @@ forge test
 
 Dependencies are vendored under `lib/` (see `lib/VENDORED.md`) rather than
 installed as submodules, so a fresh checkout builds offline with no fetch step.
+The Python tooling and the TypeScript SDK have their own commands and one
+non-obvious prerequisite each — see [`docs/development.md`](docs/development.md).
 
 ## Goals
 

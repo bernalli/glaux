@@ -448,8 +448,9 @@ between two local nodes.
 The blob generated for this purpose was submitted to Base Sepolia first, then
 to Sepolia, byte-for-byte identical — `sha256
 fded42f5c70bc48805311422cdd65b56ca2faf2dc1041f666276288e7da64ae8` before and
-after both submissions. It lives at
-`~/.local/state/glaux-birth-blob-2026-07-31.json`, outside the repository.
+after both submissions. It is kept outside the repository, in the operator's
+own storage: a birth blob carries a signed authorization and does not belong
+in version control.
 Before either submission the account address was empty on both chains
 (`eth_getCode` `0x`, nonce `0`).
 

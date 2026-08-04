@@ -12,9 +12,9 @@ The four deployed sources (`src/GlauxDelegate.sol`, `src/GlauxAccount.sol`,
 `src/lib/ImplementationCheck.sol`, ~960 LOC) were audited by two reviewers at
 maximum tier, **blind to each other**, on the same adversarial mandate:
 
-- **Reviewer A** (`independent-reviewer`, security-review role; timed out at `maximum effort`,
-  auto-retried and completed at `high`).
-- **Reviewer B** (Reviewer B max, read-only).
+- **Reviewer A** — an independent code-review agent at its highest reasoning tier.
+- **Reviewer B** — a second agent, from a different vendor, read-only, also at
+  maximum tier.
 
 The mandate covered: 2-of-3 threshold bypass, signature malleability/reuse,
 cross-chain replay via nonce, storage/transient slot collisions,
@@ -38,7 +38,7 @@ as *router + implementation reached through the router*, and never modelled the
 adversarial EIP-7702 configuration where an EOA delegates **directly to the
 implementation**, bypassing the router. That is exactly H-1.
 
-The main loop (Reviewer B) then reproduced H-1 and H-2 independently by running the
+The orchestrating reviewer then reproduced H-1 and H-2 independently by running the
 PoC tests against the real code in an isolated copy: **5 passed, 0 failed**,
 including `test_poc_directDelegationToImplementationIsSeizableByAnyone`, which
 drains the victim's full balance to the attacker. The repository was not
@@ -93,9 +93,9 @@ and `GlauxStorage.sol:44-45` already declares it visible to every
 implementation. `initializeAccount` must `tload` it and revert when it is 0 —
 i.e. refuse to run outside a router-mediated birth. Verified observable from the
 implementation (`test_poc_birthGuardIsObservableFromTheImplementation`). This is
-the second half of the repo's own rule in `rules/solidity/security.md`: "protect
+the second half of the standard rule for upgradeable systems: protect
 init/upgrade with state **and** with a check on the logic contract itself, so the
-logic cannot be initialized outside the proxy" — currently only half-satisfied.
+logic cannot be initialized outside the proxy — currently only half-satisfied.
 
 Changing `src/` moves the implementation code hash and CREATE2 address and
 invalidates every unspent birth/update blob → the two-chain proof and the
@@ -187,7 +187,7 @@ narrower gap — no test today rotates a factor and then re-checks the 4337 or
 `isValidSignature` — the fund-moving channels — have no stateful coverage.
 Reviewer A's 256×128 campaign passing says nothing about those channels because the
 handler never drives them. This is precisely the "single-channel handler gives
-false confidence" case in `rules/solidity/testing.md`. Extend the handler and
+false confidence" case. Extend the handler and
 set `fail_on_revert = true`. Test-only, no bytecode impact.
 
 ### Info (no fix required, worth recording)
@@ -200,7 +200,7 @@ set `fail_on_revert = true`. Test-only, no bytecode impact.
   validation — ERC-7562 compliant, but adds two frames and a bundler-policy
   dependency an in-memory bounds-checked decoder would avoid.
 - `MAX_SIGNATURE_BLOB_LENGTH = 576` (`:44`) fits secp256k1/P-256 but is
-  incompatible with the PQ ambition stated in the project development.md; lives in the
+  incompatible with the PQ ambition stated in the design spec; lives in the
   upgradeable half, so not permanent — worth writing down.
 - The `_validateSlot` → `_requirePossession` order (`:70-71`, `:203-204`) is
   load-bearing (the raw-hash proof is safe only because the digest has no

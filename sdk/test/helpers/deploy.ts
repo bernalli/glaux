@@ -27,9 +27,9 @@ interface ForgeArtifact {
 }
 
 /**
- * Reads a contract's creation bytecode from a `forge build` output directory
- * (this repo's development.md sandbox notes explain why that build has to happen
- * outside the sandbox). Mirrors the artifact-reading pattern already used by
+ * Reads a contract's creation bytecode from a `forge build` output directory,
+ * so `forge build` must have run before this suite. Mirrors the
+ * artifact-reading pattern already used by
  * `sdk/test/eligibility.test.ts`'s `loadP256OracleBytecode`. `outDir`
  * defaults to the project's tracked `out/`; `deployVerifyingPaymaster` below
  * passes an out-of-tree one instead (see {@link compileVerifyingPaymaster}).
