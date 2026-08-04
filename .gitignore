@@ -5,7 +5,9 @@
 node_modules/
 out/
 cache/
-broadcast/**/dry-run/
+# Foundry broadcast records are operator-local run artifacts: the canonical
+# deployment record, with explorer links, lives in docs/deployments.md.
+broadcast/
 __pycache__/
 *.pyc
 
