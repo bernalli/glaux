@@ -93,7 +93,12 @@ function assertCanonicalBlob(blob: BirthBlob): void {
   if (blob.authorization.address.toLowerCase() !== blob.router.toLowerCase()) {
     throw new InvalidBirthBlobError("authorization target");
   }
-  if (blob.expectedCodeHash !== IMPL_CODE_HASH) throw new ImplementationCodeHashMismatchError(blob.expectedCodeHash);
+  // Caller-supplied hex, compared case-insensitively like the addresses above:
+  // `keccak256` and the canonical constant are lower-case, but an upper-case
+  // hash off the wire names the same 32 bytes and must not be refused.
+  if (blob.expectedCodeHash.toLowerCase() !== IMPL_CODE_HASH) {
+    throw new ImplementationCodeHashMismatchError(blob.expectedCodeHash);
+  }
 }
 
 async function assertLiveImplementationHash(client: PublicClient, blob: BirthBlob): Promise<void> {
@@ -105,7 +110,7 @@ async function assertLiveImplementationHash(client: PublicClient, blob: BirthBlo
   }
   if (code === undefined || code === "0x") throw new ImplementationNotDeployedError(IMPL);
   const liveHash = keccak256(code);
-  if (liveHash !== IMPL_CODE_HASH || liveHash !== blob.expectedCodeHash) {
+  if (liveHash !== IMPL_CODE_HASH || liveHash !== blob.expectedCodeHash.toLowerCase()) {
     throw new ImplementationCodeHashMismatchError(liveHash);
   }
 }

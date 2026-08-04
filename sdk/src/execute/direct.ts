@@ -196,11 +196,16 @@ export async function readChainId(client: PublicClient): Promise<number> {
   }
 }
 
-/** Reads the endpoint's chain id and compares it with the caller's selection. */
+/**
+ * Reads the endpoint's chain id and compares it with the caller's selection.
+ * Returns the CALLER's value, never the endpoint's: the two are equal by the
+ * time this returns, but nothing an RPC said may reach a signed digest, and a
+ * later reader of `signExecution` must not have to re-derive that they are.
+ */
 export async function assertExpectedChainId(client: PublicClient, expectedChainId: number): Promise<number> {
   const actual = await readChainId(client);
   if (actual !== expectedChainId) throw new ChainIdMismatchError(expectedChainId, actual);
-  return actual;
+  return expectedChainId;
 }
 
 async function readExecutionNonce(client: PublicClient, account: Address, blockNumber: bigint): Promise<bigint> {

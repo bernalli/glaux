@@ -111,7 +111,19 @@ async function validatePossessionProof(slot: FactorSlot, proof: Hex, index: numb
       if (recovered !== expected) throw new BirthPossessionProofError(index);
       return;
     }
-    if (size(proof) !== 64 || !p256.verify(hexToBytes(proof), hexToBytes(digest), hexToBytes(`0x04${slot.data.slice(2)}`), { prehash: false })) {
+    // `lowS: false` mirrors the contract, which is NOT symmetric across the two
+    // curves: `_verifySecp256k1` rejects `s > n/2` itself (checked above), while
+    // `_verifyP256` hands `r, s` straight to the RIP-7212/EIP-7951 precompile,
+    // which accepts either form. `@noble/curves` defaults to rejecting high-`s`,
+    // so leaving the default here would refuse proofs the chain accepts — and
+    // the primary production factor, a Secure Enclave, does not normalise `s`.
+    if (
+      size(proof) !== 64 ||
+      !p256.verify(hexToBytes(proof), hexToBytes(digest), hexToBytes(`0x04${slot.data.slice(2)}`), {
+        prehash: false,
+        lowS: false,
+      })
+    ) {
       throw new BirthPossessionProofError(index);
     }
   } catch (error) {

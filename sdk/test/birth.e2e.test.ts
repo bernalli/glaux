@@ -2,7 +2,18 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
+import {
+  bytesToBigInt,
+  encodeAbiParameters,
+  hexToBytes,
+  keccak256,
+  stringToBytes,
+  toHex,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
+import { p256 } from "@noble/curves/nist.js";
 import { ROUTER, designator } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { preflightFreshAccount } from "../src/birth/preflight.js";
@@ -15,6 +26,8 @@ import {
 } from "../src/errors.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
+import type { Signer } from "../src/signers/signer.js";
+import { VERIFIER_P256 } from "../src/core/types.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import { deployCanonical } from "./helpers/deploy.js";
 
@@ -57,6 +70,41 @@ function loadP256OracleBytecode(): Hex {
     deployedBytecode: { object: string };
   };
   return artifact.deployedBytecode.object as Hex;
+}
+
+/** Order of the P-256 curve, from SEC 2 §2.4.2 — used to flip a signature's `s`. */
+const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+
+/**
+ * A P-256 factor that emits the HIGH-`s` form of every signature, the way a
+ * Secure Enclave or a stock HSM does: ECDSA leaves `s` and `n - s` equally
+ * valid, and `SignatureVerify._verifyP256` hands both straight to the
+ * RIP-7212/EIP-7951 precompile, which — unlike `_verifySecp256k1` — imposes
+ * no low-`s` rule. The SDK's local checks must accept exactly what the
+ * contract accepts: rejecting this signer would make the PRIMARY production
+ * factor unable to birth an account roughly half the time.
+ */
+class HighSP256Signer implements Signer {
+  readonly verifierType = VERIFIER_P256;
+  private readonly inner: LocalP256Signer;
+
+  constructor(private readonly privateKey: Hex) {
+    this.inner = new LocalP256Signer(privateKey);
+  }
+
+  keyData(): Hex {
+    return this.inner.keyData();
+  }
+
+  async sign(digest: Hex): Promise<Hex> {
+    const signature = p256.sign(hexToBytes(digest), hexToBytes(this.privateKey), {
+      lowS: true,
+      prehash: false,
+    });
+    const r = bytesToBigInt(signature.slice(0, 32));
+    const highS = P256_N - bytesToBigInt(signature.slice(32, 64));
+    return encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [r, highS]);
+  }
 }
 
 const ACCOUNT_ABI = [
@@ -151,6 +199,36 @@ describe("birth e2e", () => {
       // legitimate retry.
       await expect(preflightFreshAccount(client, blob.account)).rejects.toThrow(BirthPreflightError);
       await expect(submitBirth(client, DEPLOYER_PK, blob, 31337)).rejects.toThrow(BirthPreflightError);
+    },
+    90_000,
+  );
+
+  it(
+    "births an account whose P-256 factor signs its possession proof with a high-s signature",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      await test.setCode({ address: P256_VERIFIER, bytecode: loadP256OracleBytecode() });
+      await deployCanonical(client, DEPLOYER_PK);
+
+      const paper = new LocalSecp256k1Signer(PAPER_PK);
+      const device = new HighSP256Signer(DEVICE_PK);
+      const cloud = new LocalSecp256k1Signer(CLOUD_PK);
+
+      const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
+      await submitBirth(client, DEPLOYER_PK, blob, 31337);
+
+      // The contract verified the same high-s proof against the real
+      // precompile oracle and installed the slot: the local check and the
+      // on-chain check agree.
+      const [verifierType, data] = await client.readContract({
+        address: blob.account,
+        abi: ACCOUNT_ABI,
+        functionName: "getSlot",
+        args: [1],
+      });
+      expect(verifierType).toBe(VERIFIER_P256);
+      expect(data.toLowerCase()).toBe(device.keyData().toLowerCase());
     },
     90_000,
   );
