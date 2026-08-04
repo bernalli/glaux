@@ -10,15 +10,13 @@ __pycache__/
 *.pyc
 
 .venv/
-.local/*.local.md
 
 # Aderyn writes its report next to the project; the triage that matters is
 # committed in docs/static-analysis.md, the raw report is a build artifact.
 report.json
 aderyn-report.json
 
-# Working material, not part of the project: agent instructions, project-local
-# skills and the chat archives live only in the local checkout.
-development.md
-.local/
+# Editor and working notes stay in the local checkout. Contributors who keep
+# such files should add their own patterns to .git/info/exclude rather than
+# here: what belongs in this file is what every clone must ignore.
 chat-archives/

@@ -6,9 +6,9 @@
 # chain binding), runs reconcile.py, and re-proves the refusal on a chain whose
 # P-256 verifier is removed. Prints every value the deployments.md tables need.
 #
-# MUST run outside the sandboxed environment (anvil/forge/cast need network and
-# unrestricted fs). Test keys only — anvil defaults + the public P-256 fixture
-# vector. Never reuse this configuration for a real account.
+# MUST run without a restrictive sandbox: anvil, forge and cast need network
+# access and an unrestricted filesystem. Test keys only — anvil defaults + the
+# public P-256 fixture vector. Never reuse this configuration for a real account.
 #
 # Exit: 0 = every check passed; non-zero = the first failed check, with a
 # message naming it. The ROUTER MOVING is a hard stop: it means the immutable
