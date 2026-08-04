@@ -44,6 +44,9 @@ DESIGNATOR_PREFIX: bytes = bytes.fromhex("ef0100")
 # ``SignatureVerify`` accepts only 32-byte secp256k1 key data or 64-byte
 # P-256 coordinates, so a contract-born factor can never write more than 64.
 MAX_FACTOR_DATA_LENGTH: int = 64
+# Solidity's short ``bytes`` header keeps its low byte for ``2 * len``, so
+# only the other 31 bytes can hold an in-word payload.
+SHORT_BYTES_MAX_LENGTH: int = 31
 
 SEL_UPDATE_NONCE: bytes = keccak(text="updateNonce()")[:4]
 SEL_EXEC_NONCE: bytes = keccak(text="execNonce()")[:4]
@@ -79,17 +82,24 @@ def decode_header(word: int) -> tuple[bool, int, int]:
 
 
 class FactorDataTooLong(Exception):
-    """A factor slot's length word claims more data than a factor can hold.
+    """A factor slot's length word claims more data than its form can hold.
 
     Carries the offending ``length`` so the caller can report it verbatim: it
     is attacker-plantable evidence about the account, not a value to act on.
     """
 
-    def __init__(self, length: int) -> None:
-        super().__init__(
-            f"raw factor data length {length} exceeds Glaux's "
-            f"{MAX_FACTOR_DATA_LENGTH}-byte maximum"
-        )
+    def __init__(self, length: int, *, short_form: bool = False) -> None:
+        if short_form:
+            message = (
+                f"raw factor data short-form length {length} exceeds Solidity's "
+                f"{SHORT_BYTES_MAX_LENGTH}-byte maximum"
+            )
+        else:
+            message = (
+                f"raw factor data length {length} exceeds Glaux's "
+                f"{MAX_FACTOR_DATA_LENGTH}-byte maximum"
+            )
+        super().__init__(message)
         self.length: int = length
 
 
@@ -100,12 +110,17 @@ def decode_bytes(read: Reader, slot: int) -> bytes:
     low byte (even). Long form: ``2 * len + 1`` in the header word (odd),
     payload words starting at ``keccak256(slot)``.
 
-    Raises ``FactorDataTooLong`` when the long-form length exceeds
+    Raises ``FactorDataTooLong`` when a short-form marker exceeds Solidity's
+    31-byte in-word limit or a long-form length exceeds
     ``MAX_FACTOR_DATA_LENGTH``.
     """
     header = read(slot)
     if header & 1 == 0:
         length = (header & 0xFF) // 2
+        # Solidity leaves one byte of this 32-byte word for the even length
+        # marker, so a short-form payload can occupy at most the other 31.
+        if length > SHORT_BYTES_MAX_LENGTH:
+            raise FactorDataTooLong(length, short_form=True)
         return header.to_bytes(32, "big")[:length]
     length = (header - 1) // 2
     # The length word is storage an attacker can plant, and it drives the read

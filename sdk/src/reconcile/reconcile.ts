@@ -79,6 +79,9 @@ const UINT64_MAX = (1n << 64n) - 1n;
 // `SignatureVerify` accepts only 32-byte secp256k1 key data or 64-byte
 // P-256 coordinates, so a contract-born factor can never write more than 64.
 const MAX_FACTOR_DATA_LENGTH = 64;
+// Solidity's short `bytes` header keeps its low byte for `2 * len`, so only
+// the other 31 bytes can hold an in-word payload.
+const SHORT_BYTES_MAX_LENGTH = 31;
 
 const UPDATE_NONCE_SELECTOR = keccak256(stringToBytes("updateNonce()")).slice(0, 10) as Hex;
 const EXEC_NONCE_SELECTOR = keccak256(stringToBytes("execNonce()")).slice(0, 10) as Hex;
@@ -179,6 +182,14 @@ async function decodeRawBytes(
   const header = await readWord(client, chain, account, slot);
   if ((header & 1n) === 0n) {
     const length = Number((header & 0xffn) / 2n);
+    // Solidity leaves one byte of this 32-byte word for the even length
+    // marker, so a short-form payload can occupy at most the other 31.
+    if (length > SHORT_BYTES_MAX_LENGTH) {
+      return {
+        data: "0x",
+        unreadable: `raw factor data short-form length ${length} exceeds Solidity's ${SHORT_BYTES_MAX_LENGTH}-byte maximum`,
+      };
+    }
     return { data: slice(toHex(header, { size: 32 }), 0, length) };
   }
   const length = Number((header - 1n) / 2n);

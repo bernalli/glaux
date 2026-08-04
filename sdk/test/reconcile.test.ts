@@ -16,10 +16,17 @@ import { deployCanonical } from "./helpers/deploy.js";
 
 /**
  * Cross-checked TypeScript port of `scripts/reconcile.py`. Every verdict this
- * suite asserts is also asserted against the REAL Python tool, run as a
- * subprocess against the same live anvil endpoints — the point of a port is
- * that both sides agree on the same chain state, not that the TypeScript side
- * merely looks plausible on its own.
+ * suite asserts OVER A LIVE CHAIN is also asserted against the REAL Python
+ * tool, run as a subprocess against the same anvil endpoints — the point of a
+ * port is that both sides agree on the same chain state, not that the
+ * TypeScript side merely looks plausible on its own.
+ *
+ * The tests driven by a mock client cannot do that (there is no URL to hand a
+ * subprocess), so for those the parity is pinned differently: the planted word
+ * and the verbatim finding string are duplicated in the sibling Python test,
+ * and each side's test goes red if its own tool drifts. That is convention
+ * enforced by two tests, not by one co-execution — weaker, and named here so
+ * the difference is not mistaken for the live cross-check above.
  */
 
 const P256_VERIFIER: Address = "0x0000000000000000000000000000000000000100";
@@ -427,6 +434,53 @@ describe("reconcile", () => {
     expect(storageReads).toBeLessThanOrEqual(8);
     const [state] = result.perChain as [ActiveChainState];
     expect(state.getterMismatches).toContainEqual(expect.stringContaining("raw factor data length"));
+  });
+
+  it("reports unreadable for a planted short-form length above Solidity's maximum", async () => {
+    const impossibleShortHeader = toHex(2n * 32n, { size: 32 });
+    const client = {
+      getCode: async ({ address }: { address: Address }) =>
+        address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
+      getStorageAt: async ({ slot }: { slot: Hex }) =>
+        slot === toHex(dataHeadSlot(0), { size: 32 }) ? impossibleShortHeader : ZERO_WORD,
+      call: async () => ({ data: "0x" }),
+    } as unknown as PublicClient;
+
+    const result = await reconcile([{ name: "impossible-short-length", client }], CANDIDATE_ACCOUNT);
+
+    // Parity invariant: planted header 0x40 is TypeScript `unreadable` here
+    // and Python exit 2 in the sibling reconcile test.
+    expect(result.verdict).toBe("unreadable");
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.getterMismatches).toContain(
+      "slot 0: raw factor data short-form length 32 exceeds Solidity's 31-byte maximum",
+    );
+  });
+
+  it("still decodes the largest legal short form, so the refusal is not off by one", async () => {
+    // 31 payload bytes followed by Solidity's 2*31 marker: the last word the
+    // short form can legally carry. Without this, an off-by-one in THIS port
+    // alone (`>=` for `>`) would keep every other test green and diverge from
+    // the Python oracle only on a planted 31-byte marker — the sibling Python
+    // test pins the same boundary from the other side.
+    const legalShortHeader = `0x${"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}3e` as Hex;
+    const client = {
+      getCode: async ({ address }: { address: Address }) =>
+        address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? designator() : "0x00",
+      getStorageAt: async ({ slot }: { slot: Hex }) =>
+        slot === toHex(dataHeadSlot(0), { size: 32 }) ? legalShortHeader : ZERO_WORD,
+      call: async () => ({ data: "0x" }),
+    } as unknown as PublicClient;
+
+    const result = await reconcile([{ name: "legal-short-length", client }], CANDIDATE_ACCOUNT);
+
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.getterMismatches).not.toContainEqual(
+      expect.stringContaining("short-form length"),
+    );
+    expect(state.slots[0]?.data).toBe(
+      "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    );
   });
 
   it.each([

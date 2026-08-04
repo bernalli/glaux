@@ -225,3 +225,55 @@ def test_inspect_chain_orders_raw_anomaly_before_getter_comparison(fx: dict) -> 
         fx["expected"]["slots"][2]["data"],
     )
     assert compare([state], None) == 2
+
+
+@pytest.mark.parametrize(("marker", "length"), [(0x40, 32), (0xFE, 127)])
+def test_impossible_short_form_lengths_are_refused(marker: int, length: int) -> None:
+    # Solidity stores the even 2*len marker in the final byte, leaving only 31
+    # bytes in the header word for a short-form payload.
+    with pytest.raises(FactorDataTooLong) as excinfo:
+        decode_bytes(lambda _slot: marker, data_slot(0))
+
+    assert excinfo.value.length == length
+    assert str(excinfo.value) == (
+        f"raw factor data short-form length {length} exceeds Solidity's 31-byte maximum"
+    )
+
+
+def test_largest_legal_short_form_still_decodes_all_thirty_one_bytes() -> None:
+    # This fixed word is 31 payload bytes followed by Solidity's 2*31 marker;
+    # keeping the expected bytes independent avoids duplicating decoder logic.
+    word = int(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f3e",
+        16,
+    )
+    expected = bytes.fromhex(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    )
+
+    assert decode_bytes(lambda _slot: word, data_slot(0)) == expected
+
+
+def test_impossible_short_form_drives_python_parity_verdict_to_exit_two(
+    fx: dict,
+) -> None:
+    storage = {
+        int(entry["slot"], 16): int(entry["value"], 16) for entry in fx["entries"]
+    }
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    storage[data_slot(0)] = 0x40  # even marker 2*32: impossible Solidity short form
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+
+    state = inspect_chain(_FakeWeb3(storage, getter_slots), "parity", ACCOUNT)
+
+    # Parity invariant: planted header 0x40 is Python exit 2 here and
+    # TypeScript `unreadable` in the sibling reconcile test.
+    assert compare([state], None) == 2
+    assert state.getter_mismatches[0] == (
+        "slot 0: raw factor data short-form length 32 exceeds Solidity's "
+        "31-byte maximum"
+    )
