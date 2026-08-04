@@ -221,6 +221,41 @@ describe("execute direct path fail-closed guards", () => {
     expect(signaturesRequested).toBe(0);
   });
 
+  it("signs past the one-hour default when the caller explicitly widens the validity window", async () => {
+    const stub = signingStubClient(paper, device, cloud);
+    const validUntil = Math.floor(Date.now() / 1000) + DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS * 2;
+
+    const signed = await signExecution({
+      account: STUB_ACCOUNT,
+      client: stub.client,
+      expectedChainId: 31337,
+      calls,
+      validUntil,
+      maxValidityWindowSeconds: DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS * 4,
+      signers: [paper, cloud],
+    });
+
+    // The widened deadline reaches the signed material unchanged: an override
+    // that were ignored (or the ceiling nailed to one hour) would fail here,
+    // where every other validity-window test only ever asserts a refusal.
+    expect(signed.validUntil).toBe(validUntil);
+    expect(signed.sigs.map((sig) => sig.slotIndex)).toEqual([0, 2]);
+
+    // Non-vacuity: the very same deadline is refused without the override, so
+    // the acceptance above is the override's doing and not a deadline that
+    // happened to sit inside the default ceiling anyway.
+    await expect(
+      signExecution({
+        account: STUB_ACCOUNT,
+        client: stub.client,
+        expectedChainId: 31337,
+        calls,
+        validUntil,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toBeInstanceOf(ExecutionValidityWindowError);
+  });
+
   it("rejects a future execNonce lie when the same-block raw header still reports the current nonce", async () => {
     const stub = signingStubClient(paper, device, cloud, { getterNonce: 1n, rawNonce: 0n });
 
