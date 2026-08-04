@@ -18,11 +18,11 @@
 > | born account (local proof) | `0xFb0fCAc39E521AE4b1333983Dd178670B934EE3E` | `0xB17d5518…` |
 >
 > `reconcile.py` across both local chains: `verdict: consistent (exit 0)`; the
-> refusal path still reverts as designed. **The public testnet deployments below
-> (Base Sepolia, Sepolia) must be redeployed at the new impl address** before any
-> further birth — the unspent blobs signed against `0x2c271f5a…` are invalid.
-> That redeploy is still gated on a funded `GLAUX_RELAYER_KEY`. History
-> below is kept intact, not rewritten.
+> refusal path still reverts as designed. **The public testnets were redeployed at
+> the new implementation on 2026-08-04** — see *Public testnet — redeploy at the
+> audited implementation* below, which supersedes the two 2026-07-31 sections for
+> every address except the router. Blobs signed against `0x2c271f5a…` remain
+> invalid and always will be. History below is kept intact, not rewritten.
 
 ## Local two-chain end-to-end (verified)
 
@@ -314,8 +314,18 @@ they are rejected. The first birth is what settles it.
 
 ### The one remaining blocker
 
+> **Resolved on 2026-08-04** — see *Public testnet — redeploy at the audited
+> implementation*. The commands below are kept as the record of what was blocked
+> and how it was meant to run; the current procedure signs from an encrypted
+> keystore (`--account`) rather than exporting the key, which keeps it out of
+> `cache/` entirely.
+
 `GLAUX_RELAYER_KEY` — a private key funded with testnet ETH on both networks. Only the
-repository owner can obtain it, from the faucets.
+repository owner can obtain it, from the faucets. Note that the faucets which drip the
+larger amounts require the address to already hold mainnet ETH, which a freshly created
+relayer key does not: a proof-of-work faucet covers Sepolia without that precondition,
+and Base Sepolia is then reached through the canonical OP Stack bridge rather than a
+faucet at all.
 
 The other two variables are no longer blockers *for the read-only work*, and that is a
 weaker claim than it may look. The public keyless endpoints above answered every check in
@@ -490,3 +500,76 @@ public chains.
 deploy — Foundry writes the private key into it in the clear, exactly as it did
 for chain 84532. A grep for the key across the working tree comes back empty;
 what remains under `cache/` holds RPC URLs only.
+
+## Public testnet — redeploy at the audited implementation (2026-08-04)
+
+This supersedes the two 2026-07-31 sections for every value except the router.
+The implementation changed twice since then — the Phase 3 audit fixes (H-1, L-1)
+and nothing after them, since the Phase 4 audit touched only client code — so a
+redeploy was required before any further birth: blobs signed against the old code
+hash can never be spent.
+
+| Artifact | Value |
+|---|---|
+| `GlauxAccount` (impl) | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` |
+| impl runtime code hash | `0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106` |
+| `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (unchanged since 2026-07-31) |
+| born account | `0x327b2D9932Cdf39Ebef54f897A81a8137dC0c126` |
+
+Both chains carry the same implementation code hash, and it equals the constant
+the SDK ships (`sdk/src/core/constants.ts`). `glauxCompatibilityId()` returns
+`0xdd5cd798af8efed5c85fdc5a2caff400e8b8417a088802ad42f95c6566f4ca50` on both.
+
+### The deploy script had to learn what already exists
+
+The first attempt deployed nothing at all, and the reason generalises. The router
+is immutable: its bytecode never changes, so its CREATE2 address is the same on
+every chain and stays occupied once reached. The implementation does change
+between versions and therefore lands on a fresh address. A script that creates
+both unconditionally hits `CreateCollision` on the router, and that revert takes
+the whole run down — including the implementation that was about to be deployed
+successfully. **On any chain the project has already touched, a redeploy could not
+work.** `script/Deploy.s.sol` now predicts both CREATE2 addresses, deploys only
+what is missing, and asserts that what it deployed landed where predicted.
+
+Diagnosed by simulation, before spending anything: `forge script` without
+`--broadcast` reproduced the collision, and the relayer's transaction count had
+not moved on either chain.
+
+### Deployment and birth
+
+| | Sepolia (11155111) | Base Sepolia (84532) |
+|---|---|---|
+| deploy tx | [`0x56aa174c…`](https://sepolia.etherscan.io/tx/0x56aa174cd4b82ff711e99c089a6fc20b5fd6480f5294f3784a704f4b32c7ba8f) | [`0x66e493db…`](https://sepolia.basescan.org/tx/0x66e493db4bdc1a20a407fb9d3e94a05be44829762859a6c51b93188684bdf446) |
+| deploy gas | 3,110,996 | 3,110,996 |
+| birth tx (type 4) | [`0xabd85aa8…`](https://sepolia.etherscan.io/tx/0xabd85aa8f17ff25e714fbbb77f2f3d922b4b2f17a60a02646644e9eaab3ffcb5) | [`0xf7b1d79a…`](https://sepolia.basescan.org/tx/0xf7b1d79aa8ea4e7911733b351f743653fe6ccd6312db800921f8a19988280d55) |
+| birth gas | 376,704 | 376,704 |
+
+Both figures are identical **to the unit** across two independent chains, as they
+were in July: the same bytecode executing the same path costs the same everywhere.
+
+One blob was generated and submitted unmodified to both chains. Post-birth state,
+read back from each network and compared:
+
+- code is `0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9` — the delegation
+  indicator pointing at the router — on both;
+- `implementation()` returns the impl above on both;
+- `updateNonce()` is `0` on both;
+- the shared ERC-1967 slot is untouched on both, so nothing leaks to whatever
+  wallet the account is re-delegated to next;
+- all three factor slots match byte for byte.
+
+`scripts/reconcile.py` across the two endpoints returns **`verdict: consistent
+(exit 0)`**, reading raw storage first and the getters second.
+
+### Signing from a keystore, not from the environment
+
+The July runs passed the relayer key as `--private-key`, which is why Foundry
+wrote it in the clear into `cache/` and the file had to be deleted afterwards.
+This run used `--account <name>` against an encrypted keystore instead: the key
+never entered the environment, the command line, or the shell history, and a
+search for private-key material under `cache/` after the deploy comes back empty
+— there is nothing to clean up. Prefer this form.
+
+The factor keys are again the **publicly known test vectors**. This account is
+controllable by anyone and must never hold anything.
