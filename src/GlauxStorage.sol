@@ -81,6 +81,11 @@ library GlauxStorage {
     ///      it carries no `chainId` field, so birth and update blobs keep replaying
     ///      on every chain, which is the whole design.
     function eip191(address validator, bytes32 structHash) internal pure returns (bytes32) {
+        // Every operand is fixed width (1+1+20+32 = 54 bytes), so no two distinct
+        // tuples can encode alike and a packed collision is not representable. The
+        // layout is the EIP-191 v0x00 wire format, not ours to change: `abi.encode`
+        // here would invalidate every unspent birth and update blob.
+        // aderyn-fp-next-line
         return keccak256(abi.encodePacked(hex"19", hex"00", validator, structHash));
     }
     bytes32 internal constant COMPAT_ID = keccak256("GLAUX_ACCOUNT_V1");
@@ -107,6 +112,7 @@ library GlauxStorage {
 
 error AlreadyInitialized();
 error NotInitialized();
+error NotDuringBirth();
 error InvalidImplementation();
 error InvalidBirthSignature();
 error BadUpdateNonce(uint64 expected, uint64 got);

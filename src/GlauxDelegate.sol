@@ -14,6 +14,13 @@ import {SignatureVerify} from "./lib/SignatureVerify.sol";
 import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 
 /// @notice Immutable EIP-7702 delegation target. Frozen forever: keep minimal.
+/// @dev Aderyn reports an Ether lock here. Under delegation `receive()` runs with
+///      `address(this)` set to the ACCOUNT, so ETH accrues to the account and is
+///      spendable through the 2-of-3 path; dropping it would send plain transfers
+///      into `fallback()` on a 2300-gas stipend. Only ETH sent directly to the
+///      router's own address is stuck, and a withdraw function on a contract that
+///      is frozen forever would be the worse trade. See docs/static-analysis.md.
+// aderyn-fp-next-line
 contract GlauxDelegate {
     /// @dev The router's own address, captured at construction — inside `initialize`
     ///      `address(this)` is the ACCOUNT, because the router is reached through the
@@ -109,6 +116,11 @@ contract GlauxDelegate {
             returndatacopy(0, 0, returndatasize())
             switch ok
             case 0 { revert(0, returndatasize()) }
+            // Forwarding the delegatecall's raw returndata and halting IS the proxy
+            // idiom; "nothing executes after it" is the intended semantics, and
+            // there is nothing after it. High-level Solidity cannot express this
+            // without corrupting the returned data.
+            // aderyn-fp-next-line
             default { return(0, returndatasize()) }
         }
     }

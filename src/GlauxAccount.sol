@@ -9,6 +9,7 @@ import {
     Call,
     AlreadyInitialized,
     NotInitialized,
+    NotDuringBirth,
     BadUpdateNonce,
     CallFailed,
     InvalidAction,
@@ -55,7 +56,20 @@ contract GlauxAccount is IERC721Receiver, IERC1155Receiver, IERC1271 {
         GlauxStorage.layout().initialized = true;
     }
 
+    /// @dev `initializeAccount` is reachable only by delegatecall from the router
+    ///      during birth, which sets `DELEGATE_BIRTH_GUARD_SLOT` for the duration of
+    ///      that delegatecall. Without this check, an EOA whose EIP-7702 delegation
+    ///      points DIRECTLY at the implementation (skipping the router) would be an
+    ///      unclaimed account that `l.initialized == false` and `IMPL_SLOT == 0` both
+    ///      describe as fresh — anyone could call it and install their own keys,
+    ///      then drain the account (finding H-1).
     function initializeAccount(bytes calldata initData) external {
+        bytes32 birthGuard = GlauxStorage.DELEGATE_BIRTH_GUARD_SLOT;
+        uint256 inBirth;
+        assembly {
+            inBirth := tload(birthGuard)
+        }
+        if (inBirth == 0) revert NotDuringBirth();
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (l.initialized) revert AlreadyInitialized();
         bytes32 implementationSlot = GlauxStorage.IMPL_SLOT;
@@ -176,7 +190,11 @@ contract GlauxAccount is IERC721Receiver, IERC1155Receiver, IERC1271 {
         }
     }
 
+    /// @dev Converges on the same reentrancy guard as `_execute`: without this check,
+    ///      a callee reached by a signed batch mid-`_execute` could call back in and
+    ///      land a quorum-signed update in the middle of that batch (finding L-1).
     function applyUpdate(Update calldata u, SlotSig[2] calldata sigs) external {
+        if (executing) revert ReentrantCall();
         GlauxStorage.Layout storage l = GlauxStorage.layout();
         if (!l.initialized) revert NotInitialized();
         if (u.nonce != l.updateNonce + 1) revert BadUpdateNonce(l.updateNonce + 1, u.nonce);
@@ -203,6 +221,10 @@ contract GlauxAccount is IERC721Receiver, IERC1155Receiver, IERC1271 {
             _validateSlot(s);
             _requirePossession(index, s, proof);
             for (uint8 i = 0; i < 3; i++) {
+                // `_isDuplicateSlot` is `pure` and only compares: the memory copy it
+                // receives is meant to be a copy, nothing is written through it. The
+                // real write is `l.slots[index] = s` two lines below.
+                // aderyn-fp-next-line
                 if (i != index && _isDuplicateSlot(s, l.slots[i])) revert DuplicateSlot();
             }
             l.slots[index] = s;

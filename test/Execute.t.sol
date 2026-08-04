@@ -136,8 +136,11 @@ contract ExecuteTest is GlauxFixture {
     }
 
     function test_executeCannotRouteApplyUpdateWithoutUpdateSigs() public {
-        // Routing applyUpdate through executeWithSigs confers no authority of its own:
-        // the inner call still needs a validly signed Update with its own two sigs.
+        // Routing applyUpdate through executeWithSigs hits the shared `executing`
+        // reentrancy guard (finding L-1) before the inner update ever checks its own
+        // signatures: the guard is now the load-bearing check here, and this holds
+        // even if the inner sigs were valid. The forged sigs below are kept only
+        // because they are irrelevant to reaching the blocked path.
         Update memory u =
             Update(1, 0, abi.encode(uint8(2), uint8(1), abi.encode(address(1)), bytes("")));
         bytes32 badDigest = keccak256("not a real update signature");
@@ -151,7 +154,30 @@ contract ExecuteTest is GlauxFixture {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                CallFailed.selector, uint256(0), abi.encodeWithSelector(InvalidSignature.selector)
+                CallFailed.selector, uint256(0), abi.encodeWithSelector(ReentrantCall.selector)
+            )
+        );
+        GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, outerSigs);
+        assertEq(GlauxAccount(payable(account)).updateNonce(), 0);
+    }
+
+    function test_executeCannotRouteEvenAValidlySignedApplyUpdate() public {
+        // A quorum-signed, otherwise-valid Update routed through a batch is still
+        // blocked by the shared `executing` reentrancy guard (L-1) — the guard does
+        // not branch on the inner sigs' validity. Unlike the forged-sig test above,
+        // the inner update here carries a real 2-of-3 quorum and a real possession
+        // proof for the new key, so the guard is the ONLY thing standing in the way.
+        uint256 newCloudPk = 0xC10D2;
+        Update memory u = Update(1, GlauxStorage.ACTION_SET_SLOT, _setSlotPayload(2, newCloudPk));
+        SlotSig[2] memory updateSigs = _twoSigs(_updateDigest(u));
+
+        Call[] memory calls = new Call[](1);
+        calls[0] = Call(account, 0, abi.encodeCall(GlauxAccount.applyUpdate, (u, updateSigs)));
+        SlotSig[2] memory outerSigs = _twoSigs(_execDigest(calls));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CallFailed.selector, uint256(0), abi.encodeWithSelector(ReentrantCall.selector)
             )
         );
         GlauxAccount(payable(account)).executeWithSigs(calls, FAR_FUTURE, outerSigs);

@@ -1,5 +1,29 @@
 # Deployments
 
+> **⚠️ SUPERSEDED by the 2026-08-03 internal-audit fixes (H-1 + L-1).** The audit
+> (`docs/internal-audit-2026-08-03.md`) added two on-chain checks to
+> `GlauxAccount` — the birth-guard on `initializeAccount` (H-1) and the
+> reentrancy guard on `applyUpdate` (L-1) — both of which change the
+> implementation bytecode. Every `GlauxAccount` (impl) address and code hash
+> recorded below — `0x927ed570…` / `0x2c271f5a…` — is therefore **stale**. The
+> router is unchanged (`0xB8270e4B…`, runtime hash `0x6f90a8ec…`): the immutable
+> half did not move, as required. The local two-chain proof re-run after the full
+> batch gives:
+>
+> | Artifact | Current value (post H-1+L-1) | Original (pre-audit) |
+> |---|---|---|
+> | `GlauxAccount` (impl) CREATE2 | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` | `0x927ed570…` |
+> | impl runtime code hash | `0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106` | `0x2c271f5a…` |
+> | `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (unchanged) | same |
+> | born account (local proof) | `0xFb0fCAc39E521AE4b1333983Dd178670B934EE3E` | `0xB17d5518…` |
+>
+> `reconcile.py` across both local chains: `verdict: consistent (exit 0)`; the
+> refusal path still reverts as designed. **The public testnet deployments below
+> (Base Sepolia, Sepolia) must be redeployed at the new impl address** before any
+> further birth — the unspent blobs signed against `0x2c271f5a…` are invalid.
+> That redeploy is still gated on a funded `GLAUX_RELAYER_KEY` (the maintainer). History
+> below is kept intact, not rewritten.
+
 ## Local two-chain end-to-end (verified)
 
 Date: 2026-07-30. Contracts: the Phase 2 account surface (ERC-721/1155 receiver hooks,
@@ -254,7 +278,8 @@ Read-only checks against both networks, all passing:
 - The canonical CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C` is present
   on both, so the deterministic deployment has its factory.
 - Neither `0x927ed5700518a8A053367da1EaFDFBdE061E73F2` (impl, Phase 2) nor
-  `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (router) is occupied on either chain.
+  `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` (router) is occupied on either chain —
+  `eth_getCode` still returns `0x` for both on both, re-checked 2026-07-31.
 - ERC-4337 EntryPoint v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032` is deployed on
   both, so the 4337 path has a real EntryPoint to meet.
 - `forge script Deploy.s.sol` simulated against live state on both chains reproduces
@@ -297,11 +322,22 @@ weaker claim than it may look. The public keyless endpoints above answered every
 this section, and they expose all the methods `submit_birth.py` needs — `eth_chainId`,
 `eth_getBlockByNumber`, `eth_maxPriorityFeePerGas`, `eth_getTransactionCount`,
 `eth_estimateGas`, `eth_sendRawTransaction`, `eth_getTransactionReceipt`, with no archive
-or `debug`/`trace` namespace required. What no read-only check can establish is how those
-unauthenticated endpoints behave on the broadcast path: whether they accept the raw
-transaction, honour the authorization list in `eth_estimateGas`, and survive their own
-rate limits. Treat them as usable at the time of this check, with a private endpoint as
-the fallback the moment a broadcast misbehaves. `--verify` additionally needs an
+or `debug`/`trace` namespace required. Two of the three broadcast-path doubts this section
+used to leave open were closed on 2026-07-31, still without spending anything. Both nodes
+parse and *account for* an authorization list in `eth_estimateGas`: the same call costs
+`0x52e9` (21,225 gas) bare and `0xb56a` (46,442 gas) with one authorization attached, an
+identical +25,217 on each chain, which is the per-authorization charge and not a field
+they quietly ignore. Both also apply EIP-7702 semantics rather than merely tolerating the
+key — an empty list is rejected on its own terms (Sepolia: *EIP-7702 transaction with
+empty auth list*; Base Sepolia: *authorization list has invalid fields*). And
+`eth_sendRawTransaction` is exposed on both and reaches the typed-transaction decoder,
+which is where a type-4 payload has to land: fed a deliberately undecodable body it
+answers *typed transaction too short* (Sepolia) and *failed to decode signed transaction*
+(Base Sepolia), never *method not found*. What still cannot be settled without the key is
+the last step — whether a well-formed, signed type-4 transaction is accepted for
+propagation — and whether the rate limits hold up under a real deploy. Treat the
+endpoints as usable at the time of this check, with a private endpoint as the fallback
+the moment a broadcast misbehaves. `--verify` additionally needs an
 `ETHERSCAN_API_KEY`; drop the flag to deploy without source verification.
 
 Once the key exists, run (from the repository root):
@@ -340,3 +376,116 @@ GLAUX_RELAYER_KEY="$GLAUX_RELAYER_KEY" python3 scripts/submit_birth.py --rpc "$G
 cast code <account> --rpc-url "$GLAUX_RPC_SEPOLIA"
 cast code <account> --rpc-url "$GLAUX_RPC_BASE_SEPOLIA"
 ```
+
+## Public testnet — Base Sepolia (2026-07-31)
+
+Base Sepolia (chain id 84532) was the first public chain to carry the canonical
+pair, at exactly the addresses the two anvils and the simulation predicted. The
+Sepolia half, and the cross-chain replay it completes, are in the next section.
+
+| Contract | Address |
+|---|---|
+| `GlauxAccount` (impl) | `0x927ed5700518a8A053367da1EaFDFBdE061E73F2` |
+| `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` |
+
+`keccak256` of the deployed implementation's runtime code, read back from the
+chain, is `0x2c271f5a9e823360ad27431f2245570417fc1dc687b144eda63f8bf875b97c4c` —
+the same hash the local proof produced and the same one every birth blob signs.
+Determinism now holds against a real chain and not only between two local nodes.
+The deployment cost **3,738,908 gas** across its two transactions (3,078,079 for
+the implementation, 660,829 for the router), well under the 5,164,364 the
+pre-flight estimated; Foundry's estimate is conservative by roughly a third.
+Sepolia later reproduced all three figures exactly.
+
+### The first birth on a public chain
+
+One blob, submitted once, produced account
+`0x3c8D09d23E2d854E670A3C7ba6D59858E3BEFE93` in transaction
+`0x094f06e015056e37d370ebec7bcdbf7a3daee27ad360f5cc963e51190bca26be` at block
+44842376, status 1, **376,557 gas**.
+
+The transaction is a genuine **type `0x4`** — `eth_getTransactionByHash` reports
+`"type": "0x4"` and carries the authorization tuple with `chainId: 0x0` and
+`address` set to the router, which is the chain-agnostic form the whole design
+rests on. The relayer that paid was not the account and never held the birth key.
+Read back from the chain afterwards:
+
+- `eth_getCode` on the account returns `0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9`,
+  the EIP-7702 delegation indicator pointing at the router.
+- `updateNonce()` and `execNonce()` are both `0`.
+- Slot 0 holds verifier type 1 with the paper address, slot 1 type 2 with the
+  P-256 `qx‖qy`, slot 2 type 1 with the cloud address — the configuration the
+  blob committed to, installed intact.
+
+The factor keys used here are the **publicly known anvil keys** carried over from
+the local proof, so this account is controllable by anyone and must never hold
+anything. It exists to prove the birth path on a public chain, nothing else.
+
+## Public testnet — Sepolia, and the cross-chain replay (2026-07-31)
+
+**One blob, submitted unmodified to two public chains, produced the same
+account with the same configuration on both.** This is the claim the design
+rests on, and it is now demonstrated rather than argued.
+
+### The pair on Sepolia
+
+Sepolia (chain id 11155111) was deployed from the same source tree, and
+reproduced both canonical addresses exactly:
+
+| Contract | Address | Sepolia codehash | Base Sepolia codehash |
+|---|---|---|---|
+| `GlauxAccount` (impl) | `0x927ed5700518a8A053367da1EaFDFBdE061E73F2` | `0x2c271f5a…b97c4c` | `0x2c271f5a…b97c4c` |
+| `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` | `0x3c8374c2…d679c0` | `0x3c8374c2…d679c0` |
+
+The implementation codehash is the same `0x2c271f5a9e823360ad27431f2245570417fc1dc687b144eda63f8bf875b97c4c`
+every birth blob signs. Deployment cost **3,738,908 gas** — 3,078,079 for the
+implementation and 660,829 for the router, *the same figures to the unit* as
+Base Sepolia. Determinism holds across two independent public chains, not just
+between two local nodes.
+
+### The replay
+
+The blob generated for this purpose was submitted to Base Sepolia first, then
+to Sepolia, byte-for-byte identical — `sha256
+fded42f5c70bc48805311422cdd65b56ca2faf2dc1041f666276288e7da64ae8` before and
+after both submissions. It lives at
+`~/.local/state/glaux-birth-blob-2026-07-31.json`, outside the repository.
+Before either submission the account address was empty on both chains
+(`eth_getCode` `0x`, nonce `0`).
+
+| | Base Sepolia (84532) | Sepolia (11155111) |
+|---|---|---|
+| Account | `0xB17d55188e3c982df12c99e466a8971872746822` | *the same* |
+| Tx | `0xddbc25f16bb07fefe2b73425497b4b9716e168fd4f8e6a9aa3ce65635042517a` | `0xf746e3516936a9d62e2f6bbd1254b5817edccd8359defe61f2f91030dfc90200` |
+| Block | 44859249 | 11388429 |
+| Status / gas | 1 / **376,569** | 1 / **376,569** |
+| Type | `0x4` | `0x4` |
+| Authorization | `chainId 0x0`, `nonce 0x0`, → router | *identical tuple* |
+
+Both births burned the same 376,569 gas. Read back afterwards, the two chains
+are indistinguishable: code `0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9`
+(the delegation indicator pointing at the router), `updateNonce()` and
+`execNonce()` both `0`, slot 0 type 1 with the paper address, slot 1 type 2
+with the P-256 `qx‖qy`, slot 2 type 1 with the cloud address. `scripts/reconcile.py`
+run against both endpoints returns **`verdict: consistent (exit 0)`**.
+
+The mechanism is the `chainId 0` authorization tuple: EIP-7702 increments the
+authority's nonce only on the chain that applied it, so a `nonce 0`
+authorization stays valid on every chain that has not yet seen it. Nothing in a
+birth blob expires — there is no deadline field — so the two submissions did
+not have to be close in time, and a third chain can still be reached with this
+same blob today. The relayer that paid on both chains is neither the account
+nor a holder of the birth key: submission is permissionless, and only the gas
+came from it.
+
+The factor keys here are the **publicly known anvil keys**, as in the local
+proof and the first public birth. This account is controllable by anyone and
+must never hold anything; it exists to prove the birth and replay paths on
+public chains.
+
+### Housekeeping
+
+`cache/Deploy.s.sol/11155111/run-latest.json` was deleted immediately after the
+deploy — Foundry writes the private key into it in the clear, exactly as it did
+for chain 84532. A grep for the key across the working tree comes back empty;
+what remains under `cache/` holds RPC URLs only.
