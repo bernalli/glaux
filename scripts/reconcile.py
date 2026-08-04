@@ -41,6 +41,12 @@ from eth_utils import keccak, to_checksum_address
 BASE_SLOT: int = int.from_bytes(keccak(text="glaux.account.v1.storage"), "big")
 IMPL_SLOT: int = int.from_bytes(keccak(text="glaux.account.v1.implementation"), "big")
 DESIGNATOR_PREFIX: bytes = bytes.fromhex("ef0100")
+# ``SignatureVerify`` accepts only 32-byte secp256k1 key data or 64-byte
+# P-256 coordinates, so a contract-born factor can never write more than 64.
+MAX_FACTOR_DATA_LENGTH: int = 64
+# Solidity's short ``bytes`` header keeps its low byte for ``2 * len``, so
+# only the other 31 bytes can hold an in-word payload.
+SHORT_BYTES_MAX_LENGTH: int = 31
 
 SEL_UPDATE_NONCE: bytes = keccak(text="updateNonce()")[:4]
 SEL_EXEC_NONCE: bytes = keccak(text="execNonce()")[:4]
@@ -75,18 +81,77 @@ def decode_header(word: int) -> tuple[bool, int, int]:
     return bool(word & 0xFF), (word >> 8) & (2**64 - 1), (word >> 72) & (2**64 - 1)
 
 
+class MalformedFactorData(Exception):
+    """A factor slot contains storage no Solidity ``bytes`` write can produce."""
+
+
+class FactorDataTooLong(MalformedFactorData):
+    """A factor slot's length word claims more data than its form can hold.
+
+    Carries the offending ``length`` so the caller can report it verbatim: it
+    is attacker-plantable evidence about the account, not a value to act on.
+    """
+
+    def __init__(self, length: int, *, short_form: bool = False) -> None:
+        if short_form:
+            message = (
+                f"raw factor data short-form length {length} exceeds Solidity's "
+                f"{SHORT_BYTES_MAX_LENGTH}-byte maximum"
+            )
+        else:
+            message = (
+                f"raw factor data length {length} exceeds Glaux's "
+                f"{MAX_FACTOR_DATA_LENGTH}-byte maximum"
+            )
+        super().__init__(message)
+        self.length: int = length
+
+
+class FactorDataDirtyPadding(MalformedFactorData):
+    """A short-form factor slot has non-zero bytes after its payload."""
+
+    def __init__(self, length: int) -> None:
+        super().__init__(
+            "raw factor data short-form padding is non-zero past the declared "
+            f"length {length}"
+        )
+        self.length: int = length
+
+
 def decode_bytes(read: Reader, slot: int) -> bytes:
     """Decode a Solidity ``bytes`` value at ``slot``.
 
     Short form: payload left-aligned in the header word, ``2 * len`` in the
     low byte (even). Long form: ``2 * len + 1`` in the header word (odd),
     payload words starting at ``keccak256(slot)``.
+
+    Raises ``FactorDataTooLong`` when a short-form marker exceeds Solidity's
+    31-byte in-word limit or a long-form length exceeds
+    ``MAX_FACTOR_DATA_LENGTH``, and ``FactorDataDirtyPadding`` when a
+    short-form word carries non-zero bytes past its declared length. Both
+    derive from ``MalformedFactorData``, which is what callers catch.
     """
     header = read(slot)
     if header & 1 == 0:
         length = (header & 0xFF) // 2
-        return header.to_bytes(32, "big")[:length]
+        # Solidity leaves one byte of this 32-byte word for the even length
+        # marker, so a short-form payload can occupy at most the other 31.
+        if length > SHORT_BYTES_MAX_LENGTH:
+            raise FactorDataTooLong(length, short_form=True)
+        word = header.to_bytes(32, "big")
+        # solc 0.8.28 zeroes this padding on every short-form write, including
+        # overwrites from long form, so non-zero bytes cannot be compiler-written.
+        # Byte index 31 holds the marker and is excluded; only indices from the
+        # declared length through index 30 are padding.
+        if any(word[length:SHORT_BYTES_MAX_LENGTH]):
+            raise FactorDataDirtyPadding(length)
+        return word[:length]
     length = (header - 1) // 2
+    # The length word is storage an attacker can plant, and it drives the read
+    # loop below: bound it BEFORE deriving the payload base or issuing a single
+    # payload read, or one planted word buys an unbounded number of RPC reads.
+    if length > MAX_FACTOR_DATA_LENGTH:
+        raise FactorDataTooLong(length)
     base = int.from_bytes(keccak(slot.to_bytes(32, "big")), "big")
     out = b""
     for j in range((length + 31) // 32):
@@ -137,12 +202,21 @@ def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
     )
 
     initialized, update_nonce, exec_nonce = decode_header(read(header_slot()))
-    slots = tuple(
-        (read(type_slot(i)), "0x" + decode_bytes(read, data_slot(i)).hex())
-        for i in range(3)
-    )
-
     mismatches: list[str] = []
+    raw_slots: list[tuple[int, str]] = []
+    for i in range(3):
+        verifier_type = read(type_slot(i))
+        try:
+            data = "0x" + decode_bytes(read, data_slot(i)).hex()
+        except MalformedFactorData as exc:
+            # One slot with a planted length must not blind the other two: the
+            # anomaly is itself a finding (it makes the raw side unreadable and
+            # so disagree with the getters), the remaining slots still read.
+            data = "0x"
+            mismatches.append(f"slot {i}: {exc}")
+        raw_slots.append((verifier_type, data))
+    slots = tuple(raw_slots)
+
     try:
         got = int.from_bytes(_call_getter(w3, account, SEL_UPDATE_NONCE), "big")
         if got != update_nonce:

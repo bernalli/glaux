@@ -623,3 +623,14 @@ means: the **public key** is exported from the platform keystore, while the
 **private key remains non-extractable** inside secure hardware and is used
 only through the platform's signing API. Nothing about F1 requires — or
 permits — exporting private key material.
+
+## The TypeScript SDK
+
+[`sdk/`](../sdk/README.md) is the executable counterpart of this document:
+birth, direct execution, self-funded ERC-4337, ERC-7677 gas sponsorship,
+`checkChain` (the eligibility gate the "prove eligibility before you
+display an address" rule above depends on), and cross-chain reconciliation.
+Its README restates the frozen-funds and signer-compatibility rules above in
+integrator-facing form, plus an ERC-4337 bundler limitation (Alto 0.0.20)
+discovered while building it. Read it before wiring any of this into a
+client.
