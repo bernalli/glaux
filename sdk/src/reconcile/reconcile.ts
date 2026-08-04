@@ -87,6 +87,9 @@ const UPDATE_NONCE_SELECTOR = keccak256(stringToBytes("updateNonce()")).slice(0,
 const EXEC_NONCE_SELECTOR = keccak256(stringToBytes("execNonce()")).slice(0, 10) as Hex;
 const IMPLEMENTATION_SELECTOR = keccak256(stringToBytes("implementation()")).slice(0, 10) as Hex;
 const GET_SLOT_SELECTOR = keccak256(stringToBytes("getSlot(uint8)")).slice(0, 10) as Hex;
+/** `getSlot`'s return signature, shared by the decode and the canonical
+ * re-encode below so the two can never drift apart. */
+const GET_SLOT_RETURN_PARAMS = [{ type: "uint8" }, { type: "bytes" }] as const;
 
 function headerSlot(): bigint {
   return BASE_SLOT;
@@ -370,7 +373,31 @@ async function collectGetterMismatches(
       let verifierType: number;
       let data: Hex;
       try {
-        [verifierType, data] = decodeAbiParameters([{ type: "uint8" }, { type: "bytes" }], outcome.value);
+        [verifierType, data] = decodeAbiParameters(GET_SLOT_RETURN_PARAMS, outcome.value);
+        // `eth_abi` decodes in strict mode and rejects the non-zero padding
+        // that can follow a dynamic `bytes` payload inside its final word,
+        // while viem masks those bytes away and returns exactly what a clean
+        // encoding would have yielded. Re-encoding what was decoded and
+        // demanding the same bytes back refuses that -- and every other
+        // non-canonical shape of this return -- in one check, instead of
+        // enumerating them: this port must never answer `consistent` for
+        // state the Python oracle exits 2 on, and here the state in question
+        // is the set of authorized signers. A real `getSlot` return is solc's
+        // canonical ABI encoding byte for byte, so this rejects nothing the
+        // account itself can produce -- pinned not by assertion but by the
+        // live two-chain tests in `sdk/test/reconcile.test.ts`, which
+        // reconcile against a deployed account rather than a mock.
+        //
+        // In two shapes this is deliberately STRICTER than `eth_abi`, which
+        // tolerates bytes appended past the end of the tuple and a
+        // non-minimal payload offset (both measured, `eth_abi` 5.2.0). Neither
+        // is reachable from the real account, and both can only make this port
+        // report `unreadable` where the Python tool reports a milder verdict
+        // -- never the reverse, which is the direction that would let a
+        // poisoned account read as reconciled.
+        if (encodeAbiParameters(GET_SLOT_RETURN_PARAMS, [verifierType, data]) !== outcome.value.toLowerCase()) {
+          throw new Error("non-canonical ABI encoding of the return data");
+        }
       } catch (error) {
         throw new GetterUnreadable(
           `getSlot(${index}): ${error instanceof Error ? error.message : "malformed return data"}`,

@@ -208,6 +208,36 @@ class _DirtyImplementationWeb3:
         self.eth = _DirtyImplementationEth(storage, slots)
 
 
+# The identical bytes the sibling TypeScript test plants: canonical ABI for
+# ``(uint8, bytes)`` except for one junk byte in the padding that follows the
+# two-byte payload. ``eth_abi`` raises NonEmptyPaddingBytes here; viem masks the
+# byte away and decodes it as if it were clean.
+DIRTY_GET_SLOT_RETURN = (
+    (1).to_bytes(32, "big")  # uint8 verifierType, matching the raw type slot
+    + (0x40).to_bytes(32, "big")  # offset of the bytes payload
+    + (2).to_bytes(32, "big")  # payload length
+    + bytes.fromhex("aabb")
+    + b"\x00" * 29
+    + b"\x7f"  # junk parked in the payload's trailing padding
+)
+
+
+class _DirtyGetSlotEth(_FakeEth):
+    """``getSlot(0)`` answers with the account's real state, encoded with one
+    junk byte in the trailing padding of its ``bytes`` field."""
+
+    def call(self, tx: dict[str, Any]) -> bytes:
+        data = bytes(tx["data"])
+        if data[:4] == SEL_GET_SLOT and abi_decode(["uint8"], data[4:])[0] == 0:
+            return DIRTY_GET_SLOT_RETURN
+        return super().call(tx)
+
+
+class _DirtyGetSlotWeb3:
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes]) -> None:
+        self.eth = _DirtyGetSlotEth(storage, slots)
+
+
 def test_inspect_chain_orders_raw_anomaly_before_getter_comparison(fx: dict) -> None:
     storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)
@@ -266,6 +296,56 @@ def test_dirty_implementation_address_padding_is_exit_two(fx: dict) -> None:
     assert compare([state], None) == 2
     assert len(state.getter_mismatches) == 1
     assert state.getter_mismatches[0].startswith("getter call failed:")
+
+
+def test_dirty_get_slot_trailing_padding_is_exit_two(fx: dict) -> None:
+    storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    # Raw slot 0 holds exactly the two bytes the dirty return decodes to once
+    # its junk byte is masked away, so a lenient decoder would find getter and
+    # raw in perfect agreement and reach exit 0: only strict decoding can move
+    # this state to 2, which is what the assertion below is proving.
+    storage[data_slot(0)] = int("aabb" + "00" * 29 + "04", 16)
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+    getter_slots[0] = bytes.fromhex("aabb")
+
+    state = inspect_chain(
+        _DirtyGetSlotWeb3(storage, getter_slots),
+        "dirty-get-slot-padding",
+        ACCOUNT,
+    )
+
+    # Parity invariant: this identical return vector is Python exit 2 here and
+    # TypeScript `unreadable` in the sibling reconcile test.
+    assert compare([state], None) == 2
+    assert state.slots[0] == (1, "0xaabb")
+    assert len(state.getter_mismatches) == 1
+    assert state.getter_mismatches[0].startswith("getter call failed:")
+
+
+def test_clean_get_slot_padding_is_exit_zero(fx: dict) -> None:
+    # Twin of the test above, with the junk byte zeroed: the same state, encoded
+    # the way the real account encodes it, must still reconcile cleanly. Without
+    # it, a decoder that refused every getSlot return would satisfy the parity
+    # assertion above.
+    storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    storage[data_slot(0)] = int("aabb" + "00" * 29 + "04", 16)
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+    getter_slots[0] = bytes.fromhex("aabb")
+
+    state = inspect_chain(_FakeWeb3(storage, getter_slots), "clean-padding", ACCOUNT)
+
+    assert compare([state], None) == 0
+    assert state.getter_mismatches == ()
 
 
 @pytest.mark.parametrize(("marker", "length"), [(0x40, 32), (0xFE, 127)])
