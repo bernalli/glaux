@@ -1,6 +1,7 @@
 import { encodeFunctionData, keccak256, type Address, type Hex, type PublicClient } from "viem";
 import { sendRawTransaction } from "viem/actions";
 import { privateKeyToAddress, signTransaction } from "viem/accounts";
+import { recoverAuthorizationAddress } from "viem/utils";
 import { IMPL, IMPL_CODE_HASH, ROUTER, designator } from "../core/constants.js";
 import { decodeInitData } from "../core/encoding.js";
 import type { BirthBlob } from "../core/types.js";
@@ -87,11 +88,23 @@ export interface SubmitBirthResult {
   readonly txHash: Hex;
 }
 
-function assertCanonicalBlob(blob: BirthBlob): void {
+async function assertCanonicalBlob(blob: BirthBlob): Promise<void> {
   if (blob.router.toLowerCase() !== ROUTER.toLowerCase()) throw new InvalidBirthBlobError("router");
   if (blob.implementation.toLowerCase() !== IMPL.toLowerCase()) throw new InvalidBirthBlobError("implementation");
   if (blob.authorization.address.toLowerCase() !== blob.router.toLowerCase()) {
     throw new InvalidBirthBlobError("authorization target");
+  }
+  if (blob.authorization.chainId !== 0) {
+    throw new InvalidBirthBlobError("authorization chain id");
+  }
+  let authorizationSigner: Address;
+  try {
+    authorizationSigner = await recoverAuthorizationAddress({ authorization: blob.authorization });
+  } catch {
+    throw new InvalidBirthBlobError("authorization signer");
+  }
+  if (authorizationSigner.toLowerCase() !== blob.account.toLowerCase()) {
+    throw new InvalidBirthBlobError("authorization signer");
   }
   // Caller-supplied hex, compared case-insensitively like the addresses above:
   // `keccak256` and the canonical constant are lower-case, but an upper-case
@@ -182,7 +195,7 @@ export async function submitBirth(
 ): Promise<SubmitBirthResult> {
   await assertExpectedChainId(client, expectedChainId);
   const chainId = expectedChainId;
-  assertCanonicalBlob(blob);
+  await assertCanonicalBlob(blob);
   await preflightFreshAccount(client, blob.account);
 
   const relayerAddress = privateKeyToAddress(relayer);

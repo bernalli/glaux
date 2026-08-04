@@ -3,14 +3,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { concat, keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
+import {
+  concat,
+  encodeAbiParameters,
+  keccak256,
+  stringToBytes,
+  toHex,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { designator } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { ReconciliationReadError } from "../src/errors.js";
-import { reconcile, type ActiveChainState } from "../src/reconcile/reconcile.js";
+import { compareChainStates, reconcile, type ActiveChainState } from "../src/reconcile/reconcile.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import { deployCanonical } from "./helpers/deploy.js";
 
@@ -74,6 +83,8 @@ const VALID_IMPLEMENTATION_WORD: Hex = toHex(1n, { size: 32 });
 const CODELESS_ROUTER: Address = "0x000000000000000000000000000000000000dEaD";
 const CODELESS_DESIGNATOR = concat(["0xef0100", CODELESS_ROUTER]).toLowerCase() as Hex;
 const UPDATE_NONCE_SELECTOR = keccak256(stringToBytes("updateNonce()")).slice(0, 10) as Hex;
+const EXEC_NONCE_SELECTOR = keccak256(stringToBytes("execNonce()")).slice(0, 10) as Hex;
+const IMPLEMENTATION_SELECTOR = keccak256(stringToBytes("implementation()")).slice(0, 10) as Hex;
 
 /**
  * A complete, readable raw state for testing failures after the raw-first
@@ -189,6 +200,11 @@ async function birthOnBothChains(chainA: PublicClient, chainB: PublicClient, url
 }
 
 describe("reconcile", () => {
+  it("refuses to call an empty observation set consistent", async () => {
+    expect(() => compareChainStates([])).toThrow(RangeError);
+    await expect(reconcile([], CANDIDATE_ACCOUNT)).rejects.toThrow(RangeError);
+  });
+
   it(
     "reports consistent for one blob born identically on two chains, and the real Python tool agrees",
     async () => {
@@ -413,6 +429,29 @@ describe("reconcile", () => {
     expect(state.active).toBe(true);
     expect(state.getterMismatches).toHaveLength(1);
     expect(state.getterMismatches[0]).toContain("implementation()");
+  });
+
+  it("reports unreadable when implementation() returns an address word with dirty high padding", async () => {
+    const dirtyImplementationWord = `0x01${"00".repeat(30)}01` as Hex;
+    const client = clientWithValidRawState(async ({ data }) => {
+      if (data === UPDATE_NONCE_SELECTOR || data === EXEC_NONCE_SELECTOR) {
+        return { data: ZERO_WORD };
+      }
+      if (data === IMPLEMENTATION_SELECTOR) {
+        return { data: dirtyImplementationWord };
+      }
+      return {
+        data: encodeAbiParameters([{ type: "uint8" }, { type: "bytes" }], [1, "0x"]),
+      };
+    });
+
+    const result = await reconcile([{ name: "dirty-implementation-padding", client }], CANDIDATE_ACCOUNT);
+
+    expect(result.verdict).toBe("unreadable");
+    const [state] = result.perChain as [ActiveChainState];
+    expect(state.getterMismatches).toHaveLength(1);
+    expect(state.getterMismatches[0]).toContain("implementation()");
+    expect(state.getterMismatches[0]).toContain("non-zero ABI padding");
   });
 
   it("bounds a poisoned long bytes length and reports unreadable without unbounded storage reads", async () => {

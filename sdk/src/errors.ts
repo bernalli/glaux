@@ -26,6 +26,32 @@ export class OperationExpiredError extends Error {
 }
 
 /**
+ * Thrown before signing when an operation deadline exceeds the SDK's
+ * caller-selected validity ceiling.
+ *
+ * The default ceiling is deliberately measured from the client's local
+ * clock, not an RPC-supplied block timestamp: its job is to bound how long a
+ * future-nonce signature harvested by a hostile endpoint can become useful.
+ * It cannot prevent replay inside the accepted window.
+ */
+export class ExecutionValidityWindowError extends Error {
+  readonly validUntil: number;
+  readonly latestAllowed: number;
+  readonly maxValidityWindowSeconds: number;
+
+  constructor(validUntil: number, latestAllowed: number, maxValidityWindowSeconds: number) {
+    super(
+      `validUntil ${validUntil} exceeds the locally enforced execution ceiling ${latestAllowed} ` +
+        `(${maxValidityWindowSeconds} seconds from now); refusing to sign a longer-lived operation.`,
+    );
+    this.name = "ExecutionValidityWindowError";
+    this.validUntil = validUntil;
+    this.latestAllowed = latestAllowed;
+    this.maxValidityWindowSeconds = maxValidityWindowSeconds;
+  }
+}
+
+/**
  * Thrown when a signer is asked to sign something other than the `bytes32`
  * digest the Glaux contracts verify.
  */
@@ -174,7 +200,12 @@ export class ChainIdMismatchError extends Error {
 
 /** Thrown when a restore/interchange birth blob changes a canonical binding. */
 export class InvalidBirthBlobError extends Error {
-  readonly field: "router" | "implementation" | "authorization target";
+  readonly field:
+    | "router"
+    | "implementation"
+    | "authorization target"
+    | "authorization chain id"
+    | "authorization signer";
 
   constructor(field: InvalidBirthBlobError["field"]) {
     super(`birth blob ${field} is not canonical; refusing to broadcast it.`);
@@ -325,6 +356,40 @@ export class ExecutionStateReadError extends Error {
     this.name = "ExecutionStateReadError";
     this.target = target;
     this.slotIndex = slotIndex;
+  }
+}
+
+/**
+ * Thrown when two views of an execution nonce disagree: the contract getter
+ * versus raw storage, or their agreed value versus a caller-supplied trusted
+ * expectation. No signature is requested after this error.
+ *
+ * Getter/raw agreement is only a consistency check against a buggy or
+ * partially hostile endpoint. One fully hostile endpoint can forge both
+ * replies consistently; callers that need authenticity must supply an
+ * `expectedNonce` obtained independently.
+ */
+export class ExecutionNonceMismatchError extends Error {
+  readonly path: "direct" | "erc4337";
+  readonly source: "raw storage" | "caller expectation";
+  readonly expected: bigint;
+  readonly actual: bigint;
+
+  constructor(
+    path: ExecutionNonceMismatchError["path"],
+    source: ExecutionNonceMismatchError["source"],
+    expected: bigint,
+    actual: bigint,
+  ) {
+    const label = path === "direct" ? "direct execution" : "ERC-4337";
+    super(
+      `${label} nonce ${actual} disagrees with ${source} value ${expected}; refusing to request signatures.`,
+    );
+    this.name = "ExecutionNonceMismatchError";
+    this.path = path;
+    this.source = source;
+    this.expected = expected;
+    this.actual = actual;
   }
 }
 

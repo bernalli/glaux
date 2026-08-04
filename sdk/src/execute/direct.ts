@@ -3,6 +3,9 @@ import {
   ContractFunctionRevertedError,
   ContractFunctionZeroDataError,
   encodeFunctionData,
+  keccak256,
+  stringToBytes,
+  toHex,
   type Address,
   type Hex,
   type Log,
@@ -24,6 +27,8 @@ import {
   ExecutionTransactionRevertedError,
   ChainIdMismatchError,
   DuplicateExecutionSignerError,
+  ExecutionNonceMismatchError,
+  ExecutionValidityWindowError,
   OperationExpiredError,
   UnrecognizedSignerError,
 } from "../errors.js";
@@ -38,6 +43,16 @@ const SLOT_SIG_TUPLE_COMPONENTS = [
   { name: "slotIndex", type: "uint8" },
   { name: "signature", type: "bytes" },
 ] as const;
+
+const EXECUTION_STORAGE_SLOT = BigInt(keccak256(stringToBytes("glaux.account.v1.storage")));
+const UINT64_MAX = (1n << 64n) - 1n;
+
+/**
+ * Safe-by-default lifetime for newly signed direct and ERC-4337 operations.
+ * Callers must explicitly raise the per-call ceiling for a longer-lived
+ * operation; see `docs/client-guidance.md` before doing so.
+ */
+export const DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS = 60 * 60;
 
 /**
  * The slice of `GlauxAccount`'s ABI this module needs: `executeWithSigs`
@@ -113,6 +128,16 @@ export interface SignExecutionParams {
   readonly expectedChainId: number;
   readonly calls: readonly Call[];
   readonly validUntil: number;
+  /**
+   * Optional nonce obtained independently of `client`. When supplied it must
+   * equal both same-block RPC views before either factor is asked to sign.
+   */
+  readonly expectedNonce?: bigint;
+  /**
+   * Maximum seconds from the local clock that `validUntil` may name. Defaults
+   * to one hour; raising it is an explicit acceptance of a longer replay window.
+   */
+  readonly maxValidityWindowSeconds?: number;
   /** Exactly two of the account's three factor signers — the 2-of-3 quorum for this operation. */
   readonly signers: readonly [Signer, Signer];
 }
@@ -132,7 +157,33 @@ function isUint(value: unknown, max: number): value is number {
 }
 
 function isExecutionNonce(value: unknown): value is bigint {
-  return typeof value === "bigint" && value >= 0n && value <= (1n << 64n) - 1n;
+  return typeof value === "bigint" && value >= 0n && value <= UINT64_MAX;
+}
+
+function isStorageWord(value: unknown): value is Hex {
+  return isHexBytes(value) && value.length === 66;
+}
+
+/**
+ * Applies the local-clock lifetime policy shared by both execution paths.
+ * The clock is intentionally not read from `client`: an RPC that can lie
+ * about a future nonce could lie about its block timestamp as well.
+ */
+export function assertExecutionValidityWindow(
+  validUntil: number,
+  maxValidityWindowSeconds = DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS,
+): void {
+  if (!Number.isSafeInteger(maxValidityWindowSeconds) || maxValidityWindowSeconds <= 0) {
+    throw new RangeError("maxValidityWindowSeconds must be a positive safe integer.");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const latestAllowed = now + maxValidityWindowSeconds;
+  if (!Number.isSafeInteger(latestAllowed)) {
+    throw new RangeError("maxValidityWindowSeconds produces an unsafe timestamp.");
+  }
+  if (validUntil > latestAllowed) {
+    throw new ExecutionValidityWindowError(validUntil, latestAllowed, maxValidityWindowSeconds);
+  }
 }
 
 function toStateReadError(
@@ -168,7 +219,8 @@ function isZeroDataContractRead(error: unknown): boolean {
   );
 }
 
-async function readSnapshotBlockNumber(client: PublicClient): Promise<bigint> {
+/** Exported for ERC-4337's own same-block nonce cross-check. */
+export async function readSnapshotBlockNumber(client: PublicClient): Promise<bigint> {
   try {
     // Viem caches this action for the polling interval by default. A cached
     // height can predate a transaction whose receipt the caller already
@@ -222,6 +274,20 @@ async function readExecutionNonce(client: PublicClient, account: Address, blockN
   } catch (error) {
     if (error instanceof EmptyExecutionStateReadError) throw error;
     if (isZeroDataContractRead(error)) throw new EmptyExecutionStateReadError("execution nonce");
+    throw toStateReadError(error, "execution nonce");
+  }
+}
+
+async function readRawExecutionNonce(client: PublicClient, account: Address, blockNumber: bigint): Promise<bigint> {
+  try {
+    const header: unknown = await client.getStorageAt({
+      address: account,
+      slot: toHex(EXECUTION_STORAGE_SLOT, { size: 32 }),
+      blockNumber,
+    });
+    if (!isStorageWord(header)) throw new ExecutionStateReadError("execution nonce");
+    return (BigInt(header) >> 72n) & UINT64_MAX;
+  } catch (error) {
     throw toStateReadError(error, "execution nonce");
   }
 }
@@ -329,6 +395,10 @@ async function readExecutionState(client: PublicClient, account: Address): Promi
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const nonce = await readExecutionNonce(client, account, blockNumber);
+      const rawNonce = await readRawExecutionNonce(client, account, blockNumber);
+      if (nonce !== rawNonce) {
+        throw new ExecutionNonceMismatchError("direct", "raw storage", rawNonce, nonce);
+      }
       const slots = await readAllSlots(client, account, blockNumber);
       return { nonce, slots };
     } catch (error) {
@@ -471,10 +541,17 @@ export function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Sig
 
 /**
  * Signs a direct `executeWithSigs` batch for the 2-of-3 quorum in `signers`.
- * Reads `execNonce()` and the account's three installed factor slots live
- * from `client` — a caller can never pass a stale nonce, and slot indices are
- * derived from the account's actual state rather than assumed from factor
- * ordering (see `UnrecognizedSignerError`).
+ * Reads `execNonce()`, the same pinned block's raw Glaux header word, and the
+ * account's three installed factor slots live from `client`. Getter/raw nonce
+ * disagreement fails before signing, as does an optional independently
+ * obtained `expectedNonce`. Slot indices are derived from the account's
+ * reported state rather than assumed from factor ordering.
+ *
+ * The raw check is a consistency tripwire, not an RPC authenticity proof: a
+ * fully hostile endpoint can forge getter and storage replies consistently.
+ * The local-clock validity ceiling bounds how long such a harvested
+ * future-nonce blob can become useful, but replay remains possible inside
+ * that window unless `expectedNonce` comes from an independent trusted view.
  *
  * `validUntil === 0` is rejected BEFORE any RPC call: `execDigest` already
  * throws for it, but that throw happens after the nonce/slot reads this
@@ -482,6 +559,8 @@ export function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Sig
  * ahead of them, to guarantee "no request issued" for a zero deadline.
  *
  * @throws {OperationExpiredError} if `validUntil === 0`.
+ * @throws {ExecutionValidityWindowError} if the deadline exceeds the local ceiling.
+ * @throws {ExecutionNonceMismatchError} if nonce views disagree.
  * @throws {ExecutionStateReadError} if the snapshot, nonce, or a factor slot
  * cannot be read in a well-formed response.
  * @throws {ExecutionAccountNotBornError} if the account has no code at a
@@ -491,13 +570,26 @@ export function matchSlotIndex(slots: readonly FactorSlotReadback[], signer: Sig
  * @throws {DuplicateExecutionSignerError} if both signers occupy one slot.
  */
 export async function signExecution(params: SignExecutionParams): Promise<SignedExecution> {
-  const { account, client, calls, validUntil, signers, expectedChainId } = params;
+  const {
+    account,
+    client,
+    calls,
+    validUntil,
+    signers,
+    expectedChainId,
+    expectedNonce,
+    maxValidityWindowSeconds,
+  } = params;
   if (validUntil === 0) {
     throw new OperationExpiredError();
   }
+  assertExecutionValidityWindow(validUntil, maxValidityWindowSeconds);
 
   const chainId = await assertExpectedChainId(client, expectedChainId);
   const { nonce, slots } = await readExecutionState(client, account);
+  if (expectedNonce !== undefined && nonce !== expectedNonce) {
+    throw new ExecutionNonceMismatchError("direct", "caller expectation", expectedNonce, nonce);
+  }
 
   const slotIndices = signers.map((signer) => matchSlotIndex(slots, signer)) as [number, number];
   if (slotIndices[0] === slotIndices[1]) {

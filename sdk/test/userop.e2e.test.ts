@@ -6,6 +6,9 @@ import { submitBirth } from "../src/birth/submit.js";
 import { encodeUserOpSignature } from "../src/core/encoding.js";
 import type { SlotSig } from "../src/core/types.js";
 import {
+  DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS,
+} from "../src/execute/direct.js";
+import {
   buildUserOp,
   computeUserOpHash,
   extractUserOperationEvent,
@@ -16,6 +19,8 @@ import {
   type PackedUserOperation,
 } from "../src/execute/userop.js";
 import {
+  ExecutionNonceMismatchError,
+  ExecutionValidityWindowError,
   OperationExpiredError,
   UserOpEventNotFoundError,
   UserOpExecutionFailedError,
@@ -45,6 +50,7 @@ const FRESH_RECIPIENT: Address = "0x000000000000000000000000000000000000f00d";
 const REVERTING_TARGET: Address = "0x000000000000000000000000000000000000c0de";
 const STUB_ACCOUNT: Address = "0x1111111111111111111111111111111111111111";
 const STUB_TX_HASH: Hex = "0x1111111111111111111111111111111111111111111111111111111111111111";
+const STUB_ENTRYPOINT_NONCE_SLOT: Hex = "0x53576231d24dd226f8944f9473fe29cd80ca059775ce9d983d1726c8fe5174a6";
 
 interface BornAccount {
   readonly account: Address;
@@ -100,6 +106,21 @@ function decodeUserOpSignature(signature: Hex): { validUntil: number; sigs: [Slo
   return { validUntil, sigs: [sigs[0], sigs[1]] };
 }
 
+function stubUserOp(nonce: bigint, validUntil: number): PackedUserOperation {
+  return {
+    sender: STUB_ACCOUNT,
+    nonce,
+    initCode: "0x",
+    callData: "0x",
+    accountGasLimits: `0x${"00".repeat(32)}`,
+    preVerificationGas: 0n,
+    gasFees: `0x${"00".repeat(32)}`,
+    paymasterAndData: "0x",
+    signature: "0x",
+    validUntil,
+  };
+}
+
 describe("userop build/sign fail-closed guards", () => {
   it("rejects validUntil === 0 client-side before any RPC call is made", async () => {
     let requestsIssued = 0;
@@ -138,6 +159,139 @@ describe("userop build/sign fail-closed guards", () => {
     expect(requestsIssued).toBe(0);
   });
 
+  it("rejects a deadline beyond the default local validity ceiling before any RPC call", async () => {
+    let requestsIssued = 0;
+    const stubClient = {
+      getBlockNumber: async () => {
+        requestsIssued += 1;
+        return 123n;
+      },
+    } as unknown as PublicClient;
+
+    await expect(
+      buildUserOp({
+        account: STUB_ACCOUNT,
+        client: stubClient,
+        calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
+        validUntil: Math.floor(Date.now() / 1000) + DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS + 60,
+      }),
+    ).rejects.toBeInstanceOf(ExecutionValidityWindowError);
+
+    expect(requestsIssued).toBe(0);
+  });
+
+  it("rechecks the local validity ceiling when signing an externally supplied UserOperation", async () => {
+    let requestsIssued = 0;
+    const client = {
+      getBlockNumber: async () => {
+        requestsIssued += 1;
+        return 123n;
+      },
+    } as unknown as PublicClient;
+
+    await expect(
+      signUserOp({
+        op: stubUserOp(
+          0n,
+          Math.floor(Date.now() / 1000) + DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS + 60,
+        ),
+        entryPoint: ENTRYPOINT,
+        chainId: 31337n,
+        client,
+        signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
+      }),
+    ).rejects.toBeInstanceOf(ExecutionValidityWindowError);
+    expect(requestsIssued).toBe(0);
+  });
+
+  it("checks an independent expectedNonce again at UserOperation signing time", async () => {
+    let requestsIssued = 0;
+    const client = {
+      getBlockNumber: async () => {
+        requestsIssued += 1;
+        return 123n;
+      },
+    } as unknown as PublicClient;
+
+    await expect(
+      signUserOp({
+        op: stubUserOp(1n, 1),
+        entryPoint: ENTRYPOINT,
+        chainId: 31337n,
+        client,
+        expectedNonce: 0n,
+        signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionNonceMismatchError",
+      path: "erc4337",
+      source: "caller expectation",
+      expected: 0n,
+      actual: 1n,
+    } satisfies Partial<ExecutionNonceMismatchError>);
+    expect(requestsIssued).toBe(0);
+  });
+
+  it("rejects an EntryPoint future-nonce getter lie that disagrees with the same-block raw mapping", async () => {
+    const stubClient = {
+      getBlockNumber: async () => 123n,
+      readContract: async () => 1n,
+      getStorageAt: async ({ address, slot, blockNumber }: { address: Address; slot: Hex; blockNumber?: bigint }) => {
+        expect(address).toBe(ENTRYPOINT);
+        expect(slot).toBe(STUB_ENTRYPOINT_NONCE_SLOT);
+        expect(blockNumber).toBe(123n);
+        return `0x${"00".repeat(32)}` as Hex;
+      },
+      getBlock: async () => ({ baseFeePerGas: 1n }),
+      getGasPrice: async () => 1n,
+      estimateMaxPriorityFeePerGas: async () => 1n,
+      estimateGas: async () => 1n,
+    } as unknown as PublicClient;
+
+    await expect(
+      buildUserOp({
+        account: STUB_ACCOUNT,
+        client: stubClient,
+        calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
+        validUntil: 1,
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionNonceMismatchError",
+      path: "erc4337",
+      source: "raw storage",
+      expected: 0n,
+      actual: 1n,
+    } satisfies Partial<ExecutionNonceMismatchError>);
+  });
+
+  it("rejects consistently forged EntryPoint nonce views against an independent expectedNonce", async () => {
+    const stubClient = {
+      getBlockNumber: async () => 123n,
+      readContract: async () => 1n,
+      getStorageAt: async () => `0x${"00".repeat(31)}01` as Hex,
+      getBlock: async () => ({ baseFeePerGas: 1n }),
+      getGasPrice: async () => 1n,
+      estimateMaxPriorityFeePerGas: async () => 1n,
+      estimateGas: async () => 1n,
+    } as unknown as PublicClient;
+
+    await expect(
+      buildUserOp({
+        account: STUB_ACCOUNT,
+        client: stubClient,
+        expectedNonce: 0n,
+        calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
+        validUntil: 1,
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionNonceMismatchError",
+      path: "erc4337",
+      source: "caller expectation",
+      expected: 0n,
+      actual: 1n,
+    } satisfies Partial<ExecutionNonceMismatchError>);
+  });
+
   it("pins all ERC-4337 factor-slot reads to one uncached snapshot block", async () => {
     const paper = new LocalSecp256k1Signer(PAPER_PK);
     const device = new LocalP256Signer(DEVICE_PK);
@@ -165,6 +319,7 @@ describe("userop build/sign fail-closed guards", () => {
         const signer = slots[index!];
         return [signer!.verifierType, signer!.keyData()];
       },
+      getStorageAt: async () => `0x${"00".repeat(32)}` as Hex,
       getBlock: async () => ({ baseFeePerGas: 1n }),
       getGasPrice: async () => 1n,
       estimateMaxPriorityFeePerGas: async () => 1n,
@@ -186,12 +341,14 @@ describe("userop build/sign fail-closed guards", () => {
     });
 
     expect(slotReadBlocks).toEqual([123n, 123n, 123n]);
-    expect(snapshotCacheTimes).toEqual([0]);
+    expect(snapshotCacheTimes).toEqual([0, 0]);
   });
 
   it("refuses a buffered EntryPoint gas field above uint120 before ABI encoding", async () => {
     const stubClient = {
       readContract: async () => 0n,
+      getBlockNumber: async () => 123n,
+      getStorageAt: async () => `0x${"00".repeat(32)}` as Hex,
       getBlock: async () => ({ baseFeePerGas: 1n }),
       getGasPrice: async () => 1n,
       estimateMaxPriorityFeePerGas: async () => 1n,

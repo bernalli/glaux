@@ -347,6 +347,13 @@ async function collectGetterMismatches(
     if (implementationOutcome.kind === "unreadable") throw new GetterUnreadable(implementationOutcome.detail);
     let gotImplementation: Address;
     try {
+      // `eth_abi` rejects non-zero ABI padding above an address, while viem's
+      // address decoder masks those bytes. Check the first word explicitly so
+      // this port cannot report `consistent` for state the Python oracle calls
+      // unreadable (exit 2).
+      if (implementationOutcome.value.slice(2, 26) !== "0".repeat(24)) {
+        throw new Error("non-zero ABI padding above address");
+      }
       [gotImplementation] = decodeAbiParameters([{ type: "address" }], implementationOutcome.value);
     } catch (error) {
       throw new GetterUnreadable(
@@ -469,6 +476,9 @@ export type ReconcileVerdict = "consistent" | "divergent" | "unreadable";
  * tool's `exit_code < 2` guards.
  */
 export function compareChainStates(states: readonly ChainState[], expectedRouter?: Address): ReconcileVerdict {
+  if (states.length === 0) {
+    throw new RangeError("reconciliation requires at least one observed chain");
+  }
   let verdict: ReconcileVerdict = "consistent";
   const active = states.filter((state): state is ActiveChainState => state.active);
 
@@ -532,6 +542,9 @@ export async function reconcile(
   account: Address,
   options: ReconcileOptions = {},
 ): Promise<ReconcileResult> {
+  if (clients.length === 0) {
+    throw new RangeError("reconciliation requires at least one observed chain");
+  }
   const perChain = await Promise.all(clients.map((entry) => inspectChain(entry.client, entry.name, account)));
   const verdict = compareChainStates(perChain, options.router);
   return { verdict, perChain };

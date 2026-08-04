@@ -9,7 +9,13 @@ FactorSlot entries — are zero (threat-model residual 17). These tests stub
 """
 
 import pytest
-from submit_birth import IMPL_SLOT, STORAGE_SLOT, preflight_fresh_account
+from eth_account import Account
+from submit_birth import (
+    IMPL_SLOT,
+    STORAGE_SLOT,
+    assert_blob_authorization,
+    preflight_fresh_account,
+)
 
 ZERO_WORD = b"\x00" * 32
 NON_ZERO_WORD = b"\x00" * 31 + b"\x01"
@@ -85,3 +91,41 @@ def test_pre_planted_factor_slot_verifier_type_is_rejected() -> None:
     w3 = _StubWeb3(code=b"", slots={STORAGE_SLOT + 1: NON_ZERO_WORD})
     with pytest.raises(SystemExit):
         preflight_fresh_account(w3, ACCOUNT, ROUTER)
+
+
+def _authorization_blob() -> dict:
+    private_key = "0x" + "11" * 32
+    account = Account.from_key(private_key).address
+    authorization = Account.sign_authorization(
+        {"chainId": 0, "address": ROUTER, "nonce": 0}, private_key
+    )
+    return {
+        "account": account,
+        "router": ROUTER,
+        "authorization": {
+            "chainId": authorization.chain_id,
+            "address": "0x" + authorization.address.hex(),
+            "nonce": authorization.nonce,
+            "yParity": authorization.y_parity,
+            "r": hex(authorization.r),
+            "s": hex(authorization.s),
+        },
+    }
+
+
+def test_authorization_signer_and_zero_chain_id_are_accepted() -> None:
+    assert_blob_authorization(_authorization_blob())
+
+
+def test_authorization_for_a_different_eoa_is_rejected() -> None:
+    blob = _authorization_blob()
+    blob["account"] = "0x" + "22" * 20
+    with pytest.raises(SystemExit, match="signer does not equal blob account"):
+        assert_blob_authorization(blob)
+
+
+def test_chain_specific_authorization_is_rejected() -> None:
+    blob = _authorization_blob()
+    blob["authorization"]["chainId"] = 1
+    with pytest.raises(SystemExit, match="chainId must be 0"):
+        assert_blob_authorization(blob)

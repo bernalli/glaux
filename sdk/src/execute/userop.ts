@@ -20,6 +20,7 @@ import type { Call, SlotSig } from "../core/types.js";
 import type { Signer } from "../signers/signer.js";
 import {
   ExecutionStateReadError,
+  ExecutionNonceMismatchError,
   OperationExpiredError,
   DuplicateExecutionSignerError,
   UserOpEventNotFoundError,
@@ -33,12 +34,14 @@ import {
 } from "../errors.js";
 import {
   matchSlotIndex,
+  assertExecutionValidityWindow,
   readChainId,
   readExecutionReceiptWithLogs,
   readFactorSlotsAtFreshSnapshot,
   readLatestBlock,
   readNonNegativeFee,
   readRelayerNonce,
+  readSnapshotBlockNumber,
   type FactorSlotReadback,
 } from "./direct.js";
 
@@ -197,6 +200,10 @@ export interface BuildUserOpParams {
   readonly client: PublicClient;
   readonly calls: readonly Call[];
   readonly validUntil: number;
+  /** Optional nonce obtained independently of this RPC endpoint. */
+  readonly expectedNonce?: bigint;
+  /** Local-clock validity ceiling; defaults to one hour. */
+  readonly maxValidityWindowSeconds?: number;
 }
 
 // Matches `EntryPoint4337.t.sol`'s own `_packedOp` budget for Glaux's
@@ -224,20 +231,58 @@ function requireEntryPointGasValue(field: string, value: bigint): bigint {
   return value;
 }
 
+// EntryPoint v0.7's inheritance layout puts `StakeManager.deposits` at slot
+// zero and `NonceManager.nonceSequenceNumber` at slot one. This is pinned to
+// the vendored canonical EntryPoint this module targets, not a generic 4337
+// storage-layout assumption.
+const ENTRYPOINT_NONCE_SEQUENCE_SLOT = 1n;
+
+function entryPointNonceStorageSlot(account: Address): Hex {
+  const perAccountMapping = keccak256(
+    encodeAbiParameters(
+      [{ type: "address" }, { type: "uint256" }],
+      [account, ENTRYPOINT_NONCE_SEQUENCE_SLOT],
+    ),
+  );
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "uint192" }, { type: "bytes32" }],
+      [0n, perAccountMapping],
+    ),
+  );
+}
+
 async function readEntryPointNonce(client: PublicClient, account: Address): Promise<bigint> {
+  const blockNumber = await readSnapshotBlockNumber(client);
   let nonce: unknown;
+  let rawNonce: unknown;
   try {
     nonce = await client.readContract({
       address: ENTRYPOINT,
       abi: ENTRYPOINT_ABI,
       functionName: "getNonce",
       args: [account, 0n],
+      blockNumber,
+    });
+    rawNonce = await client.getStorageAt({
+      address: ENTRYPOINT,
+      slot: entryPointNonceStorageSlot(account),
+      blockNumber,
     });
   } catch (error) {
     throw error instanceof ExecutionStateReadError ? error : new ExecutionStateReadError("entrypoint nonce");
   }
   if (typeof nonce !== "bigint" || nonce < 0n) {
     throw new ExecutionStateReadError("entrypoint nonce");
+  }
+  if (typeof rawNonce !== "string" || !/^0x[0-9a-fA-F]{64}$/u.test(rawNonce)) {
+    throw new ExecutionStateReadError("entrypoint nonce");
+  }
+  const decodedRawNonce = BigInt(rawNonce);
+  if (nonce !== decodedRawNonce) {
+    // This catches inconsistent lies and node bugs. It is NOT proof against a
+    // fully hostile endpoint, which can forge the getter and raw word alike.
+    throw new ExecutionNonceMismatchError("erc4337", "raw storage", decodedRawNonce, nonce);
   }
   return nonce;
 }
@@ -263,9 +308,15 @@ async function estimateCallGas(client: PublicClient, account: Address, callData:
  * Builds an unsigned `PackedUserOperation` for a self-funded ERC-4337 batch:
  * `callData` invokes `executeFromEntryPoint(calls)`, `nonce` is read live
  * from the canonical EntryPoint (`getNonce(account, 0)` — the plain
- * sequential lane, key `0`), and the gas fields are estimated/bounded rather
- * than assumed. `signature` is the placeholder `"0x"` until `signUserOp`
- * fills it in.
+ * sequential lane, key `0`) and cross-checked against that same block's raw
+ * `nonceSequenceNumber` mapping word. The gas fields are estimated/bounded
+ * rather than assumed. `signature` is the placeholder `"0x"` until
+ * `signUserOp` fills it in.
+ *
+ * Getter/raw agreement catches node bugs and inconsistent lies, not a fully
+ * hostile endpoint that forges both. The default local-clock deadline ceiling
+ * narrows that endpoint's future-nonce replay window; an independently sourced
+ * `expectedNonce` is required to authenticate the nonce itself.
  *
  * `validUntil` is rejected at `0` BEFORE any RPC call — same client-side
  * refusal `../core/digests.js`'s `userOpDigest` and `../core/encoding.js`'s
@@ -274,16 +325,19 @@ async function estimateCallGas(client: PublicClient, account: Address, callData:
  * ahead of its own reads.
  *
  * @throws {OperationExpiredError} if `validUntil === 0`.
+ * @throws {ExecutionValidityWindowError} if the deadline exceeds the local ceiling.
+ * @throws {ExecutionNonceMismatchError} if nonce views disagree.
  * @throws {ExecutionStateReadError} if the EntryPoint nonce or a fee field
  * cannot be read in a well-formed response.
  * @throws {UserOpGasEstimationError} if `executeFromEntryPoint`'s call gas
  * cannot be estimated.
  */
 export async function buildUserOp(params: BuildUserOpParams): Promise<PackedUserOperation> {
-  const { account, client, calls, validUntil } = params;
+  const { account, client, calls, validUntil, expectedNonce, maxValidityWindowSeconds } = params;
   if (validUntil === 0) {
     throw new OperationExpiredError();
   }
+  assertExecutionValidityWindow(validUntil, maxValidityWindowSeconds);
 
   const callData = encodeFunctionData({
     abi: GLAUX_ACCOUNT_ABI,
@@ -298,6 +352,9 @@ export async function buildUserOp(params: BuildUserOpParams): Promise<PackedUser
     readNonNegativeFee(() => client.estimateMaxPriorityFeePerGas(), "priority fee"),
     estimateCallGas(client, account, callData),
   ]);
+  if (expectedNonce !== undefined && nonce !== expectedNonce) {
+    throw new ExecutionNonceMismatchError("erc4337", "caller expectation", expectedNonce, nonce);
+  }
 
   const callGasLimit = (callGasEstimate * CALL_GAS_BUFFER_NUMERATOR) / CALL_GAS_BUFFER_DENOMINATOR + CALL_GAS_BUFFER_FLAT;
   const baseFee = latestBlock.baseFeePerGas ?? gasPrice;
@@ -421,6 +478,10 @@ export interface SignUserOpParams {
   readonly entryPoint: Address;
   readonly chainId: bigint;
   readonly client: PublicClient;
+  /** Optional independently obtained nonce, checked before live slot reads. */
+  readonly expectedNonce?: bigint;
+  /** Local-clock validity ceiling; defaults to one hour. */
+  readonly maxValidityWindowSeconds?: number;
   /** Exactly two of the account's three factor signers — the 2-of-3 quorum for this operation. */
   readonly signers: readonly [Signer, Signer];
 }
@@ -444,15 +505,21 @@ export interface SignUserOpParams {
  * `buildUserOp`'s and `signExecution`'s duplicated check ahead of their own reads.
  *
  * @throws {OperationExpiredError} if `op.validUntil === 0`.
+ * @throws {ExecutionValidityWindowError} if the deadline exceeds the local ceiling.
+ * @throws {ExecutionNonceMismatchError} if `expectedNonce` disagrees with the operation.
  * @throws {ExecutionStateReadError} if a factor slot cannot be read in a well-formed response.
  * @throws {UnrecognizedSignerError} if a signer's key material matches none
  * of the account's three installed slots.
  * @throws {DuplicateExecutionSignerError} if both signers occupy one slot.
  */
 export async function signUserOp(params: SignUserOpParams): Promise<PackedUserOperation> {
-  const { op, entryPoint, chainId, client, signers } = params;
+  const { op, entryPoint, chainId, client, signers, expectedNonce, maxValidityWindowSeconds } = params;
   if (op.validUntil === 0) {
     throw new OperationExpiredError();
+  }
+  assertExecutionValidityWindow(op.validUntil, maxValidityWindowSeconds);
+  if (expectedNonce !== undefined && op.nonce !== expectedNonce) {
+    throw new ExecutionNonceMismatchError("erc4337", "caller expectation", expectedNonce, op.nonce);
   }
 
   const userOpHash = computeUserOpHash(op, entryPoint, chainId);

@@ -77,6 +77,11 @@ def test_header_decodes_to_the_expected_state(fx: dict, storage) -> None:
     assert exec_nonce == fx["expected"]["execNonce"]
 
 
+def test_empty_observation_set_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least one observed chain"):
+        compare([], None)
+
+
 @pytest.mark.parametrize("i", [0, 1, 2])
 def test_factor_slots_decode_to_the_expected_state(fx: dict, storage, i: int) -> None:
     assert storage(type_slot(i)) == fx["expected"]["slots"][i]["verifierType"]
@@ -188,6 +193,21 @@ class _FakeWeb3:
         self.eth = _FakeEth(storage, slots)
 
 
+class _DirtyImplementationEth(_FakeEth):
+    def call(self, tx: dict[str, Any]) -> bytes:
+        data = bytes(tx["data"])
+        if data[:4] == SEL_IMPLEMENTATION:
+            # Same low 20 bytes as IMPL, but a non-zero byte in the 12-byte
+            # ABI padding prefix. `eth_abi` must reject this address word.
+            return b"\x01" + b"\x00" * 11 + bytes.fromhex(IMPL[2:])
+        return super().call(tx)
+
+
+class _DirtyImplementationWeb3:
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes]) -> None:
+        self.eth = _DirtyImplementationEth(storage, slots)
+
+
 def test_inspect_chain_orders_raw_anomaly_before_getter_comparison(fx: dict) -> None:
     storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)
@@ -226,6 +246,26 @@ def test_inspect_chain_orders_raw_anomaly_before_getter_comparison(fx: dict) -> 
         fx["expected"]["slots"][2]["data"],
     )
     assert compare([state], None) == 2
+
+
+def test_dirty_implementation_address_padding_is_exit_two(fx: dict) -> None:
+    storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+
+    state = inspect_chain(
+        _DirtyImplementationWeb3(storage, getter_slots),
+        "dirty-implementation-padding",
+        ACCOUNT,
+    )
+
+    assert compare([state], None) == 2
+    assert len(state.getter_mismatches) == 1
+    assert state.getter_mismatches[0].startswith("getter call failed:")
 
 
 @pytest.mark.parametrize(("marker", "length"), [(0x40, 32), (0xFE, 127)])
