@@ -12,6 +12,7 @@ import { deployCanonical, deployEntryPoint, deployP256Oracle } from "./helpers/d
 import { MockHttpError, startMock7677Server, type Mock7677ServerHandle } from "./helpers/mock7677.js";
 import { Erc7677Client } from "../src/gas/erc7677.js";
 import { GasPolicy, type GasFallbackEvent } from "../src/gas/policy.js";
+import { computeUserOpMaxCost } from "../src/gas/feeGuard.js";
 
 /**
  * Same well-known anvil accounts `sdk/test/userop.e2e.test.ts` uses (see its
@@ -369,6 +370,7 @@ describe("GasPolicy: no silent fallbacks", () => {
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        maxCostWei: computeUserOpMaxCost(plan.op),
         signers: [born.paper, born.cloud],
       });
       const txHash = await submitUserOpDirect(client, RELAYER_PK, BENEFICIARY, signed);

@@ -29,6 +29,7 @@ import {
 } from "../src/errors.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
+import { computeUserOpMaxCost } from "../src/gas/feeGuard.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import { deployCanonical, deployEntryPoint, deployP256Oracle } from "./helpers/deploy.js";
 
@@ -105,6 +106,14 @@ function decodeUserOpSignature(signature: Hex): { validUntil: number; sigs: [Slo
   ) as [number, readonly [{ slotIndex: number; signature: Hex }, { slotIndex: number; signature: Hex }]];
   return { validUntil, sigs: [sigs[0], sigs[1]] };
 }
+
+/**
+ * Fee baseline handed to `signUserOp` wherever the client is a stub that
+ * answers only the calls a given test is about. The stub operations carry
+ * zero gas fees, so any healthy baseline clears them; the guard's own
+ * behaviour is covered in `feeGuard.test.ts`.
+ */
+const STUB_FEE_BASELINE = { baseFeePerGas: 1_000_000_000n, medianPriorityFeePerGas: 1_000_000_000n };
 
 function stubUserOp(nonce: bigint, validUntil: number): PackedUserOperation {
   return {
@@ -232,6 +241,8 @@ describe("userop build/sign fail-closed guards", () => {
       chainId: 31337n,
       client,
       maxValidityWindowSeconds: DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS * 4,
+      maxCostWei: computeUserOpMaxCost(stubUserOp(0n, validUntil)),
+      feeBaseline: STUB_FEE_BASELINE,
       signers: [paper, cloud],
     });
 
@@ -249,6 +260,7 @@ describe("userop build/sign fail-closed guards", () => {
         entryPoint: ENTRYPOINT,
         chainId: 31337n,
         client,
+        maxCostWei: computeUserOpMaxCost(stubUserOp(0n, validUntil)),
         signers: [paper, cloud],
       }),
     ).rejects.toBeInstanceOf(ExecutionValidityWindowError);
@@ -272,6 +284,7 @@ describe("userop build/sign fail-closed guards", () => {
         entryPoint: ENTRYPOINT,
         chainId: 31337n,
         client,
+        maxCostWei: computeUserOpMaxCost(stubUserOp(0n, 1)),
         signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
       }),
     ).rejects.toBeInstanceOf(ExecutionValidityWindowError);
@@ -294,6 +307,7 @@ describe("userop build/sign fail-closed guards", () => {
         chainId: 31337n,
         client,
         expectedNonce: 0n,
+        maxCostWei: computeUserOpMaxCost(stubUserOp(1n, 1)),
         signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
       }),
     ).rejects.toMatchObject({
@@ -428,6 +442,11 @@ describe("userop build/sign fail-closed guards", () => {
       entryPoint: ENTRYPOINT,
       chainId: 31337n,
       client: stubClient,
+      maxCostWei: computeUserOpMaxCost(op),
+      // Supplied rather than read: this stub answers only the calls whose
+      // block pinning is under test, and the fee guard's own behaviour has
+      // its own suite (`feeGuard.test.ts`).
+      feeBaseline: STUB_FEE_BASELINE,
       signers: [paper, cloud],
     });
 
@@ -494,6 +513,7 @@ describe("userop e2e: self-funded ERC-4337 path against a real EntryPoint v0.7",
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        maxCostWei: computeUserOpMaxCost(op),
         signers: [born.paper, born.cloud],
       });
 
@@ -567,6 +587,7 @@ describe("userop e2e: self-funded ERC-4337 path against a real EntryPoint v0.7",
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        maxCostWei: computeUserOpMaxCost(op),
         signers: [born.paper, born.cloud],
       });
 
@@ -619,6 +640,7 @@ describe("userop e2e: self-funded ERC-4337 path against a real EntryPoint v0.7",
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        maxCostWei: computeUserOpMaxCost(op),
         signers: [born.paper, born.cloud],
       });
       const userOpHash = computeUserOpHash(signed, ENTRYPOINT, chainId);
@@ -661,6 +683,7 @@ describe("userop e2e: self-funded ERC-4337 path against a real EntryPoint v0.7",
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        maxCostWei: computeUserOpMaxCost(op),
         signers: [born.paper, born.cloud],
       });
 
