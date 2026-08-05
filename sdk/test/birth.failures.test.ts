@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { Address, Hex, PublicClient } from "viem";
 import { signAuthorization } from "viem/accounts";
 import { recoverAuthorizationAddress } from "viem/utils";
+import { craftRootlessAuthorization } from "../src/birth/blob.js";
 import { preflightFreshAccount } from "../src/birth/preflight.js";
 import { submitBirth } from "../src/birth/submit.js";
-import { IMPL_CODE_HASH } from "../src/core/constants.js";
+import { IMPL, IMPL_CODE_HASH, ROUTER } from "../src/core/constants.js";
+import { initDigest } from "../src/core/digests.js";
 import type { BirthBlob } from "../src/core/types.js";
 import {
   BirthGasEstimationError,
@@ -17,21 +19,30 @@ const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Address;
 const ZERO_WORD = `0x${"00".repeat(32)}` as Hex;
 const RELAYER = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
 
+/**
+ * A blob that is internally COHERENT: the account, salt and authorization are
+ * the real derivation for this init data. A hand-written one is now refused
+ * before any RPC call — `submitBirth` re-runs the router's authentication
+ * locally — so a stale literal here would test the refusal instead of whatever
+ * each case is about.
+ */
+const CRAFTED = craftRootlessAuthorization(initDigest(ROUTER, IMPL, IMPL_CODE_HASH, "0x"));
+
 const BLOB: BirthBlob = {
-  account: ACCOUNT,
-  router: "0x3ccF1cc0F702C084B31e691e057d8742ADF35790",
-  implementation: "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d",
+  account: CRAFTED.account,
+  router: ROUTER,
+  implementation: IMPL,
   expectedCodeHash: IMPL_CODE_HASH,
   authorization: {
     chainId: 0,
-    address: "0x3ccF1cc0F702C084B31e691e057d8742ADF35790",
+    address: ROUTER,
     nonce: 0,
-    yParity: 0,
-    r: "0xd85ba67a8ce9cd387b44acf700176415ced15a38159594775e25cbcbfb46a0be",
-    s: "0x195da6c632682dc5cbefb7b35315f857e347708a97f2d85ebba264969783728e",
+    yParity: CRAFTED.yParity,
+    r: CRAFTED.r,
+    s: CRAFTED.s,
   },
   initData: "0x",
-  birthSig: "0x",
+  salt: CRAFTED.salt,
 };
 
 describe("birth preflight unread RPC responses", () => {

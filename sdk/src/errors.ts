@@ -816,6 +816,26 @@ export class FeeExceedsBaselineError extends Error {
 }
 
 /**
+ * Thrown when no salt in the allowed range produces a curve point.
+ *
+ * Not a caller error and not reachable in practice: each attempt succeeds with
+ * probability about one half, so 256 consecutive failures would mean keccak256
+ * had stopped behaving like a hash. It exists so a derivation loop can never
+ * spin forever on an immutable contract's input.
+ */
+export class RootlessDerivationError extends Error {
+  readonly digest: string;
+  readonly attempts: number;
+
+  constructor(digest: string, attempts: number) {
+    super(`no rootless authorization found for digest ${digest} in ${attempts} attempts.`);
+    this.name = "RootlessDerivationError";
+    this.digest = digest;
+    this.attempts = attempts;
+  }
+}
+
+/**
  * Thrown when a packed 32-byte operation word is not 32 bytes.
  *
  * The two readings diverge exactly there: this SDK unpacks with `hexToBigInt`,

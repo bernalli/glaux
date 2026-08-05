@@ -4,7 +4,7 @@ Reads a birth blob produced by `scripts/birth.py`, builds a single EIP-7702
 type-4 (set-code) transaction that carries the signed authorization tuple
 (delegating the born account's code to `GlauxDelegate`) and, in the same
 transaction, calls `GlauxDelegate.initialize(implementation, expectedCodeHash,
-initData, birthSig)` on the now-delegated account. Submission is
+initData, salt, s)` on the now-delegated account. Submission is
 permissionless: the relayer only pays gas and never needs to hold the birth
 key, so the same blob can be broadcast by anyone, on any chain, exactly once.
 
@@ -34,7 +34,7 @@ from eth_keys.datatypes import Signature
 from eth_utils import keccak, to_bytes, to_checksum_address
 from web3 import Web3
 
-INITIALIZE_SELECTOR = keccak(text="initialize(address,bytes32,bytes,bytes)")[:4]
+INITIALIZE_SELECTOR = keccak(text="initialize(address,bytes32,bytes,bytes32,uint256)")[:4]
 
 # The namespaced slots GlauxStorage owns (same derivation as reconcile.py's BASE_SLOT /
 # IMPL_SLOT). A birth blob must only ever be broadcast to an address that has never been
@@ -82,14 +82,19 @@ def build_authorization(blob: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_initialize_calldata(blob: dict[str, Any]) -> bytes:
-    """ABI-encode the `initialize(address,bytes32,bytes,bytes)` call from the blob."""
+    """ABI-encode the `initialize(address,bytes32,bytes,bytes32,uint256)` call.
+
+    The blob carries no birth signature any more: the authorization tuple IS
+    the proof, and the router rebuilds `r` from `salt` and the init digest.
+    """
     implementation = to_checksum_address(blob["implementation"])
     expected_code_hash = to_bytes(hexstr=blob["expectedCodeHash"])
     init_data = to_bytes(hexstr=blob["initData"])
-    birth_sig = to_bytes(hexstr=blob["birthSig"])
+    salt = to_bytes(hexstr=blob["salt"])
+    s = int(blob["authorization"]["s"], 16)
     encoded_args = encode(
-        ["address", "bytes32", "bytes", "bytes"],
-        [implementation, expected_code_hash, init_data, birth_sig],
+        ["address", "bytes32", "bytes", "bytes32", "uint256"],
+        [implementation, expected_code_hash, init_data, salt, s],
     )
     return INITIALIZE_SELECTOR + encoded_args
 

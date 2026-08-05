@@ -184,7 +184,7 @@ def test_submit_birth_refuses_an_authorization_signed_by_another_key() -> None:
     blob["implementation"] = "0x" + "33" * 20
     blob["expectedCodeHash"] = "0x" + "44" * 32
     blob["initData"] = "0x"
-    blob["birthSig"] = "0x"
+    blob["salt"] = "0x" + "00" * 32
 
     with pytest.raises(SystemExit, match="signer does not equal blob account"):
         submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
@@ -196,7 +196,7 @@ def _submittable_blob() -> dict:
     blob["implementation"] = "0x" + "33" * 20
     blob["expectedCodeHash"] = "0x" + "44" * 32
     blob["initData"] = "0x"
-    blob["birthSig"] = "0x"
+    blob["salt"] = "0x" + "00" * 32
     return blob
 
 

@@ -19,7 +19,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
-CANONICAL_ROUTER="0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9"
+CANONICAL_ROUTER="0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
 RPC_A="http://127.0.0.1:8545"
 RPC_B="http://127.0.0.1:8546"
 DEPLOYER_PK="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" # anvil 0

@@ -25,7 +25,8 @@ const INITIALIZE_ABI = [
       { name: "implementation", type: "address" },
       { name: "expectedCodeHash", type: "bytes32" },
       { name: "initData", type: "bytes" },
-      { name: "birthSig", type: "bytes" },
+      { name: "salt", type: "bytes32" },
+      { name: "s", type: "uint256" },
     ],
     outputs: [],
   },
@@ -67,7 +68,7 @@ function buildInitializeCalldata(blob: BirthBlob): Hex {
   return encodeFunctionData({
     abi: INITIALIZE_ABI,
     functionName: "initialize",
-    args: [blob.implementation, blob.expectedCodeHash, blob.initData, blob.birthSig],
+    args: [blob.implementation, blob.expectedCodeHash, blob.initData, blob.salt, BigInt(blob.authorization.s)],
   });
 }
 

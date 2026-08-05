@@ -23,7 +23,7 @@ it("matches every canonical Glaux constant", () => {
     REG: "0xc6ac354f53fed9914072133601f691782a6902c504211f2dad8581066535ba39",
     MSG: "0x81b19556e5c48050cf054cad533961c2de5bc0bfcaa4f7cc36e73e4a9344c469",
   });
-  expect(designator()).toBe("0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9");
+  expect(designator()).toBe("0xef01003ccf1cc0f702c084b31e691e057d8742adf35790");
 });
 
 it("eip191v0 is keccak(0x19 || 0x00 || validator || structHash)", () => {
