@@ -256,6 +256,15 @@ export interface InactiveChainState {
   readonly active: false;
   /** Human-readable reason: "not yet active..." or "foreign code (N bytes)". */
   readonly note: string;
+  /**
+   * Non-empty code that is not this router's designator. Distinct from plain
+   * inactivity: an account with NO code is simply not born on this chain yet,
+   * which is legitimate, while an account delegated somewhere else is a
+   * finding that must not be dropped from the comparison (see
+   * {@link compareChainStates}). Mirrors `scripts/reconcile.py`'s
+   * `ChainState.foreign_code`.
+   */
+  readonly foreignCode: boolean;
 }
 
 export type ChainState = ActiveChainState | InactiveChainState;
@@ -432,11 +441,11 @@ async function collectGetterMismatches(
 export async function inspectChain(client: PublicClient, name: string, account: Address): Promise<ChainState> {
   const code = await readCode(client, name, account, "account code");
   if (code === undefined || code === "0x") {
-    return { name, active: false, note: "not yet active (no code at the account)" };
+    return { name, active: false, foreignCode: false, note: "not yet active (no code at the account)" };
   }
   if (code.length !== DESIGNATOR_HEX_LENGTH || !code.toLowerCase().startsWith(DESIGNATOR_PREFIX)) {
     const byteLength = (code.length - 2) / 2;
-    return { name, active: false, note: `foreign code (${byteLength} bytes)` };
+    return { name, active: false, foreignCode: true, note: `foreign code (${byteLength} bytes)` };
   }
   const router = getAddress(`0x${code.slice(DESIGNATOR_PREFIX.length)}` as Hex);
 
@@ -497,10 +506,19 @@ export type ReconcileVerdict = "consistent" | "divergent" | "unreadable";
  * Verdict across the chains already inspected, matching
  * `scripts/reconcile.py:compare` field for field: `execNonce` is
  * deliberately NOT compared cross-chain (executions are per-chain by
- * design); what must agree is `updateNonce`, the three factor slots, the
- * implementation pointer and its live code hash, and the router. `2`
+ * design); what must agree is `initialized`, `updateNonce`, the three factor
+ * slots, the implementation pointer and its live code hash, and the router. `2`
  * (`"unreadable"`) outranks `1` (`"divergent"`) exactly as in the Python
  * tool's `exit_code < 2` guards.
+ *
+ * A chain with NO code at the account is excluded from the comparison: the
+ * account is simply not born there yet, which is legitimate. A chain whose
+ * account carries FOREIGN code is not excluded -- it has been delegated
+ * somewhere that is not this router, and dropping it would answer
+ * `"consistent"` for an account that is a Glaux account on one chain and
+ * something else entirely on another. It diverges as soon as there is
+ * anything to contradict: an active Glaux chain to disagree with, or an
+ * `expectedRouter` it cannot possibly satisfy.
  */
 export function compareChainStates(states: readonly ChainState[], expectedRouter?: Address): ReconcileVerdict {
   if (states.length === 0) {
@@ -508,6 +526,7 @@ export function compareChainStates(states: readonly ChainState[], expectedRouter
   }
   let verdict: ReconcileVerdict = "consistent";
   const active = states.filter((state): state is ActiveChainState => state.active);
+  const foreign = states.filter((state): state is InactiveChainState => !state.active && state.foreignCode);
 
   for (const state of active) {
     if (state.getterMismatches.length > 0) verdict = "unreadable";
@@ -520,10 +539,18 @@ export function compareChainStates(states: readonly ChainState[], expectedRouter
     }
   }
 
+  // Foreign code at the account address needs nothing to contradict it: reaching
+  // that state means something re-delegated the account, so a lone observation of
+  // it must not read as a clean bill of health either.
+  if (verdict !== "unreadable" && foreign.length > 0) {
+    verdict = "divergent";
+  }
+
   if (active.length >= 2) {
     const first = active[0]!;
     for (const state of active.slice(1)) {
       const diverges =
+        state.initialized !== first.initialized ||
         state.updateNonce !== first.updateNonce ||
         !slotsEqual(state.slots, first.slots) ||
         state.implPointer !== first.implPointer ||

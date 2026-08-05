@@ -82,6 +82,34 @@ def test_empty_observation_set_is_refused() -> None:
         compare([], None)
 
 
+def _reconciled_state(name: str, *, initialized: bool) -> ChainState:
+    """A fully readable chain whose every compared field is fixed but one."""
+    return ChainState(
+        name=name,
+        active=True,
+        router=to_checksum_address("0x" + "b0" * 20),
+        impl_pointer=to_checksum_address("0x" + "c0" * 20),
+        impl_codehash="0x" + "cd" * 32,
+        initialized=initialized,
+        update_nonce=4,
+        exec_nonce=9,
+        slots=((1, "0xaa"), (2, "0xbb"), (1, "0xcc")),
+    )
+
+
+def test_chains_differing_only_in_initialized_diverge() -> None:
+    # An account that is delegated but never initialized is not the same
+    # account as one that is: its factor slots are unset, so none of the keys
+    # the other chain would honour can move anything here. Router,
+    # implementation pointer, live code hash, slots and updateNonce are
+    # identical across these two, so only `initialized` can decide the verdict.
+    born = _reconciled_state("born", initialized=True)
+    unborn = _reconciled_state("delegated-but-not-initialized", initialized=False)
+
+    assert compare([born, _reconciled_state("twin", initialized=True)], None) == 0
+    assert compare([born, unborn], None) == 1
+
+
 @pytest.mark.parametrize("i", [0, 1, 2])
 def test_factor_slots_decode_to_the_expected_state(fx: dict, storage, i: int) -> None:
     assert storage(type_slot(i)) == fx["expected"]["slots"][i]["verifierType"]
@@ -346,6 +374,105 @@ def test_clean_get_slot_padding_is_exit_zero(fx: dict) -> None:
 
     assert compare([state], None) == 0
     assert state.getter_mismatches == ()
+
+
+# --- A chain delegated elsewhere is a finding, not an absence --------------
+#
+# Empty code legitimately means "this account is not born on this chain yet".
+# Non-empty code that is not this router's designator does not: the account
+# has been delegated somewhere else, and dropping it from the comparison
+# reports "consistent" over exactly the state an operator most needs to see.
+
+
+class _AccountCodeEth(_FakeEth):
+    """``_FakeEth`` with the account's own code replaced: empty, or foreign."""
+
+    def __init__(self, account_code: bytes) -> None:
+        super().__init__({}, {})
+        self._account_code = account_code
+
+    def get_code(self, address: str) -> bytes:
+        return self._account_code if address == ACCOUNT else bytes.fromhex("6000")
+
+
+class _AccountCodeWeb3:
+    def __init__(self, account_code: bytes) -> None:
+        self.eth = _AccountCodeEth(account_code)
+
+
+def _healthy_state(fx: dict, name: str) -> ChainState:
+    """One chain that reconciles cleanly on its own (exit 0), from the fixture."""
+    storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+    return inspect_chain(_FakeWeb3(storage, getter_slots), name, ACCOUNT)
+
+
+def test_foreign_code_beside_an_active_glaux_chain_is_exit_one(fx: dict) -> None:
+    healthy = _healthy_state(fx, "glaux")
+    foreign = inspect_chain(
+        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
+    )
+
+    assert compare([healthy], None) == 0
+    assert foreign.active is False
+    # Parity invariant: this pairing is Python exit 1 here and TypeScript
+    # `divergent` in the sibling reconcile test.
+    assert compare([healthy, foreign], None) == 1
+
+
+def test_a_lone_foreign_code_chain_is_exit_one() -> None:
+    """One observation of foreign code, with nothing to contradict it, still diverges.
+
+    An operator who reconciles a single chain and gets exit 0 reads it as "all
+    clean". Foreign code at the account address is the opposite of clean: it
+    means the account was re-delegated, which under a destroyed birth key is the
+    worst state the model has. Nothing else needs to be observed for that to be
+    true.
+    """
+    foreign = inspect_chain(
+        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
+    )
+
+    assert foreign.active is False
+    # Parity invariant: Python exit 1 here, TypeScript `divergent` in the sibling test.
+    assert compare([foreign], None) == 1
+
+
+def test_a_lone_chain_with_no_code_is_still_only_not_yet_active() -> None:
+    """The twin of the test above: empty code must stay consistent.
+
+    Without this pair, the check above would be satisfied by a blanket refusal
+    to call anything consistent, which would make the tool useless on the
+    ordinary case of a chain the account has simply not reached yet.
+    """
+    empty = inspect_chain(_AccountCodeWeb3(b""), "not-yet-reached", ACCOUNT)
+
+    assert empty.active is False
+    assert compare([empty], None) == 0
+
+
+def test_router_mismatch_on_a_foreign_code_chain_is_exit_one() -> None:
+    foreign = inspect_chain(
+        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
+    )
+
+    assert compare([foreign], ROUTER) == 1
+
+
+def test_empty_code_still_only_means_not_yet_active(fx: dict) -> None:
+    # The twin that keeps the check above honest: an account simply not born on
+    # a chain yet is the legitimate case reconciliation must keep reporting as
+    # consistent, or every pre-birth chain would read as a divergence.
+    healthy = _healthy_state(fx, "glaux")
+    not_yet = inspect_chain(_AccountCodeWeb3(b""), "fresh", ACCOUNT)
+
+    assert not_yet.active is False
+    assert compare([healthy, not_yet], None) == 0
 
 
 @pytest.mark.parametrize(("marker", "length"), [(0x40, 32), (0xFE, 127)])

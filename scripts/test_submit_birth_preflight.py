@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 from eth_account import Account
+from hexbytes import HexBytes
 from submit_birth import (
     IMPL_SLOT,
     STORAGE_SLOT,
@@ -99,11 +100,11 @@ def test_pre_planted_factor_slot_verifier_type_is_rejected() -> None:
         preflight_fresh_account(w3, ACCOUNT, ROUTER)
 
 
-def _authorization_blob() -> dict:
+def _authorization_blob(nonce: int = 0) -> dict:
     private_key = "0x" + "11" * 32
     account = Account.from_key(private_key).address
     authorization = Account.sign_authorization(
-        {"chainId": 0, "address": ROUTER, "nonce": 0}, private_key
+        {"chainId": 0, "address": ROUTER, "nonce": nonce}, private_key
     )
     return {
         "account": account,
@@ -134,6 +135,22 @@ def test_chain_specific_authorization_is_rejected() -> None:
     blob = _authorization_blob()
     blob["authorization"]["chainId"] = 1
     with pytest.raises(SystemExit, match="chainId must be 0"):
+        assert_blob_authorization(blob)
+
+
+def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
+    """Only nonce 0 makes a retained blob replayable on every chain.
+
+    EIP-7702 checks the tuple's nonce against the authority's CURRENT account
+    nonce, and a birth key never sends a transaction of its own, so every chain
+    sees it at 0 forever. This tuple is signed FOR nonce 5 by the blob's own
+    account over the canonical router with chainId 0, so it recovers cleanly
+    and every other gate in `assert_blob_authorization` passes it: the nonce is
+    the only thing left to refuse it for.
+    """
+    blob = _authorization_blob(nonce=5)
+    assert blob["authorization"]["nonce"] == 5
+    with pytest.raises(SystemExit, match="nonce must be 0"):
         assert_blob_authorization(blob)
 
 
@@ -171,3 +188,88 @@ def test_submit_birth_refuses_an_authorization_signed_by_another_key() -> None:
 
     with pytest.raises(SystemExit, match="signer does not equal blob account"):
         submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
+
+
+def _submittable_blob() -> dict:
+    """A blob that passes every gate, so only the receipt decides the outcome."""
+    blob = _authorization_blob()
+    blob["implementation"] = "0x" + "33" * 20
+    blob["expectedCodeHash"] = "0x" + "44" * 32
+    blob["initData"] = "0x"
+    blob["birthSig"] = "0x"
+    return blob
+
+
+class _MinedEth:
+    """Every RPC the birth path needs, answering with a receipt of ``status``.
+
+    The account is a pristine EOA (empty code, all-zero Glaux slots) and the
+    gas estimate is plausible, so the transaction is built, signed and sent for
+    real: the mined receipt is the only thing left that can decide the outcome.
+    """
+
+    chain_id = 31337
+    max_priority_fee = 1_000_000_000
+    # `latest_block.get("baseFeePerGas", w3.eth.gas_price)` evaluates its
+    # default eagerly, so this is read on every call even on an EIP-1559 chain.
+    gas_price = 1_000_000_000
+
+    def __init__(self, status: int) -> None:
+        self._status = status
+
+    def get_code(self, _address: str) -> bytes:
+        return b""
+
+    def get_storage_at(self, _address: str, _position: int) -> bytes:
+        return ZERO_WORD
+
+    def get_block(self, _block: str) -> dict[str, Any]:
+        return {"baseFeePerGas": 1_000_000_000}
+
+    def get_transaction_count(self, _address: str) -> int:
+        return 0
+
+    def estimate_gas(self, _transaction: dict[str, Any]) -> int:
+        return 500_000
+
+    def send_raw_transaction(self, _raw: bytes) -> HexBytes:
+        return HexBytes(b"\xab" * 32)
+
+    def wait_for_transaction_receipt(self, tx_hash: HexBytes) -> dict[str, Any]:
+        return {
+            "transactionHash": tx_hash,
+            "status": self._status,
+            "gasUsed": 420_000,
+            "blockNumber": 99,
+        }
+
+
+class _MinedWeb3:
+    def __init__(self, status: int) -> None:
+        self.eth = _MinedEth(status)
+
+
+def test_reverted_birth_receipt_is_not_reported_as_success() -> None:
+    """A mined-but-reverted birth left the account uninitialized.
+
+    EIP-7702 still applies the authorization when the call in the same
+    transaction reverts, so the account ends up delegated with none of its
+    factor slots installed. Printing that receipt and exiting 0 would record a
+    failed birth as done in whatever automation invoked this script.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        submit_birth(_MinedWeb3(status=0), RELAYER_KEY, _submittable_blob())
+
+    assert excinfo.value.code != 0
+    assert "REVERTED" in str(excinfo.value.code)
+    assert "0x" + "ab" * 32 in str(excinfo.value.code)
+
+
+def test_successful_birth_receipt_is_returned() -> None:
+    # The twin that keeps the check above honest: an ordinary status-1 receipt
+    # must still come back as the printable result it always was.
+    result = submit_birth(_MinedWeb3(status=1), RELAYER_KEY, _submittable_blob())
+
+    assert result["status"] == 1
+    assert result["txHash"] == "0x" + "ab" * 32
+    assert result["chainId"] == 31337

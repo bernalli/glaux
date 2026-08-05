@@ -165,6 +165,11 @@ class ChainState:
 
     name: str
     active: bool
+    # Non-empty code that is not this router's designator. Distinct from plain
+    # inactivity: an account with NO code is simply not born on this chain yet,
+    # which is legitimate, while an account delegated somewhere else is a
+    # finding that must not be dropped from the comparison (see ``compare``).
+    foreign_code: bool = False
     router: str | None = None
     impl_pointer: str | None = None
     impl_codehash: str | None = None
@@ -186,7 +191,10 @@ def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
         return ChainState(name=name, active=False)
     if len(code) != 23 or not code.startswith(DESIGNATOR_PREFIX):
         return ChainState(
-            name=name, active=False, router=f"foreign code ({len(code)} bytes)"
+            name=name,
+            active=False,
+            foreign_code=True,
+            router=f"foreign code ({len(code)} bytes)",
         )
     router = to_checksum_address(code[3:])
 
@@ -258,12 +266,24 @@ def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
 def compare(states: list[ChainState], expected_router: str | None) -> int:
     """Verdict across chains. ``execNonce`` is deliberately NOT compared
     cross-chain: executions are per-chain by design. What must agree is
-    ``updateNonce``, the factor slots, the implementation pointer and its live
-    code hash, and the router."""
+    ``initialized``, ``updateNonce``, the factor slots, the implementation
+    pointer and its live code hash, and the router.
+
+    A chain with NO code at the account is excluded from the comparison: the
+    account is simply not born there yet, which is legitimate. A chain whose
+    account carries FOREIGN code is not excluded -- it has been delegated
+    somewhere that is not this router, and dropping it would answer
+    "consistent" for an account that is a Glaux account on one chain and
+    something else entirely on another. Foreign code at the account address is
+    a finding on its own terms, with nothing needed to contradict it: reaching
+    that state at all means something re-delegated the account, and a lone
+    observation of it is exactly the case an operator must not read as a clean
+    bill of health."""
     if not states:
         raise ValueError("reconciliation requires at least one observed chain")
     exit_code = 0
     active = [s for s in states if s.active]
+    foreign = [s for s in states if s.foreign_code]
     for s in active:
         if s.getter_mismatches:
             exit_code = 2
@@ -271,11 +291,14 @@ def compare(states: list[ChainState], expected_router: str | None) -> int:
         want = to_checksum_address(expected_router)
         if any(s.router != want for s in active) and exit_code < 2:
             exit_code = 1
+    if foreign and exit_code < 2:
+        exit_code = 1
     if len(active) >= 2:
         first = active[0]
         for s in active[1:]:
             diverges = (
-                s.update_nonce != first.update_nonce
+                s.initialized != first.initialized
+                or s.update_nonce != first.update_nonce
                 or s.slots != first.slots
                 or s.impl_pointer != first.impl_pointer
                 or s.impl_codehash != first.impl_codehash

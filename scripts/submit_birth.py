@@ -9,11 +9,16 @@ permissionless: the relayer only pays gas and never needs to hold the birth
 key, so the same blob can be broadcast by anyone, on any chain, exactly once.
 
 The relayer private key is read from the `GLAUX_RELAYER_KEY` environment
-variable and is never accepted as a CLI flag or printed.
+variable and is never accepted as a CLI flag or printed. Set the variable
+without typing the key on a command line: an inline `GLAUX_RELAYER_KEY=0x...
+python3 ...` assignment is written to the history file by every interactive
+shell, which is the exposure a flag would have caused.
 
 Usage:
-    GLAUX_RELAYER_KEY=0x... python3 scripts/submit_birth.py \\
+    read -rs GLAUX_RELAYER_KEY && export GLAUX_RELAYER_KEY   # key never echoed
+    python3 scripts/submit_birth.py \\
         --rpc http://127.0.0.1:8545 --blob /path/to/blob.json
+    unset GLAUX_RELAYER_KEY
 """
 
 import argparse
@@ -97,15 +102,28 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     tuple actually authorizes, not merely an unrelated ``blob["account"]``.
     ``chainId == 0`` is equally mandatory: otherwise the retained blob stops
     being replayable on every chain, which is Glaux birth's core invariant.
+    ``nonce == 0`` for the same reason: EIP-7702 validates the tuple's nonce
+    against the authority's CURRENT account nonce, and a birth key never sends
+    a transaction of its own, so every chain sees it at 0 forever. A tuple
+    signed for any other nonce applies, at best, on the single chain that
+    happens to match -- and elsewhere the delegation is silently skipped.
     """
     authorization = blob["authorization"]
     account = to_checksum_address(blob["account"])
     router = to_checksum_address(blob["router"])
     target = to_checksum_address(authorization["address"])
     if target != router:
-        sys.exit("refusing to submit: birth blob authorization target differs from its router")
+        sys.exit(
+            "refusing to submit: birth blob authorization target differs from its router"
+        )
     if authorization["chainId"] != 0:
-        sys.exit("refusing to submit: birth blob authorization chainId must be 0 for cross-chain replay")
+        sys.exit(
+            "refusing to submit: birth blob authorization chainId must be 0 for cross-chain replay"
+        )
+    if authorization["nonce"] != 0:
+        sys.exit(
+            "refusing to submit: birth blob authorization nonce must be 0 for cross-chain replay"
+        )
 
     try:
         unsigned = Authorization(
@@ -184,7 +202,12 @@ def preflight_fresh_account(
 def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, Any]:
     """Build, sign, send, and wait for the type-4 birth transaction.
 
-    Returns the transaction receipt as a plain dict (status, tx hash, gas used).
+    Returns the transaction receipt as a plain dict (status, tx hash, gas used)
+    only for a birth that actually succeeded. A receipt whose status is not 1
+    exits non-zero instead: EIP-7702 applies the authorization even when the
+    call riding in the same transaction reverts, so a reverted birth leaves the
+    account delegated with none of its factor slots installed. Returning that
+    receipt would let automation record a failed initialization as done.
     """
     assert_blob_authorization(blob)
     relayer = Account.from_key(relayer_key)
@@ -235,7 +258,7 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
     signed = Account.sign_transaction(transaction, relayer.key)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    return {
+    result = {
         "chainId": chain_id,
         "account": account_address,
         "txHash": receipt["transactionHash"].to_0x_hex(),
@@ -243,6 +266,16 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
         "gasUsed": receipt["gasUsed"],
         "blockNumber": receipt["blockNumber"],
     }
+    if receipt["status"] != 1:
+        sys.exit(
+            f"birth REVERTED: {account_address} was NOT initialized on chain "
+            f"{chain_id}. Transaction {result['txHash']} was mined in block "
+            f"{result['blockNumber']} with status {receipt['status']} "
+            f"(gas used {result['gasUsed']}). The EIP-7702 authorization still "
+            "applied, so the account is delegated with no factor slots "
+            "installed: inspect it before retrying this blob."
+        )
+    return result
 
 
 def main() -> None:

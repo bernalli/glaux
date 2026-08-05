@@ -93,9 +93,9 @@ VHASH=$(cast keccak "$(cast code 0x0000000000000000000000000000000000000100 --rp
 echo "verifier codehash: $VHASH"
 
 step "4. possession proofs + birth blob (ONE blob)"
-PAPER_PROOF=$($PY scripts/prove_possession.py --slot 0 --type 1 --key "$PAPER_PK")
-DEVICE_PROOF=$($PY scripts/prove_possession.py --slot 1 --type 2 --p256-key "$P256_PK" --qx "$QX" --qy "$QY")
-CLOUD_PROOF=$($PY scripts/prove_possession.py --slot 2 --type 1 --key "$CLOUD_PK")
+PAPER_PROOF=$(GLAUX_FACTOR_KEY="$PAPER_PK" $PY scripts/prove_possession.py --slot 0 --type 1)
+DEVICE_PROOF=$(GLAUX_FACTOR_KEY="$P256_PK" $PY scripts/prove_possession.py --slot 1 --type 2 --qx "$QX" --qy "$QY")
+CLOUD_PROOF=$(GLAUX_FACTOR_KEY="$CLOUD_PK" $PY scripts/prove_possession.py --slot 2 --type 1)
 $PY scripts/birth.py \
   --router "$CANONICAL_ROUTER" --impl "$IMPL_ADDR" --expected-code-hash "$IMPL_CODEHASH" \
   --paper "$PAPER_ADDR" --device-qx "$QX" --device-qy "$QY" --cloud "$CLOUD_ADDR" \

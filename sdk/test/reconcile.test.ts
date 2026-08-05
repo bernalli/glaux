@@ -159,6 +159,17 @@ function clientWithGetSlotReturn(getSlotZeroReturn: Hex): PublicClient {
   } as unknown as PublicClient;
 }
 
+/** A chain whose account code is whatever the caller plants: empty (`0x`),
+ * or foreign runtime bytecode that is not any EIP-7702 designator. */
+function clientWithAccountCode(accountCode: Hex): PublicClient {
+  return {
+    getCode: async ({ address }: { address: Address }) =>
+      address.toLowerCase() === CANDIDATE_ACCOUNT.toLowerCase() ? accountCode : "0x00",
+    getStorageAt: async () => ZERO_WORD,
+    call: async () => ({ data: "0x" }),
+  } as unknown as PublicClient;
+}
+
 function dynamicDataSlot(headSlot: bigint): Hex {
   return keccak256(toHex(headSlot, { size: 32 }));
 }
@@ -256,10 +267,44 @@ async function birthOnBothChains(chainA: PublicClient, chainB: PublicClient, url
   return { blob, paper, device, cloud };
 }
 
+/** A fully readable chain whose every compared field is fixed but one. */
+function reconciledState(name: string, initialized: boolean): ActiveChainState {
+  return {
+    name,
+    active: true,
+    router: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
+    implPointer: "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d",
+    implCodehash: `0x${"cd".repeat(32)}` as Hex,
+    initialized,
+    updateNonce: 4n,
+    execNonce: 9n,
+    slots: [
+      { verifierType: 1n, data: "0xaa" },
+      { verifierType: 2n, data: "0xbb" },
+      { verifierType: 1n, data: "0xcc" },
+    ],
+    getterMismatches: [],
+  };
+}
+
 describe("reconcile", () => {
   it("refuses to call an empty observation set consistent", async () => {
     expect(() => compareChainStates([])).toThrow(RangeError);
     await expect(reconcile([], CANDIDATE_ACCOUNT)).rejects.toThrow(RangeError);
+  });
+
+  it("reports divergent for two chains that differ only in `initialized`", () => {
+    // An account that is delegated but never initialized is not the same
+    // account as one that is: its factor slots are unset, so none of the keys
+    // the other chain would honour can move anything here. Router,
+    // implementation pointer, live code hash, slots and updateNonce are
+    // identical across these two, so only `initialized` can decide the
+    // verdict. Parity invariant: the sibling Python test asserts exit 1 for
+    // the same pair.
+    expect(compareChainStates([reconciledState("born", true), reconciledState("twin", true)])).toBe("consistent");
+    expect(
+      compareChainStates([reconciledState("born", true), reconciledState("delegated-but-not-initialized", false)]),
+    ).toBe("divergent");
   });
 
   it(
@@ -526,6 +571,62 @@ describe("reconcile", () => {
     expect(state.slots[0]!.data).toBe("0xaabb");
     expect(state.getterMismatches).toHaveLength(1);
     expect(state.getterMismatches[0]).toContain("getSlot(0)");
+  });
+
+  // A chain delegated elsewhere is a finding, not an absence. Empty code
+  // legitimately means "this account is not born on this chain yet"; non-empty
+  // code that is not this router's designator does not, and dropping it from
+  // the comparison answers `consistent` over exactly the state an operator
+  // most needs to see.
+  it("reports divergent for a chain delegated to foreign code beside an active Glaux chain", async () => {
+    const glaux = { name: "glaux", client: clientWithGetSlotReturn(CLEAN_GET_SLOT_RETURN) };
+    const foreign = { name: "delegated-elsewhere", client: clientWithAccountCode("0x60806040") };
+
+    expect((await reconcile([glaux], CANDIDATE_ACCOUNT)).verdict).toBe("consistent");
+
+    const result = await reconcile([glaux, foreign], CANDIDATE_ACCOUNT);
+
+    // Parity invariant: this pairing is TypeScript `divergent` here and Python
+    // exit 1 in the sibling reconcile test.
+    expect(result.perChain[1]!.active).toBe(false);
+    expect(result.verdict).toBe("divergent");
+  });
+
+  it("reports divergent for a lone chain delegated to foreign code, with nothing to contradict it", async () => {
+    // An operator reconciling a single chain reads "consistent" as all clean.
+    // Foreign code at the account address is the opposite: the account was
+    // re-delegated, which under a destroyed birth key is the worst state the
+    // model has. Nothing else needs observing for that to be true.
+    const result = await reconcile(
+      [{ name: "delegated-elsewhere", client: clientWithAccountCode("0x60806040") }],
+      CANDIDATE_ACCOUNT,
+    );
+
+    // Parity invariant: TypeScript `divergent` here, Python exit 1 in the sibling test.
+    expect(result.perChain[0]!.active).toBe(false);
+    expect(result.verdict).toBe("divergent");
+  });
+
+  it("reports divergent for a --router expectation against a chain whose code is foreign", async () => {
+    const result = await reconcile([{ name: "delegated-elsewhere", client: clientWithAccountCode("0x60806040") }], CANDIDATE_ACCOUNT, {
+      router: CODELESS_ROUTER,
+    });
+
+    expect(result.verdict).toBe("divergent");
+  });
+
+  it("still calls a chain with no code at all not yet active rather than divergent", async () => {
+    // The twin that keeps the two checks above honest: an account simply not
+    // born on a chain yet is the legitimate case reconciliation must keep
+    // reporting as consistent, or every pre-birth chain would read as a
+    // divergence.
+    const glaux = { name: "glaux", client: clientWithGetSlotReturn(CLEAN_GET_SLOT_RETURN) };
+    const fresh = { name: "fresh", client: clientWithAccountCode("0x") };
+
+    const result = await reconcile([glaux, fresh], CANDIDATE_ACCOUNT);
+
+    expect(result.perChain[1]!.active).toBe(false);
+    expect(result.verdict).toBe("consistent");
   });
 
   it("still reports consistent for that same getSlot return with its padding zeroed", async () => {

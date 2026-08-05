@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Address, Hex, PublicClient } from "viem";
+import { signAuthorization } from "viem/accounts";
+import { recoverAuthorizationAddress } from "viem/utils";
 import { preflightFreshAccount } from "../src/birth/preflight.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { IMPL_CODE_HASH } from "../src/core/constants.js";
@@ -142,6 +144,51 @@ it("rejects a chain-specific authorization before preflight", async () => {
   ).rejects.toMatchObject({
     name: "InvalidBirthBlobError",
     field: "authorization chain id",
+  } satisfies Partial<InvalidBirthBlobError>);
+  expect(preflightRead).toBe(false);
+});
+
+it("rejects an authorization whose nonce is not zero before preflight", async () => {
+  // A retained birth blob is replayable on every chain only while its
+  // authorization names nonce 0: EIP-7702 checks the tuple's nonce against the
+  // authority's CURRENT account nonce, so a tuple signed for nonce N > 0 is
+  // valid on exactly the chains where the account has already sent N
+  // transactions -- which for a freshly generated birth key is nowhere at all,
+  // and for a reused key is one chain rather than all of them. The canonical
+  // builder writes 0 (`src/birth/blob.ts`); an imported blob has to be checked.
+  const signed = await signAuthorization({
+    privateKey: RELAYER,
+    address: BLOB.router,
+    chainId: 0,
+    nonce: 7,
+  });
+  const { yParity } = signed;
+  if (yParity === undefined) throw new Error("viem returned an unsigned authorization");
+  const authorization = {
+    chainId: signed.chainId,
+    address: BLOB.router,
+    nonce: signed.nonce,
+    yParity,
+    r: signed.r,
+    s: signed.s,
+  };
+  // Everything else about this tuple is canonical -- the canonical router as
+  // target, chain id 0, and an authority that really is `blob.account` -- so
+  // the non-zero nonce is the only thing left to refuse it for.
+  expect(await recoverAuthorizationAddress({ authorization })).toBe(ACCOUNT);
+
+  let preflightRead = false;
+  const client = {
+    getChainId: async () => 31337,
+    request: async () => {
+      preflightRead = true;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+
+  await expect(submitBirth(client, RELAYER, { ...BLOB, authorization }, 31337)).rejects.toMatchObject({
+    name: "InvalidBirthBlobError",
+    field: "authorization nonce",
   } satisfies Partial<InvalidBirthBlobError>);
   expect(preflightRead).toBe(false);
 });

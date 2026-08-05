@@ -205,6 +205,7 @@ export class InvalidBirthBlobError extends Error {
     | "implementation"
     | "authorization target"
     | "authorization chain id"
+    | "authorization nonce"
     | "authorization signer";
 
   constructor(field: InvalidBirthBlobError["field"]) {

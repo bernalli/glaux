@@ -14,10 +14,12 @@ chain where the same ``GlauxDelegate``/``GlauxAccount`` bytecode was deployed
 deterministically via CREATE2, producing the same account address with the
 same configuration everywhere.
 
-Usage:
+Usage (each proof is the output of scripts/prove_possession.py, run by that
+factor's own holder):
     python3 scripts/birth.py \\
         --router 0x... --impl 0x... --expected-code-hash 0x... \\
-        --paper 0x<address> --device-qx 0x... --device-qy 0x... --cloud 0x<address>
+        --paper 0x<address> --device-qx 0x... --device-qy 0x... --cloud 0x<address> \\
+        --paper-proof 0x... --device-proof 0x... --cloud-proof 0x...
 """
 
 import argparse
