@@ -127,7 +127,7 @@ or client-side, and every submission path is permissionless.
 
 ## Author
 
-Samuele Martinalli ([@bernalli](https://github.com/bernalli))
+Samuele Martinalli ([@bernalli](https://github.com/bernalli)) — <bernalli@proton.me>
 
 ## License
 
