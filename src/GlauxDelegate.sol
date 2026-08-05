@@ -56,6 +56,12 @@ contract GlauxDelegate {
     bytes32 public immutable AUTH_MSG_HASH;
 
     constructor() {
+        // Every operand is fixed width (4+20+1 = 25 bytes) and none of them is
+        // caller-supplied, so no two distinct inputs can encode alike and a
+        // packed collision is not representable. The layout is the EIP-7702
+        // authorization preimage, not ours to choose: `abi.encode` here would
+        // hash something no chain ever signs.
+        // aderyn-fp-next-line
         AUTH_MSG_HASH = keccak256(abi.encodePacked(hex"05d78094", address(this), hex"80"));
     }
 
