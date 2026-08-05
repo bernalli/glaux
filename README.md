@@ -98,7 +98,8 @@ authorization put the router's own address into an immutable constant, so the
 router's bytecode changed and its canonical address is now
 `0x3ccF1cc0F702C084B31e691e057d8742ADF35790`; the implementation above is
 unchanged. The run recorded here is the previous generation — the mechanism it
-demonstrates is the same one, and blobs of that format can no longer be spent.
+demonstrates is the same one, and blobs of that format no longer birth an account
+on the canonical router.
 The end-to-end proof has been re-run in full under the new format on two local
 chains, and the public redeploy is pending.
 

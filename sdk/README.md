@@ -19,10 +19,11 @@ Node.js >= 20.19.
 ### The frozen-funds hazard — `checkChain` is a safety gate, not a nicety
 
 Glaux's account address is an ordinary EOA that has been delegated via
-EIP-7702 to the Glaux router — and no private key for it has ever existed. The
+EIP-7702 to the Glaux router — and nobody has ever held its private key. The
 delegation is authorized by a *crafted* tuple whose `r` commits to the account's
 own birth configuration, not by a signature, so there is no key to lose, hold or
-destroy. The `BirthBlob` is therefore the only artifact that matters: preserve
+destroy. (A scalar for that public point exists mathematically, as for any EOA;
+what rootlessness removes is anyone's possession of it, not the curve.) The `BirthBlob` is therefore the only artifact that matters: preserve
 it, or the account can never be born on another chain. That address is identical
 on every EVM chain by construction — nothing about Glaux prevents someone from
 sending funds to it on a chain where the account has never been born.

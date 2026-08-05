@@ -59,7 +59,7 @@ Provider non-coverage is never a funds-safety problem:
    permissionless relay, where the batch itself may reimburse the relayer.
 
 The **real** hazard is elsewhere and is owned by this SDK: the account address
-is an EOA for which no private key has ever existed. On a chain where the account has not
+is an EOA whose private key nobody has ever held. On a chain where the account has not
 been born, funds sent to the address arrive but are **frozen until a birth
 happens there**. The birth blob does not expire (`chainId 0` authorization), so
 on an *eligible* chain this is recoverable at any time; on an *ineligible*

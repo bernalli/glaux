@@ -220,13 +220,16 @@ Two limits, stated because they are the price:
   either. Everything the account will ever do it does through this router, and
   the only way its logic changes is a `SetImplementation` update signed by the
   quorum (residual 12 covers what that direction does and does not allow).
-- **Rootlessness is verifiable from the blob, not from the chain.** The router
-  checks the proof at birth and stores nothing about it afterwards, so an
-  observer looking only at chain state sees an ordinary delegated EOA. Anyone
-  holding the birth blob can re-derive `r` from the configuration, check the
-  tag, recover the address, and confirm it — which is another reason the blob is
-  worth keeping (residual 4). An account whose blob is lost is still rootless;
-  it simply cannot be *demonstrated* to be, to someone who was not there.
+- **Rootlessness is verifiable from the birth, not from current state.** The
+  router checks the proof at birth and stores nothing about it afterwards, so an
+  observer looking only at the account's *state* sees an ordinary delegated EOA.
+  The proof is public anyway, in two places: the birth blob, and the birth
+  transaction itself, whose calldata carries the configuration and the salt and
+  whose authorization list carries `(r, s)`. Anyone with either can re-derive
+  `r`, check the tag, recover the address and confirm it. So an account whose
+  blob is lost remains demonstrably rootless to anyone who can still reach that
+  transaction's history — the blob matters for *reaching new chains* (residual 4),
+  not for proving what the account is.
 
 ### 2. Two compromised factors is full control, by design *(accepted, see below)*
 
@@ -519,17 +522,24 @@ with a different configuration would mean searching for a colliding recovery —
 2^160 work, not a setup mistake.
 
 What survives is a different failure, and it is not an attacker's: **a client
-flow that can produce two blobs produces two accounts.** A retry, a
-"regenerate", an aborted setup that already crafted — each yields a different
-address, even from the identical three factors, because the P-256 possession
-proof inside `initData` is re-signed with a fresh nonce. Both addresses answer
-to the same factors, so nothing is handed to anyone else; the danger is that
-funds sent to an address whose blob was discarded as "the failed attempt" are
-**unrecoverable**. That address cannot be born without its blob, cannot be
-reached without being born, and has no key that could move anything directly.
-Craft once, keep the blob, and treat a second craft as a new account rather than
-a repair of the first — and never discard a blob for an address that has ever
-been shown to anyone.
+flow that can produce two blobs may produce two accounts.** Whether it does
+depends on the signers, and the two reference clients in this repository differ
+on exactly this point — which is itself worth knowing before integrating:
+
+- with **deterministic (RFC 6979) signers**, which the TypeScript reference
+  signers are, re-signing yields identical proofs, so a second craft from the
+  same factors reproduces the same `initData` and the same address;
+- with a **random-nonce signer** — every hardware P-256 factor, and the Python
+  `prove_possession.py`, which signs through OpenSSL — each craft yields a
+  different proof, hence a different address.
+
+Production uses the second kind, so the second is the case to design for. Both
+addresses answer to the same factors, so nothing is handed to anyone else; the
+danger is that funds sent to an address whose blob was discarded as "the failed
+attempt" are **unrecoverable** when the proofs cannot be reproduced. That address
+cannot be born without its blob, cannot be reached without being born, and has no
+key that could move anything directly. Craft once, keep the blob, and treat a
+second craft as a new account rather than a repair of the first.
 
 ### 14. Execution deadlines *(closed, v0.7)*
 

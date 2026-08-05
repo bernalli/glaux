@@ -17,9 +17,12 @@
 >
 > - the accounts born on Sepolia and Base Sepolia are delegated to the old router
 >   and keep working under it; they are the previous generation, not this one;
-> - **every birth blob of the old format is permanently unspendable** — it carries
->   a `birthSig` field the router no longer reads, and it names a router that is no
->   longer canonical;
+> - **every birth blob of the old format is unspendable on the canonical router** —
+>   it carries a `birthSig` field the new router does not read, and it names the old
+>   one. It is not void in an absolute sense: the previous router is immutable and
+>   still deployed, so such a blob would still be a valid birth *against that
+>   contract* on a chain it has not reached. It simply produces a
+>   previous-generation account, which is not what anyone should be creating now;
 > - the pending public redeploy (still waiting on a funded relayer key) now covers
 >   the new router *and* the new blob format, not just a new implementation;
 > - every birth procedure written below this note describes the birth-key
@@ -33,13 +36,15 @@
 > that run: impl `0x21b5D576…` / `0xb32d638e…`, router `0x3ccF1cc0…`, verifier code
 > hash `0x861fcab3…`, born account `0x2bD420270bB107f5CC17FBa294ea9E2291F97a7d`.
 >
-> That last address is reproducible only from that exact blob, and this is a
-> property of the design rather than an accident of the run: the address is derived
-> from the birth digest, which covers `initData`, which carries the three
-> possession proofs. A P-256 proof is signed with a random nonce (the Secure
-> Enclave does the same), so crafting a second blob from the same three factors
-> yields a **different** address. Keep the blob — it is what names the account on
-> every chain it has not reached yet.
+> That last address came out different from the previous run's at identical
+> configuration, and the reason is worth recording: the address derives from the
+> birth digest, which covers `initData`, which carries the three possession proofs.
+> The proof generator used here (`scripts/prove_possession.py`, signing P-256
+> through OpenSSL) uses a random nonce, as a Secure Enclave does, so each craft
+> produces different proof bytes and therefore a different account. Deterministic
+> RFC 6979 signers — the SDK's reference ones — reproduce the same address instead.
+> Keep the blob: it is what names the account on every chain it has not reached
+> yet, and with a random-nonce signer it cannot be recreated.
 
 > **⚠️ SUPERSEDED by the 2026-08-03 internal-review fixes (H-1 + L-1).** That review
 > (`docs/internal-audit-2026-08-03.md`) added two on-chain checks to

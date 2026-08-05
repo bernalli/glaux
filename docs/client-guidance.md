@@ -217,7 +217,11 @@ every operation the account exposes.
 Birth follows the sequence in `GlauxDelegate.initialize` and the
 `GLAUX_INIT_V1` domain it checks:
 
-**Before anything else — two preconditions that no on-chain check can enforce:**
+**Before anything else — two preconditions that no on-chain check can enforce.**
+Under rootless birth the first of them is close to self-enforcing, because the
+address is derived rather than chosen and nobody can delegate it in advance
+(threat-model residual 17). Both checks stay in the client anyway: they are cheap,
+and they are the difference between a design argument and an observation.
 
 - **The account must be a fresh address that has never carried a delegation
   designator — or, exactly once, be retrying a birth whose `initialize()`
@@ -352,21 +356,42 @@ rootless birth that durability is no longer a takeover risk — the address is
 recovered from `r`, which commits to the whole configuration, so a differently
 configured blob is a different account rather than a second key to the same one.
 
-The hazard is now a bookkeeping one, and it is unforgiving. Crafting twice from
-the identical three factors still yields two different addresses, because a
-P-256 possession proof is re-signed with a fresh nonce each time and `initData`
-changes with it. Both addresses answer to your factors, so nothing leaks to an
-attacker — but an address whose blob you discarded as "the failed attempt" can
-never be born, and anything sent to it is **gone**. Craft once, keep the blob
-that names the address you publish, and treat any later craft as a new account.
+The hazard is now a bookkeeping one, and whether it is recoverable depends on
+your signers. The address covers `initData`, which carries the three possession
+proofs, so whether a second craft reproduces the first address is exactly the
+question of whether your signers reproduce their proofs:
+
+- **A deterministic signer (RFC 6979)** — which is what this repository's
+  reference `LocalP256Signer` and `LocalSecp256k1Signer` are — re-signs the same
+  digest to the same bytes, so crafting again from the same three factors lands
+  on the **same** address, and a lost blob can be rebuilt by repeating the craft.
+- **A random-nonce signer** — every hardware P-256 factor, the Secure Enclave
+  included, and this repository's Python `prove_possession.py`, which signs
+  through OpenSSL — produces different bytes each time, hence a different
+  `initData`, a different digest and a **different** address. A blob discarded
+  as "the failed attempt" then names an address that can never be born, and
+  anything sent to it is **gone**: there is no key, and no way back to the proof.
+
+Since the production configuration is the second one, treat it as the rule:
+craft once, keep the blob that names the address you publish, and treat any later
+craft as a new account rather than a repair of the first.
 
 ### Retain the public artifacts durably — forever
 
-Every one of them is public data with no secrecy requirement, and what cannot be
-reconstructed after the fact is `initData`: re-signing a possession proof with a
-hardware key produces different bytes, hence a different digest and a different
-account. The tuple and salt are recomputable *from* the rest of the blob, and
-worth storing anyway so that verification needs no derivation code.
+Every one of them is public data with no secrecy requirement. What is hard to
+reconstruct is `initData`: with a hardware signer, re-signing a possession proof
+produces different bytes, hence a different digest and a different account. The
+tuple and salt are recomputable *from* the rest of the blob, and worth storing
+anyway so that verification needs no derivation code.
+
+One qualification, so retention is not treated as more fragile than it is: once
+the account has been born on **any** chain, that birth transaction carries the
+whole blob in public — `initialize`'s calldata holds `implementation`,
+`expectedCodeHash`, `initData` and `salt`, and the transaction's authorization
+list holds the tuple. A client that has lost its local copy can rebuild it from
+that transaction. The retention rule is therefore absolute only *before* the
+first birth; after it, the chain is the backup, provided that chain's history
+stays reachable to you.
 
 - **the EIP-7702 authorization tuple**, without which the account can never
   be delegated on a chain it has not yet reached;
