@@ -62,6 +62,24 @@ contract MarkerWithoutInitialization {
 }
 
 contract BirthTest is GlauxFixture {
+    /**
+     * @dev Which address a given `(initData, salt, s)` actually recovers to.
+     *      Roughly half of all candidate `r` values are not curve
+     *      x-coordinates, and `ecrecover` answers zero for those — so a
+     *      mismatch test that only asserts a revert cannot tell whether it
+     *      exercised the "recovered is zero" branch or the "recovered is
+     *      someone else" branch. The tests below use this to say which.
+     */
+    function _recoveredFor(bytes memory initData, bytes32 salt, uint256 s)
+        internal
+        view
+        returns (address)
+    {
+        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        return
+            ecrecover(router.AUTH_MSG_HASH(), 27, keccak256(abi.encode(digest, salt)), bytes32(s));
+    }
+
     function test_birth_initializes() public {
         _birthAccount();
 
@@ -182,11 +200,20 @@ contract BirthTest is GlauxFixture {
             _craftRootlessBirth(address(impl), address(impl).codehash, initData);
         _attachDelegation(bornAt, address(router));
 
+        // Deliberately find a wrong salt that still RECOVERS: otherwise this
+        // would pass through the "not a curve point" branch and say nothing
+        // about whether the address comparison is enforced at all.
+        bytes32 wrongSalt;
+        address recovers;
+        for (uint256 i = 1; i < 256 && recovers == address(0); i++) {
+            wrongSalt = keccak256(abi.encode("wrong salt", i));
+            recovers = _recoveredFor(initData, wrongSalt, s);
+        }
+        assertTrue(recovers != address(0) && recovers != bornAt, "need a live but foreign recovery");
+
         vm.expectRevert(InvalidBirthProof.selector);
         GlauxDelegate(payable(bornAt))
-            .initialize(
-                address(impl), address(impl).codehash, initData, keccak256(abi.encode(salt)), s
-            );
+            .initialize(address(impl), address(impl).codehash, initData, wrongSalt, s);
     }
 
     /// @notice The splice the old birth signature also prevented: two complete,
@@ -224,6 +251,53 @@ contract BirthTest is GlauxFixture {
         vm.expectRevert(InvalidBirthProof.selector);
         GlauxDelegate(payable(bystander))
             .initialize(address(impl), address(impl).codehash, initData, salt, s);
+    }
+
+    /// @notice Pins `AUTH_MSG_HASH` against a vector derived OUTSIDE this
+    ///         codebase, which is the only way this constant can be checked at
+    ///         all: every other test in the suite derives its account by
+    ///         reading the router's own getter, so a wrong constant would agree
+    ///         with itself and stay green while real chains recovered a
+    ///         different authority from the same tuple — the account would
+    ///         simply never be delegated, and only a live chain would say so.
+    /// @dev The expected value was produced independently: a real EIP-7702
+    ///      authorization for this router was signed with a known key, and the
+    ///      signer recovered from exactly this hash, matching. The RLP is
+    ///      `0x05 ‖ 0xd7 ‖ 0x80 ‖ 0x94 ‖ address ‖ 0x80` — list header for 23
+    ///      bytes, zero chain id, the 20-byte address, zero nonce.
+    function test_authorizationMessageHashMatchesAnIndependentlyDerivedVector() public {
+        address fixedRouter = address(0xC0DE);
+        GlauxDelegate atFixedAddress = new GlauxDelegate();
+        vm.etch(fixedRouter, address(atFixedAddress).code);
+        // `SELF`/`AUTH_MSG_HASH` are immutables baked into the runtime code at
+        // construction, so etching carries the ORIGINAL address's values; the
+        // constant has to be recomputed for the address under test.
+        bytes32 expected = 0x83e3c8fb81cf4fca1e62dd0804462fc9361d1c5ad72c73498d70959f85d66564;
+
+        assertEq(
+            keccak256(abi.encodePacked(hex"05d78094", fixedRouter, hex"80")),
+            expected,
+            "EIP-7702 authorization preimage for chainId 0, nonce 0"
+        );
+        // And the shape the router itself builds, for its own address.
+        assertEq(
+            router.AUTH_MSG_HASH(),
+            keccak256(abi.encodePacked(hex"05d78094", address(router), hex"80"))
+        );
+    }
+
+    /// @notice Every rootless `s` must satisfy EIP-2's low-`s` rule, which
+    ///         EIP-7702 imposes on the authorization tuple: a tuple above n/2
+    ///         is invalid at consensus, so an account derived from one could
+    ///         never be delegated no matter what this contract accepts.
+    function test_craftedSignatureIsAlwaysBelowHalfOrder() public view {
+        uint256 halfOrder = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
+        // The tag fixes the top 13 bytes, so the largest representable `s` is
+        // that tag followed by all ones — checked directly rather than sampled.
+        uint256 largestPossible =
+            uint256(bytes32(router.ROOTLESS_S_PREFIX())) | ((uint256(1) << 152) - 1);
+        assertLt(largestPossible, halfOrder);
+        assertLt(accountS, halfOrder);
     }
 
     /// @notice The address is a pure function of the birth configuration: same
@@ -722,15 +796,29 @@ contract BirthTest is GlauxFixture {
             .poison(GlauxStorage.IMPL_SLOT, bytes32(uint256(uint160(address(sink)))));
 
         vm.signAndAttachDelegation(address(router), victimPk);
-        // Not `AlreadyInitialized`: the pointer check never runs, because this
-        // address cannot present a proof that recovers to itself. The same
-        // refusal applies to a victim whose storage is untouched.
+        // Two separate properties, and this half is the weaker one: the planted
+        // pointer is checked BEFORE authentication, so this refusal would stand
+        // even with every birth-proof check deleted. It is here to show the
+        // poisoning still cannot produce a birth, not to pin the proof.
         vm.expectRevert(AlreadyInitialized.selector);
         GlauxDelegate(payable(victim))
             .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
 
+        // The load-bearing half: an address with a key and PRISTINE storage,
+        // where nothing but the proof stands in the way. It is refused because
+        // the account's proof recovers to the account's own derived address,
+        // which this one is not — the property that makes a key-bearing EOA
+        // unbirthable in general, not just a poisoned one.
         address pristine = vm.addr(0x71C73);
         vm.signAndAttachDelegation(address(router), 0x71C73);
+        assertEq(vm.load(pristine, GlauxStorage.IMPL_SLOT), bytes32(0), "storage must be untouched");
+        assertEq(
+            _recoveredFor(_initBlob(), accountSalt, accountS),
+            account,
+            "proof recovers elsewhere, nonzero"
+        );
+        assertNotEq(account, pristine);
+
         vm.expectRevert(InvalidBirthProof.selector);
         GlauxDelegate(payable(pristine))
             .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
