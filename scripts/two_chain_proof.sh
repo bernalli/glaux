@@ -189,20 +189,30 @@ $PY scripts/birth.py \
 CAND=$($PY -c "import json;print(json.load(open('$WORK/blob2.json'))['account'])")
 [[ "$CAND" != "$ACCT" ]] \
   || fail "refusal candidate equals the born account — the config was not changed, the check below would be vacuous"
-# The submitter refuses a reverted birth outright — non-zero exit, reason on
-# stderr, nothing on stdout — so the refusal is read from its exit code rather
-# than from a result it deliberately no longer prints.
+# The submitter refuses outright — non-zero exit, reason on stderr, nothing on
+# stdout — so the refusal is read from its exit code rather than from a result
+# it deliberately no longer prints.
 set +e
 $PY scripts/submit_birth.py --rpc "$RPC_B" --blob "$WORK/blob2.json"
 birth_rc=$?
 set -e
 [[ "$birth_rc" != "0" ]] || fail "birth SUCCEEDED without a verifier"
-set +e
-$PY scripts/reconcile.py --account "$CAND" --rpc chain-31337="$RPC_A" --rpc chain-31338="$RPC_B" >/dev/null 2>&1
-rc=$?
-set -e
-[[ "$rc" == "2" ]] || fail "reconcile on the half-born candidate: expected exit 2, got $rc"
-echo "refused (submitter exit $birth_rc), raw side legible, reconcile exit 2 — as designed"
+# The refusal now happens BEFORE broadcasting: the node cannot price a birth
+# that would revert, and a guessed gas limit would send it anyway. That matters
+# more than the exit code, because EIP-7702 applies the authorization even when
+# `initialize` reverts — a broadcast here would leave this address delegated,
+# unborn and, being rootless, unreachable forever. So assert the address was
+# never touched at all.
+[[ "$(cast code "$CAND" --rpc-url "$RPC_B")" == "0x" ]] \
+  || fail "candidate $CAND was delegated on the verifier-less chain: the refusal came too late"
+# And prove the refusal is about the missing verifier rather than about a blob
+# this run happened to build wrong: the SAME blob must be born on chain A, where
+# the verifier is present. Without this the check above passes for any reason at
+# all, including a broken blob.
+$PY scripts/submit_birth.py --rpc "$RPC_A" --blob "$WORK/blob2.json" >/dev/null \
+  || fail "the refusal candidate could not be born on the healthy chain either — the blob is at fault, not the verifier"
+[[ "$(cast code "$CAND" --rpc-url "$RPC_A")" != "0x" ]] || fail "candidate not delegated on chain A"
+echo "refused before broadcast (submitter exit $birth_rc), address untouched on the verifier-less chain, same blob born on the healthy one"
 # restore, for hygiene, in case the anvils outlive us
 cast rpc anvil_setCode 0x0000000000000000000000000000000000000100 "$VERIFIER_CODE" --rpc-url "$RPC_B" >/dev/null
 

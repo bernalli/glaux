@@ -38,6 +38,7 @@ INITIALIZE_SELECTOR = keccak(text="initialize(address,bytes32,bytes,bytes32,uint
 # Canonical deployment bindings, mirrored by sdk/src/core/constants.ts and pinned
 # against Solidity-derived values in test/fixtures/sdk_parity.json.
 CANONICAL_ROUTER = "0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
+CANONICAL_IMPLEMENTATION = "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d"
 CANONICAL_IMPL_CODE_HASH = (
     "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
 )
@@ -65,7 +66,6 @@ MIN_PLAUSIBLE_BIRTH_GAS = 200_000
 # Enough for the worst case observed: a chain that answers P-256 with a Solidity
 # verifier at 0x100 rather than a precompile, where birth costs ~1.4M. Unused gas is
 # refunded; only the relayer's balance has to cover the limit.
-FALLBACK_BIRTH_GAS = 3_000_000
 
 
 class InvalidBirthBlobError(SystemExit):
@@ -76,6 +76,19 @@ class InvalidBirthBlobError(SystemExit):
         super().__init__(
             f"InvalidBirthBlobError ({field}): refusing to submit: {reason}"
         )
+
+
+class BirthGasEstimationError(SystemExit):
+    """The node would not price this birth, so nothing is broadcast.
+
+    Guessing a gas limit here is not a conservative default: EIP-7702 applies
+    the authorization even when `initialize` reverts, so a transaction sent on a
+    guess can leave a rootless address delegated and unborn, with no key that
+    could ever correct it. The TypeScript submitter refuses for the same reason.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"BirthGasEstimationError: refusing to broadcast: {reason}")
 
 
 class BirthPostconditionError(SystemExit):
@@ -142,6 +155,12 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     target = to_checksum_address(authorization["address"])
     if router != to_checksum_address(CANONICAL_ROUTER):
         raise InvalidBirthBlobError("router", "birth blob router is not canonical")
+    if to_checksum_address(blob["implementation"]) != to_checksum_address(
+        CANONICAL_IMPLEMENTATION
+    ):
+        raise InvalidBirthBlobError(
+            "implementation", "birth blob implementation is not canonical"
+        )
     if blob["expectedCodeHash"].lower() != CANONICAL_IMPL_CODE_HASH:
         raise InvalidBirthBlobError(
             "expectedCodeHash", "birth blob expectedCodeHash is not canonical"
@@ -308,12 +327,17 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
                 "authorizationList": transaction["authorizationList"],
             }
         )
-    except Exception:  # noqa: BLE001 - node may refuse to estimate pre-delegation
-        estimate = 0
-    if estimate >= MIN_PLAUSIBLE_BIRTH_GAS:
-        transaction["gas"] = int(estimate * 3 // 2) + 100_000
-    else:
-        transaction["gas"] = FALLBACK_BIRTH_GAS
+    except Exception as exc:  # any refusal to price is a refusal to broadcast
+        raise BirthGasEstimationError(
+            "the node would not price this birth with its authorization list"
+        ) from exc
+    if not isinstance(estimate, int) or estimate < MIN_PLAUSIBLE_BIRTH_GAS:
+        raise BirthGasEstimationError(
+            f"estimate {estimate} is below the plausible floor "
+            f"{MIN_PLAUSIBLE_BIRTH_GAS}: the node priced a plain EOA call, "
+            "which means it ignored the authorization list"
+        )
+    transaction["gas"] = int(estimate * 3 // 2) + 100_000
 
     signed = Account.sign_transaction(transaction, relayer.key)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)

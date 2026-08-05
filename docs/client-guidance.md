@@ -381,6 +381,23 @@ Since the production configuration is the second one, treat it as the rule:
 craft once, keep the blob that names the address you publish, and treat any later
 craft as a new account rather than a repair of the first.
 
+### Never broadcast a birth you could not price
+
+A birth transaction cannot be taken back in the way a failed transaction usually
+can. EIP-7702 applies the authorization even when `initialize` reverts, so a
+broadcast that fails still leaves the address delegated and unborn — and a
+rootless address has no key that could correct it. Anything later sent there is
+lost.
+
+So the estimate is a precondition, not an optimization. If the node will not
+price the transaction *with its authorization list attached*, or prices it below
+what a real birth costs — under about 200,000 gas, which means it ignored the
+list and quoted a plain EOA call — refuse and retry elsewhere. Never substitute
+a fixed gas limit for an estimate you could not obtain: the guess is what turns
+"this chain cannot host the account yet" into a burned address. Both reference
+submitters refuse, and `scripts/two_chain_proof.sh` proves the address is left
+untouched on a chain whose P-256 verifier is missing.
+
 ### Retain the public artifacts durably — forever
 
 Every one of them is public data with no secrecy requirement. What is hard to

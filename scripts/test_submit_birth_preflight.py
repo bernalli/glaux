@@ -187,6 +187,7 @@ def test_python_canonical_constants_match_shared_parity_fixture() -> None:
     canonical = json.loads(fixture_path.read_text(encoding="utf-8"))["canonical"]
 
     assert submitter.CANONICAL_ROUTER == canonical["router"]
+    assert submitter.CANONICAL_IMPLEMENTATION == canonical["implementation"]
     assert submitter.CANONICAL_IMPL_CODE_HASH == canonical["expectedCodeHash"]
 
 
@@ -419,3 +420,84 @@ def test_status_one_without_installed_implementation_is_not_reported_as_success(
     assert blob["account"] in message
     assert "0x" + "ab" * 32 in message
     assert "0x" + "00" * 32 in message
+
+
+class _UnestimatableEth(_MinedEth):
+    """A node that will not price a type-4 transaction, or prices it as an EOA call."""
+
+    def __init__(self, estimate: int | None) -> None:
+        super().__init__(status=1)
+        self._estimate = estimate
+        self.sent = False
+
+    def estimate_gas(self, _transaction: dict[str, Any]) -> int:
+        if self._estimate is None:
+            raise ValueError("node refuses to estimate a type-4 transaction")
+        return self._estimate
+
+    def send_raw_transaction(self, raw: bytes) -> HexBytes:
+        self.sent = True
+        return super().send_raw_transaction(raw)
+
+
+class _UnestimatableWeb3:
+    def __init__(self, estimate: int | None) -> None:
+        self.eth = _UnestimatableEth(estimate)
+
+
+def test_unestimatable_birth_is_refused_rather_than_broadcast_on_a_fixed_gas_limit() -> None:
+    """A failed estimate must not become a 3M-gas guess.
+
+    The TypeScript submitter throws `BirthGasEstimationError` here and sends
+    nothing. Python used to fall back to a fixed limit and broadcast anyway —
+    and a broadcast is not undoable: EIP-7702 applies the authorization even
+    when `initialize` reverts, so the address ends up delegated, unborn, and
+    without a key to correct it. Refusing costs a retry; broadcasting costs the
+    address.
+    """
+    w3 = _UnestimatableWeb3(None)
+
+    with pytest.raises(SystemExit):
+        submit_birth(w3, RELAYER_KEY, _rootless_blob())
+
+    assert w3.eth.sent is False
+
+
+def test_implausibly_cheap_estimate_is_refused_rather_than_broadcast() -> None:
+    """An estimate below the plausible floor means the node ignored the
+    authorization list and priced a plain EOA call. Same rule: do not guess."""
+    w3 = _UnestimatableWeb3(47_000)
+
+    with pytest.raises(SystemExit):
+        submit_birth(w3, RELAYER_KEY, _rootless_blob())
+
+    assert w3.eth.sent is False
+
+
+def test_non_canonical_implementation_is_refused_before_rpc() -> None:
+    """The TypeScript submitter pins `implementation` against the canonical
+    constant; Python checked the router and the code hash but not this. A blob
+    naming the zero address passes every proof check — the proof commits to
+    whatever implementation it was crafted for — and is refused only on chain,
+    after the delegation has applied."""
+    blob = _rootless_blob()
+    zero = "0x" + "00" * 20
+    digest = birth.build_init_digest(
+        CANONICAL_ROUTER,
+        zero,
+        to_bytes(hexstr=CANONICAL_IMPL_CODE_HASH),
+        b"",
+    )
+    proof = birth.craft_rootless_authorization(digest, CANONICAL_ROUTER)
+    blob["implementation"] = zero
+    blob["account"] = proof.account
+    blob["salt"] = "0x" + proof.salt.hex()
+    blob["authorization"]["r"] = "0x" + proof.r.hex()
+    blob["authorization"]["s"] = hex(proof.s)
+    blob["authorization"]["yParity"] = proof.y_parity
+
+    with pytest.raises(SystemExit) as excinfo:
+        submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
+
+    assert type(excinfo.value).__name__ == "InvalidBirthBlobError"
+    assert excinfo.value.field == "implementation"
