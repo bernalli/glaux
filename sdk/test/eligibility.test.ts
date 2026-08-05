@@ -141,6 +141,35 @@ describe("checkChain", () => {
   );
 
   it(
+    "is not born when the account points at an implementation this SDK does not speak to",
+    async () => {
+      // Coherent in every other respect — right designator, initialized header,
+      // three well-formed factor slots, real code behind the pointer — but the
+      // pointer is not the canonical implementation. This SDK pins IMPL
+      // everywhere it signs, so it cannot drive such an account; calling it
+      // "born" would invite a caller to treat it as usable.
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      await setPassingEnvironment(test);
+      await fabricateBornAccount(test, CANDIDATE_ACCOUNT);
+
+      const other: Address = "0x00000000000000000000000000000000DeaDBeef";
+      await test.setCode({ address: other, bytecode: MARKER_CODE });
+      await test.setStorageAt({
+        address: CANDIDATE_ACCOUNT,
+        index: IMPL_SLOT,
+        value: toHex(BigInt(other), { size: 32 }),
+      });
+
+      const result = await checkChain(client, CANDIDATE_ACCOUNT);
+
+      expect(result.probes.accountBorn).toBe(false);
+      expect(result.verdict).not.toBe("born");
+    },
+    20_000,
+  );
+
+  it(
     "does not mistake all-ones storage poison for a born or eligible account",
     async () => {
       const { url } = await spawnAnvil();

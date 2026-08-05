@@ -650,6 +650,17 @@ authenticated only when `expectedNonce` comes from a genuinely independent
 trusted state view. The normative integration rule and override warning are in
 `client-guidance.md`.
 
+The same limit applies to **birth**, and is worth naming because the SDK's
+postconditions there look like independent confirmation and are not: `submitBirth`
+broadcasts, takes its receipt, and reads the resulting code and storage back
+through the one client it was given. An endpoint that answers dishonestly can
+report a mined, successful birth that never happened, and satisfy every readback
+that follows — after which the caller has an address it believes is a live Glaux
+account. Nothing on chain can distinguish this: the account either exists on that
+chain or it does not, and only a state view the endpoint does not control can say
+which. Confirm a birth against a second, independently operated endpoint before
+funding the address — the same rule as `expectedNonce`, applied one step earlier.
+
 ## Formerly out of scope, shipped in Phase 2
 
 The receiver hooks (ERC-721/ERC-1155), ERC-165 and ERC-1271 were v1's two

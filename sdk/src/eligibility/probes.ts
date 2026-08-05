@@ -1,5 +1,5 @@
-import { keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
-import { designator } from "../core/constants.js";
+import { getAddress, keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
+import { IMPL, designator } from "../core/constants.js";
 import fixtures from "../../../test/fixtures/sdk_parity.json" with { type: "json" };
 
 /**
@@ -193,6 +193,12 @@ export async function probeAccountBorn(client: PublicClient, account: Address): 
   const implWord = await client.getStorageAt({ address: account, slot: IMPL_SLOT });
   const implementation = wordValue(implWord);
   if (implementation === undefined || implementation === 0n || implementation > UINT160_MAX) return false;
+  // Code at the pointer is not enough: this SDK speaks to exactly one
+  // implementation, pins it everywhere else (blob.ts, submit.ts), and cannot
+  // sign for another. An account behind a different implementation — an older
+  // one, or something that is not Glaux at all — is not one this SDK can drive,
+  // so calling it "born" would invite a caller to treat it as usable.
+  if (getAddress(toHex(implementation, { size: 20 })) !== getAddress(IMPL)) return false;
   const implementationCode = await client.getCode({ address: toHex(implementation, { size: 20 }) });
   if (implementationCode === undefined || implementationCode === "0x") return false;
 

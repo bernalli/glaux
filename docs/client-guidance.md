@@ -549,6 +549,15 @@ transactions and reorgs. If no independent view exists, keep the default ceiling
 and present the residual plainly; never raise it merely to avoid refreshing an
 expired request.
 
+The same independence rule applies one step earlier, at **birth**. `submitBirth`
+broadcasts, takes its receipt, and reads the account's code and storage back
+through the client it was handed, so its postconditions confirm what that one
+endpoint says — not what the chain holds. Before funding a newly born address, or
+showing it to a user as live, confirm it against a second independently operated
+endpoint: the account's designator, its implementation pointer, and its three
+factor slots. `reconcile` is the tool for this; point it at two providers rather
+than two URLs of the same backend.
+
 ## Signing a message is authorizing an action
 
 With ERC-1271 live, the account can sign for protocols that move funds on a
