@@ -8,10 +8,16 @@ FactorSlot entries — are zero (threat-model residual 17). These tests stub
 `w3` so nothing touches the network.
 """
 
+import json
+from pathlib import Path
 from typing import Any
 
+import birth
 import pytest
-from eth_account import Account
+import submit_birth as submitter
+from eth_account.typed_transactions.set_code_transaction import Authorization
+from eth_keys.datatypes import Signature
+from eth_utils import to_bytes
 from hexbytes import HexBytes
 from submit_birth import (
     IMPL_SLOT,
@@ -29,6 +35,11 @@ ROUTER_DESIGNATOR = bytes.fromhex("ef0100") + bytes.fromhex(ROUTER[2:])
 # Throwaway relayer key, never funded on any chain: `submit_birth` only reaches
 # `Account.from_key` AFTER the authorization gate, so a rejected blob never uses it.
 RELAYER_KEY = "0x" + "33" * 32
+CANONICAL_ROUTER = "0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
+CANONICAL_IMPLEMENTATION = "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d"
+CANONICAL_IMPL_CODE_HASH = (
+    "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
+)
 
 
 class _StubEth:
@@ -100,39 +111,50 @@ def test_pre_planted_factor_slot_verifier_type_is_rejected() -> None:
         preflight_fresh_account(w3, ACCOUNT, ROUTER)
 
 
-def _authorization_blob(nonce: int = 0) -> dict:
-    private_key = "0x" + "11" * 32
-    account = Account.from_key(private_key).address
-    authorization = Account.sign_authorization(
-        {"chainId": 0, "address": ROUTER, "nonce": nonce}, private_key
+def _rootless_blob(
+    *,
+    router: str = CANONICAL_ROUTER,
+    expected_code_hash: str = CANONICAL_IMPL_CODE_HASH,
+) -> dict:
+    init_data = b""
+    digest = birth.build_init_digest(
+        router,
+        CANONICAL_IMPLEMENTATION,
+        to_bytes(hexstr=expected_code_hash),
+        init_data,
     )
+    proof = birth.craft_rootless_authorization(digest, router)
     return {
-        "account": account,
-        "router": ROUTER,
+        "account": proof.account,
+        "router": router,
+        "implementation": CANONICAL_IMPLEMENTATION,
+        "expectedCodeHash": expected_code_hash,
+        "initData": "0x",
+        "salt": "0x" + proof.salt.hex(),
         "authorization": {
-            "chainId": authorization.chain_id,
-            "address": "0x" + authorization.address.hex(),
-            "nonce": authorization.nonce,
-            "yParity": authorization.y_parity,
-            "r": hex(authorization.r),
-            "s": hex(authorization.s),
+            "chainId": 0,
+            "address": router,
+            "nonce": 0,
+            "yParity": proof.y_parity,
+            "r": "0x" + proof.r.hex(),
+            "s": hex(proof.s),
         },
     }
 
 
 def test_authorization_signer_and_zero_chain_id_are_accepted() -> None:
-    assert_blob_authorization(_authorization_blob())
+    assert_blob_authorization(_rootless_blob())
 
 
 def test_authorization_for_a_different_eoa_is_rejected() -> None:
-    blob = _authorization_blob()
+    blob = _rootless_blob()
     blob["account"] = "0x" + "22" * 20
-    with pytest.raises(SystemExit, match="signer does not equal blob account"):
+    with pytest.raises(SystemExit, match="does not recover to blob account"):
         assert_blob_authorization(blob)
 
 
 def test_chain_specific_authorization_is_rejected() -> None:
-    blob = _authorization_blob()
+    blob = _rootless_blob()
     blob["authorization"]["chainId"] = 1
     with pytest.raises(SystemExit, match="chainId must be 0"):
         assert_blob_authorization(blob)
@@ -148,10 +170,114 @@ def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
     and every other gate in `assert_blob_authorization` passes it: the nonce is
     the only thing left to refuse it for.
     """
-    blob = _authorization_blob(nonce=5)
+    blob = _rootless_blob()
+    blob["authorization"]["nonce"] = 5
     assert blob["authorization"]["nonce"] == 5
     with pytest.raises(SystemExit, match="nonce must be 0"):
         assert_blob_authorization(blob)
+
+
+def test_python_canonical_constants_match_shared_parity_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parent.parent
+        / "test"
+        / "fixtures"
+        / "sdk_parity.json"
+    )
+    canonical = json.loads(fixture_path.read_text(encoding="utf-8"))["canonical"]
+
+    assert submitter.CANONICAL_ROUTER == canonical["router"]
+    assert submitter.CANONICAL_IMPL_CODE_HASH == canonical["expectedCodeHash"]
+
+
+def test_noncanonical_router_is_rejected_before_rpc() -> None:
+    blob = _rootless_blob(router="0x" + "55" * 20)
+
+    with pytest.raises(SystemExit, match="router is not canonical") as excinfo:
+        submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
+
+    assert type(excinfo.value).__name__ == "InvalidBirthBlobError"
+
+
+def test_noncanonical_expected_code_hash_is_rejected_before_rpc() -> None:
+    blob = _rootless_blob(expected_code_hash="0x" + "66" * 32)
+
+    with pytest.raises(SystemExit, match="expectedCodeHash is not canonical") as excinfo:
+        submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
+
+    assert type(excinfo.value).__name__ == "InvalidBirthBlobError"
+
+
+def test_authorization_r_not_bound_to_init_fields_is_rejected_before_rpc() -> None:
+    """A COMPLETE proof, crafted for different init data, presented for this blob.
+
+    It stays internally coherent — the tuple really does recover to the account
+    it names — so every self-consistency check passes and only recomputing `r`
+    from the blob's own configuration catches it. Swapping `initData` alone
+    would not isolate this: the recovery check would fire first, and the `r`
+    check could be deleted without a single test going red.
+    """
+    blob = _rootless_blob()
+    foreign_digest = birth.build_init_digest(
+        CANONICAL_ROUTER,
+        CANONICAL_IMPLEMENTATION,
+        to_bytes(hexstr=CANONICAL_IMPL_CODE_HASH),
+        b"\x01",
+    )
+    foreign = birth.craft_rootless_authorization(foreign_digest, CANONICAL_ROUTER)
+    # Only the TRANSMITTED r is foreign. Salt and s stay this blob's own, so the
+    # recovery check still passes and this isolates the binding check alone.
+    blob["authorization"]["r"] = "0x" + foreign.r.hex()
+
+    with pytest.raises(SystemExit) as excinfo:
+        submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
+
+    # Assert the FIELD, not the message: "authorization r" is a substring of
+    # "authorization rootless proof", so a message match would stay green while
+    # a different guard did the work.
+    assert type(excinfo.value).__name__ == "InvalidBirthBlobError"
+    assert excinfo.value.field == "authorization r"
+
+
+def test_authorization_without_rootless_s_prefix_is_rejected_before_rpc() -> None:
+    blob = _rootless_blob()
+    authorization = blob["authorization"]
+    untagged_s = 1
+    unsigned = Authorization(
+        authorization["chainId"],
+        to_bytes(hexstr=authorization["address"]),
+        authorization["nonce"],
+    )
+    signer = Signature(
+        vrs=(authorization["yParity"], int(authorization["r"], 16), untagged_s)
+    ).recover_public_key_from_msg_hash(unsigned.hash())
+    blob["account"] = signer.to_checksum_address()
+    authorization["s"] = hex(untagged_s)
+
+    with pytest.raises(SystemExit, match="rootless proof") as excinfo:
+        submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
+
+    assert type(excinfo.value).__name__ == "InvalidBirthBlobError"
+
+
+def test_parity_one_authorization_is_rejected_before_rpc() -> None:
+    blob = _rootless_blob()
+    authorization = blob["authorization"]
+    unsigned = Authorization(
+        authorization["chainId"],
+        to_bytes(hexstr=authorization["address"]),
+        authorization["nonce"],
+    )
+    signer = Signature(
+        vrs=(1, int(authorization["r"], 16), int(authorization["s"], 16))
+    ).recover_public_key_from_msg_hash(unsigned.hash())
+    blob["account"] = signer.to_checksum_address()
+    authorization["yParity"] = 1
+
+    with pytest.raises(SystemExit, match="yParity must be 0") as excinfo:
+        submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
+
+    assert type(excinfo.value).__name__ == "InvalidBirthBlobError"
 
 
 class _ExplodingEth:
@@ -179,25 +305,16 @@ def test_submit_birth_refuses_an_authorization_signed_by_another_key() -> None:
     failure, which is what makes "nothing downstream was reached" an assertion
     rather than an assumption.
     """
-    blob = _authorization_blob()
+    blob = _rootless_blob()
     blob["account"] = "0x" + "22" * 20
-    blob["implementation"] = "0x" + "33" * 20
-    blob["expectedCodeHash"] = "0x" + "44" * 32
-    blob["initData"] = "0x"
-    blob["salt"] = "0x" + "00" * 32
 
-    with pytest.raises(SystemExit, match="signer does not equal blob account"):
+    with pytest.raises(SystemExit, match="does not recover to blob account"):
         submit_birth(_ExplodingWeb3(), RELAYER_KEY, blob)
 
 
 def _submittable_blob() -> dict:
     """A blob that passes every gate, so only the receipt decides the outcome."""
-    blob = _authorization_blob()
-    blob["implementation"] = "0x" + "33" * 20
-    blob["expectedCodeHash"] = "0x" + "44" * 32
-    blob["initData"] = "0x"
-    blob["salt"] = "0x" + "00" * 32
-    return blob
+    return _rootless_blob()
 
 
 class _MinedEth:
@@ -214,13 +331,21 @@ class _MinedEth:
     # default eagerly, so this is read on every call even on an EIP-1559 chain.
     gas_price = 1_000_000_000
 
-    def __init__(self, status: int) -> None:
+    def __init__(self, status: int, installed_implementation: str | None = None) -> None:
         self._status = status
+        self._installed_implementation = installed_implementation
+        self._mined = False
 
     def get_code(self, _address: str) -> bytes:
         return b""
 
-    def get_storage_at(self, _address: str, _position: int) -> bytes:
+    def get_storage_at(self, _address: str, position: int) -> bytes:
+        if (
+            self._mined
+            and position == IMPL_SLOT
+            and self._installed_implementation is not None
+        ):
+            return bytes.fromhex("00" * 12 + self._installed_implementation[2:])
         return ZERO_WORD
 
     def get_block(self, _block: str) -> dict[str, Any]:
@@ -236,6 +361,7 @@ class _MinedEth:
         return HexBytes(b"\xab" * 32)
 
     def wait_for_transaction_receipt(self, tx_hash: HexBytes) -> dict[str, Any]:
+        self._mined = True
         return {
             "transactionHash": tx_hash,
             "status": self._status,
@@ -245,8 +371,8 @@ class _MinedEth:
 
 
 class _MinedWeb3:
-    def __init__(self, status: int) -> None:
-        self.eth = _MinedEth(status)
+    def __init__(self, status: int, installed_implementation: str | None = None) -> None:
+        self.eth = _MinedEth(status, installed_implementation)
 
 
 def test_reverted_birth_receipt_is_not_reported_as_success() -> None:
@@ -268,8 +394,28 @@ def test_reverted_birth_receipt_is_not_reported_as_success() -> None:
 def test_successful_birth_receipt_is_returned() -> None:
     # The twin that keeps the check above honest: an ordinary status-1 receipt
     # must still come back as the printable result it always was.
-    result = submit_birth(_MinedWeb3(status=1), RELAYER_KEY, _submittable_blob())
+    result = submit_birth(
+        _MinedWeb3(
+            status=1,
+            installed_implementation=CANONICAL_IMPLEMENTATION,
+        ),
+        RELAYER_KEY,
+        _submittable_blob(),
+    )
 
     assert result["status"] == 1
     assert result["txHash"] == "0x" + "ab" * 32
     assert result["chainId"] == 31337
+
+
+def test_status_one_without_installed_implementation_is_not_reported_as_success() -> None:
+    blob = _submittable_blob()
+
+    with pytest.raises(SystemExit) as excinfo:
+        submit_birth(_MinedWeb3(status=1), RELAYER_KEY, blob)
+
+    message = str(excinfo.value.code)
+    assert type(excinfo.value).__name__ == "BirthPostconditionError"
+    assert blob["account"] in message
+    assert "0x" + "ab" * 32 in message
+    assert "0x" + "00" * 32 in message

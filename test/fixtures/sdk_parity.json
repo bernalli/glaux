@@ -2,6 +2,11 @@
   "router": "0xF62849F9A0B5Bf2913b396098F7c7019b51A820a",
   "implementation": "0x2e234DAe75C793f67A35089C9d99245E1C58470b",
   "account": "0x494B20cAF7CA8bCF47f6b77ab276839260BFE3d5",
+  "canonical": {
+      "router": "0x3ccF1cc0F702C084B31e691e057d8742ADF35790",
+      "implementation": "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d",
+      "expectedCodeHash": "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
+    },
   "domains": {
       "INIT": "0x99a75e75b771bda1bbbb84f07491566b57f405a8a8b79954153c1cd21f038e72",
       "UPDATE": "0x3a8f5d3c2202d1c7097807df56c4011bff39c7a16cee217612b34f8f5be686a4",

@@ -206,7 +206,10 @@ export class InvalidBirthBlobError extends Error {
     | "authorization target"
     | "authorization chain id"
     | "authorization nonce"
-    | "authorization signer";
+    | "authorization signer"
+    | "authorization r"
+    | "authorization parity"
+    | "authorization rootless proof";
 
   constructor(field: InvalidBirthBlobError["field"]) {
     super(`birth blob ${field} is not canonical; refusing to broadcast it.`);

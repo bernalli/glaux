@@ -27,14 +27,20 @@ import os
 import sys
 from typing import Any
 
+from birth import build_init_digest, recovers_to
 from eth_abi import encode
 from eth_account import Account
-from eth_account.typed_transactions.set_code_transaction import Authorization
-from eth_keys.datatypes import Signature
 from eth_utils import keccak, to_bytes, to_checksum_address
 from web3 import Web3
 
 INITIALIZE_SELECTOR = keccak(text="initialize(address,bytes32,bytes,bytes32,uint256)")[:4]
+
+# Canonical deployment bindings, mirrored by sdk/src/core/constants.ts and pinned
+# against Solidity-derived values in test/fixtures/sdk_parity.json.
+CANONICAL_ROUTER = "0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
+CANONICAL_IMPL_CODE_HASH = (
+    "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
+)
 
 # The namespaced slots GlauxStorage owns (same derivation as reconcile.py's BASE_SLOT /
 # IMPL_SLOT). A birth blob must only ever be broadcast to an address that has never been
@@ -60,6 +66,20 @@ MIN_PLAUSIBLE_BIRTH_GAS = 200_000
 # verifier at 0x100 rather than a precompile, where birth costs ~1.4M. Unused gas is
 # refunded; only the relayer's balance has to cover the limit.
 FALLBACK_BIRTH_GAS = 3_000_000
+
+
+class InvalidBirthBlobError(SystemExit):
+    """A caller-supplied birth blob is not one the canonical router can accept."""
+
+    def __init__(self, field: str, reason: str) -> None:
+        self.field = field
+        super().__init__(
+            f"InvalidBirthBlobError ({field}): refusing to submit: {reason}"
+        )
+
+
+class BirthPostconditionError(SystemExit):
+    """A successful receipt did not install the blob's implementation pointer."""
 
 
 def load_blob(path: str) -> dict[str, Any]:
@@ -120,42 +140,74 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     account = to_checksum_address(blob["account"])
     router = to_checksum_address(blob["router"])
     target = to_checksum_address(authorization["address"])
+    if router != to_checksum_address(CANONICAL_ROUTER):
+        raise InvalidBirthBlobError("router", "birth blob router is not canonical")
+    if blob["expectedCodeHash"].lower() != CANONICAL_IMPL_CODE_HASH:
+        raise InvalidBirthBlobError(
+            "expectedCodeHash", "birth blob expectedCodeHash is not canonical"
+        )
     if target != router:
-        sys.exit(
+        raise InvalidBirthBlobError(
+            "authorization target",
             "refusing to submit: birth blob authorization target differs from its router"
         )
     if authorization["chainId"] != 0:
-        sys.exit(
+        raise InvalidBirthBlobError(
+            "authorization chainId",
             "refusing to submit: birth blob authorization chainId must be 0 for cross-chain replay"
         )
     if authorization["nonce"] != 0:
-        sys.exit(
+        raise InvalidBirthBlobError(
+            "authorization nonce",
             "refusing to submit: birth blob authorization nonce must be 0 for cross-chain replay"
         )
 
     try:
-        unsigned = Authorization(
-            authorization["chainId"],
-            to_bytes(hexstr=target),
-            authorization["nonce"],
+        expected_code_hash = to_bytes(hexstr=blob["expectedCodeHash"])
+        init_data = to_bytes(hexstr=blob["initData"])
+        salt = to_bytes(hexstr=blob["salt"])
+        digest = build_init_digest(
+            router,
+            to_checksum_address(blob["implementation"]),
+            expected_code_hash,
+            init_data,
         )
-        signature = Signature(
-            vrs=(
-                authorization["yParity"],
-                int(authorization["r"], 16),
-                int(authorization["s"], 16),
-            )
-        )
-        signer = signature.recover_public_key_from_msg_hash(
-            unsigned.hash()
-        ).to_checksum_address()
+        expected_r = keccak(encode(["bytes32", "bytes32"], [digest, salt]))
+        authorization_r = int(authorization["r"], 16)
+        authorization_s = int(authorization["s"], 16)
     except Exception as exc:
-        raise SystemExit(
-            "refusing to submit: birth blob authorization signature is malformed"
+        raise InvalidBirthBlobError(
+            "authorization rootless proof",
+            "birth blob authorization rootless proof is malformed",
         ) from exc
-    if signer != account:
-        sys.exit(
-            "refusing to submit: birth blob authorization signer does not equal blob account"
+
+    if authorization_r != int.from_bytes(expected_r, "big"):
+        raise InvalidBirthBlobError(
+            "authorization r",
+            "birth blob authorization r does not bind its initialization fields",
+        )
+    if authorization["yParity"] != 0:
+        raise InvalidBirthBlobError(
+            "authorization yParity",
+            "birth blob authorization yParity must be 0 because the router uses v = 27",
+        )
+    try:
+        accepted = recovers_to(
+            digest,
+            salt,
+            authorization_s,
+            account,
+            router,
+        )
+    except Exception as exc:
+        raise InvalidBirthBlobError(
+            "authorization rootless proof",
+            "birth blob authorization rootless proof is malformed",
+        ) from exc
+    if not accepted:
+        raise InvalidBirthBlobError(
+            "authorization rootless proof",
+            "birth blob authorization rootless proof does not recover to blob account",
         )
 
 
@@ -282,6 +334,15 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
             f"(gas used {result['gasUsed']}). The EIP-7702 authorization still "
             "applied, so the account is delegated with no factor slots "
             "installed: inspect it before retrying this blob."
+        )
+    installed_word = bytes(w3.eth.get_storage_at(account_address, IMPL_SLOT))
+    expected_implementation = to_checksum_address(blob["implementation"])
+    if int.from_bytes(installed_word, "big") != int(expected_implementation, 16):
+        actual = "0x" + installed_word.hex()
+        raise BirthPostconditionError(
+            f"BirthPostconditionError: account {account_address} transaction "
+            f"{result['txHash']} mined with status 1, but raw IMPL_SLOT read "
+            f"{actual}; expected {expected_implementation}."
         )
     return result
 

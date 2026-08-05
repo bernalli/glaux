@@ -31,6 +31,9 @@ contract SdkParityTest is GlauxFixture {
     address internal constant EXEC_CALL_TO = address(0xCA11);
     uint256 internal constant EXEC_CALL_VALUE = 1 ether;
     bytes internal constant EXEC_CALL_DATA = hex"12345678";
+    bytes32 internal constant DEPLOYMENT_SALT = keccak256("glaux.v1");
+    address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
+    address internal constant CANONICAL_ENTRYPOINT = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
 
     // These are emitted for the SDK's live verifier probe. They are mirrored
     // below through SignatureVerify.p256VerifierAvailable(): an empty verifier
@@ -280,6 +283,31 @@ contract SdkParityTest is GlauxFixture {
         );
     }
 
+    /// @dev Pins the production deployment bindings from the same creation code,
+    ///      constructor argument and CREATE2 inputs used by script/Deploy.s.sol.
+    function _canonicalJson() internal returns (string memory) {
+        address canonicalRouter = vm.computeCreate2Address(
+            DEPLOYMENT_SALT, keccak256(type(GlauxDelegate).creationCode), CREATE2_DEPLOYER
+        );
+        address canonicalImplementation = vm.computeCreate2Address(
+            DEPLOYMENT_SALT,
+            keccak256(
+                abi.encodePacked(type(GlauxAccount).creationCode, abi.encode(CANONICAL_ENTRYPOINT))
+            ),
+            CREATE2_DEPLOYER
+        );
+        GlauxAccount runtimeSource = new GlauxAccount(CANONICAL_ENTRYPOINT);
+        return string.concat(
+            "{\n      ",
+            _entry("router", canonicalRouter),
+            ",\n      ",
+            _entry("implementation", canonicalImplementation),
+            ",\n      ",
+            _entry("expectedCodeHash", address(runtimeSource).codehash),
+            "\n    }"
+        );
+    }
+
     function _vectors() internal view returns (Vectors memory v) {
         v.slots = _slots();
         v.registrationData = v.slots[1].data;
@@ -359,10 +387,11 @@ contract SdkParityTest is GlauxFixture {
         );
     }
 
-    function _json(Vectors memory v) internal view returns (string memory) {
+    function _json(Vectors memory v) internal returns (string memory) {
         string memory json = string.concat("{\n  ", _entry("router", address(router)));
         json = string.concat(json, ",\n  ", _entry("implementation", address(impl)));
         json = string.concat(json, ",\n  ", _entry("account", account));
+        json = string.concat(json, ",\n  \"canonical\": ", _canonicalJson());
         json = string.concat(json, ",\n  \"domains\": ", _domainsJson());
         json = string.concat(json, ",\n  \"eip191Sample\": ", _eip191SampleJson());
         json = string.concat(json, ",\n  \"registrationDigest\": ", _registrationDigestJson(v));
