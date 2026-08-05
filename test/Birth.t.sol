@@ -265,13 +265,12 @@ contract BirthTest is GlauxFixture {
     ///      signer recovered from exactly this hash, matching. The RLP is
     ///      `0x05 ‖ 0xd7 ‖ 0x80 ‖ 0x94 ‖ address ‖ 0x80` — list header for 23
     ///      bytes, zero chain id, the 20-byte address, zero nonce.
-    function test_authorizationMessageHashMatchesAnIndependentlyDerivedVector() public {
+    function test_authorizationMessageHashMatchesAnIndependentlyDerivedVector() public view {
+        // Deliberately not a deployed router: `AUTH_MSG_HASH` is an immutable
+        // baked in at construction, so a copy etched elsewhere would still
+        // carry the hash of the address it was built at. The vector stands on
+        // the address alone.
         address fixedRouter = address(0xC0DE);
-        GlauxDelegate atFixedAddress = new GlauxDelegate();
-        vm.etch(fixedRouter, address(atFixedAddress).code);
-        // `SELF`/`AUTH_MSG_HASH` are immutables baked into the runtime code at
-        // construction, so etching carries the ORIGINAL address's values; the
-        // constant has to be recomputed for the address under test.
         bytes32 expected = 0x83e3c8fb81cf4fca1e62dd0804462fc9361d1c5ad72c73498d70959f85d66564;
 
         assertEq(
