@@ -29,6 +29,7 @@ import {
   DuplicateExecutionSignerError,
   ExecutionNonceMismatchError,
   ExecutionValidityWindowError,
+  OperationAlreadyExpiredError,
   OperationExpiredError,
   UnrecognizedSignerError,
 } from "../errors.js";
@@ -177,6 +178,14 @@ export function assertExecutionValidityWindow(
     throw new RangeError("maxValidityWindowSeconds must be a positive safe integer.");
   }
   const now = Math.floor(Date.now() / 1000);
+  // The lower bound the window check on its own leaves open: an operation whose
+  // deadline is already at or behind the local clock passes any ceiling test yet
+  // is dead on arrival at the contract (`block.timestamp > validUntil`). Refusing
+  // it here keeps a quorum signature — and, on the relayed paths, gas — from being
+  // spent on a transaction guaranteed to revert.
+  if (validUntil <= now) {
+    throw new OperationAlreadyExpiredError(validUntil, now);
+  }
   const latestAllowed = now + maxValidityWindowSeconds;
   if (!Number.isSafeInteger(latestAllowed)) {
     throw new RangeError("maxValidityWindowSeconds produces an unsafe timestamp.");

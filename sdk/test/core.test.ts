@@ -10,7 +10,8 @@ import {
 import { encodeInitData, encodeSlotSig, encodeUserOpSignature } from "../src/core/encoding.js";
 import type { Call, FactorSlot, SlotSig } from "../src/core/types.js";
 import { buildInitDigest } from "../src/birth/blob.js";
-import { OperationExpiredError } from "../src/errors.js";
+import { assertExecutionValidityWindow } from "../src/execute/direct.js";
+import { OperationAlreadyExpiredError, OperationExpiredError } from "../src/errors.js";
 import fixtures from "../../test/fixtures/sdk_parity.json" with { type: "json" };
 
 // `noUncheckedIndexedAccess` treats a JSON-imported array's elements as possibly
@@ -153,4 +154,16 @@ it("encodeUserOpSignature throws OperationExpiredError when validUntil is 0", ()
     { slotIndex: rawSig1.slotIndex, signature: rawSig1.signature as Hex },
   ];
   expect(() => encodeUserOpSignature(0, sigs)).toThrow(OperationExpiredError);
+});
+
+it("assertExecutionValidityWindow rejects a validUntil already at/behind the local clock", () => {
+  // 1000 is 1970; it is at or behind the current clock on every run, so the
+  // contract's `block.timestamp > validUntil` would reject it on arrival. Before
+  // the lower-bound check, only the future ceiling was enforced and this passed.
+  expect(() => assertExecutionValidityWindow(1000)).toThrow(OperationAlreadyExpiredError);
+});
+
+it("assertExecutionValidityWindow accepts a validUntil inside the future window", () => {
+  const soon = Math.floor(Date.now() / 1000) + 60;
+  expect(() => assertExecutionValidityWindow(soon)).not.toThrow();
 });

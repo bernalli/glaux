@@ -52,6 +52,32 @@ export class ExecutionValidityWindowError extends Error {
 }
 
 /**
+ * Thrown before signing when an operation's deadline is already at or behind
+ * the client's local clock. The contract evaluates `block.timestamp > validUntil`
+ * and rejects any operation whose deadline the next block will have passed, so
+ * signing one that is already expired only spends a quorum signature — and, on
+ * the relayed paths, gas — on a transaction guaranteed to revert. Distinct from
+ * {@link OperationExpiredError} (the `validUntil === 0` case) and from
+ * {@link ExecutionExpiredError} (the contract's own on-chain rejection, decoded
+ * from real revert data). Like {@link ExecutionValidityWindowError}, the bound is
+ * the client's local clock, not an RPC-supplied block timestamp.
+ */
+export class OperationAlreadyExpiredError extends Error {
+  readonly validUntil: number;
+  readonly now: number;
+
+  constructor(validUntil: number, now: number) {
+    super(
+      `validUntil ${validUntil} is at or before the current time ${now}; ` +
+        "refusing to sign an already-expired operation.",
+    );
+    this.name = "OperationAlreadyExpiredError";
+    this.validUntil = validUntil;
+    this.now = now;
+  }
+}
+
+/**
  * Thrown when a signer is asked to sign something other than the `bytes32`
  * digest the Glaux contracts verify.
  */
@@ -193,6 +219,31 @@ export class ChainIdMismatchError extends Error {
   constructor(expected: number, actual: number) {
     super(`RPC reported chain id ${actual}, but the caller selected chain id ${expected}; refusing to sign or submit on an ambiguous chain.`);
     this.name = "ChainIdMismatchError";
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+/**
+ * Thrown before signing a user operation whose named EntryPoint is not the
+ * canonical one Glaux accounts accept. `GlauxAccount.validateUserOp` reverts
+ * unless `msg.sender == ENTRYPOINT` (an immutable set at deployment), so exactly
+ * one EntryPoint can ever validate an operation; a signature folded — through
+ * `getUserOpHash` — over any other EntryPoint's address is one the account can
+ * never use. Refusing it keeps a quorum signature from being spent on an
+ * operation bound to an EntryPoint that will never call the account, matching the
+ * direct path's binding of its own chain id.
+ */
+export class EntryPointMismatchError extends Error {
+  readonly expected: Address;
+  readonly actual: Address;
+
+  constructor(expected: Address, actual: Address) {
+    super(
+      `operation names EntryPoint ${actual}, but Glaux accounts only accept the canonical ` +
+        `EntryPoint ${expected}; refusing to sign for another.`,
+    );
+    this.name = "EntryPointMismatchError";
     this.expected = expected;
     this.actual = actual;
   }
@@ -365,8 +416,9 @@ export class ExecutionStateReadError extends Error {
 
 /**
  * Thrown when two views of an execution nonce disagree: the contract getter
- * versus raw storage, or their agreed value versus a caller-supplied trusted
- * expectation. No signature is requested after this error.
+ * versus raw storage, the nonce an operation carries versus the live EntryPoint
+ * nonce re-read at signing time, or their agreed value versus a caller-supplied
+ * trusted expectation. No signature is requested after this error.
  *
  * Getter/raw agreement is only a consistency check against a buggy or
  * partially hostile endpoint. One fully hostile endpoint can forge both
@@ -375,7 +427,7 @@ export class ExecutionStateReadError extends Error {
  */
 export class ExecutionNonceMismatchError extends Error {
   readonly path: "direct" | "erc4337";
-  readonly source: "raw storage" | "caller expectation";
+  readonly source: "raw storage" | "caller expectation" | "entrypoint";
   readonly expected: bigint;
   readonly actual: bigint;
 
