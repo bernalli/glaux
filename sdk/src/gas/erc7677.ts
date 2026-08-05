@@ -246,13 +246,15 @@ const MAX_PAYMASTER_RESPONSE_BYTES = 128 * 1024;
 async function readBoundedResponseText(response: Response, method: Erc7677Method): Promise<string> {
   const body = response.body;
   if (body === null) {
-    // Some runtimes hand back a null body (e.g. certain error responses); fall
-    // back to the buffered read but still refuse an over-cap payload.
-    const text = await response.text();
-    if (text.length > MAX_PAYMASTER_RESPONSE_BYTES) {
-      throw new PaymasterUnavailableError(method, `response exceeded ${MAX_PAYMASTER_RESPONSE_BYTES} bytes`);
-    }
-    return text;
+    // No stream, nothing to bound chunk by chunk. The only fallback left is a
+    // buffered read measured with `text().length`, which counts UTF-16 code
+    // units rather than bytes: a payload of three-byte UTF-8 sequences would
+    // report a third of its real size and slip past the cap. Rather than
+    // enforce the cap on the wrong quantity, refuse outright — a JSON-RPC
+    // reply on a standard Fetch implementation always exposes a stream, so a
+    // null body here is a runtime this client will not measure honestly, not
+    // a paymaster answer worth reading.
+    throw new PaymasterUnavailableError(method, "response body was not a readable stream");
   }
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
