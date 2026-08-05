@@ -20,12 +20,11 @@ mock.
 
 ## Why vendored instead of submodules
 
-The development environment denies writes to `.gitmodules` and to the shared
-`.git/config`, which makes submodule-based dependencies impossible to create or
-to check out into the isolated worktrees used during implementation. Vendoring
-keeps the dependency tree byte-identical to upstream while making every checkout
-self-contained: no `git submodule update`, no network, reproducible offline
-builds, and CI checkout without `submodules: recursive`.
+Vendoring keeps the dependency tree byte-identical to upstream while making every
+checkout self-contained: no `git submodule update`, no network, reproducible
+offline builds, and CI checkout without `submodules: recursive`. A submodule
+graph would put each dependency's availability and history behind a second
+fetch that a fresh clone has to get right before anything compiles.
 
 ## Verifying a vendored copy against upstream
 
@@ -42,9 +41,9 @@ Three paths were removed from `lib/p256-verifier`, none of them Solidity:
   (`openzeppelin-contracts`, `forge-std`, `erc4626-tests`, ~10 MB). Nothing under
   it is reachable from this project's imports: only
   `p256-verifier/P256Verifier.sol` and its local `./P256.sol` are compiled.
-- `.gitmodules` and `.vscode/` — inert here (the submodules they describe are
-  gone), and both are file types the development environment refuses to write,
-  which would make every fresh checkout fail.
+- `.gitmodules` and `.vscode/` — inert here: the submodules the first describes
+  are gone with the directory above, and the second is editor configuration for
+  a different project.
 
 Every upstream file that this project compiles is unmodified. No vendored file
 was edited, and nothing was added beyond this note.

@@ -5,8 +5,8 @@ tetradrachms to guard the coin.*
 
 Minimal, crypto-agile **EIP-7702 smart account**: one address on every EVM
 chain by construction, 2-of-3 threshold security on the operational path, and
-a replaceable verification slot designed so signature schemes — post-quantum
-ones included — can rotate without migrating funds.
+a replaceable verification slot, so the factors that authorize an operation
+can adopt new signature schemes without migrating funds.
 
 > ## ⚠️ Unaudited — do not use with real funds
 >
@@ -36,10 +36,20 @@ enforces 2-of-3 verification over three independent factors (device P-256 /
 Secure Enclave via the native precompiles, plus two secp256k1 keys). One
 signed **birth blob** replays on any chain, whenever that chain is first
 touched; one signed rotation replays the same way. Verification lives in a
-replaceable slot, so the account can adopt new signature schemes without
+replaceable slot, so the factor layer can adopt new signature schemes without
 moving funds or changing address: today it verifies secp256k1 and P-256, and
-the slot is the designed migration path to post-quantum schemes as they
-become verifiable on-chain.
+the slot is the designed migration path for schemes that become verifiable
+on-chain later, post-quantum ones included.
+
+That agility stops at the factor layer, and the distinction matters. The
+account *is* an EOA, so its EIP-7702 delegation stays under a secp256k1
+authority no rotation can replace, and the birth key's public key is on chain
+in the authorization of every birth. An adversary who breaks secp256k1
+therefore bypasses the factors entirely, whatever they have been rotated to —
+closing that requires a change at the protocol layer (the direction
+[EIP-8164](https://eips.ethereum.org/EIPS/eip-8164) explores) or moving the
+assets to a new account. Residual 1 of the
+[threat model](docs/threat-model.md) states this in full.
 
 ## The cross-chain proof
 
@@ -91,8 +101,10 @@ a chain that cannot verify P-256, is in
   that pin Solidity, Python and TypeScript to the same bytes.
 
 CI gates every push: build, tests, `forge fmt`, Slither and Aderyn on the
-contracts, lint + tests for both client stacks. Dependencies are vendored
-under `lib/` (see `lib/VENDORED.md`), so a fresh checkout builds offline.
+contracts, lint + tests for the Python tooling, strict typecheck + tests for
+the SDK. Dependencies are vendored under `lib/` (see `lib/VENDORED.md`), so a
+fresh checkout needs no dependency fetching — Foundry still downloads the
+pinned solc on the first build.
 
 ## Documentation
 

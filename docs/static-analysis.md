@@ -69,7 +69,8 @@ here rather than silenced, so a future reviewer sees the same list we did.
 
 ## Aderyn
 
-Tool: Aderyn 0.6.8, not installed in CI yet. Run it locally with:
+Tool: Aderyn 0.6.8, pinned and gating in CI (see *CI wiring* below). Run it
+locally with:
 
 ```
 aderyn --src src --path-excludes lib,test,script -o report.json --highs-only

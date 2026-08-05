@@ -224,27 +224,30 @@ import("viem").then(async ({ createPublicClient, http }) => {
 '
 ```
 
-**Measured 2026-08-03** against operator-supplied public RPC endpoints:
+**Historical measurement, superseded.** The table below was taken on
+2026-08-03 against operator-supplied public RPC endpoints, *before* the
+2026-08-04 redeploy recorded in `docs/deployments.md`. It is kept as the
+record of what the probes reported then, not as current status — re-run the
+command above for that.
 
-| Chain | Verdict | p256 | eip7702 | create2Deployer | entryPoint | routerDeployed | implDeployed |
+| Chain | Verdict (2026-08-03) | p256 | eip7702 | create2Deployer | entryPoint | routerDeployed | implDeployed |
 |---|---|---|---|---|---|---|---|
 | Sepolia (11155111) | `ineligible` | true | true | true | true | true | **false** |
 | Base Sepolia (84532) | `ineligible` | true | true | true | true | true | **false** |
 
-Both chains fail on exactly one probe, for exactly one reason: **the
-testnet redeploy to the post-audit implementation
+At that moment both chains failed on exactly one probe, for exactly one
+reason: the redeploy to the post-internal-review implementation
 (`0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d`, `IMPL` in
-`core/constants.ts`) has not happened yet.** What is actually deployed on
-both public testnets right now is the **old**,
-pre-audit implementation at `0x927ed5700518a8A053367da1EaFDFBdE061E73F2`
-(confirmed live via `eth_getCode` on both chains on the measurement date);
-`checkChain` correctly reports it as absent because it checks the current
-`IMPL` constant, not any address that once was canonical. Every other probe
-— P-256 availability, EIP-7702 authorization pricing, the CREATE2 deployer,
-the ERC-4337 EntryPoint, and the router (`GlauxDelegate`, unchanged by the
-audit fixes) — passes on both networks. This table will flip to `eligible`
-as soon as the redeploy in `docs/deployments.md` lands; re-run the command
-above afterward rather than trusting this snapshot indefinitely.
+`core/constants.ts`) had not happened yet, so what was live on both public
+testnets was still the older implementation at
+`0x927ed5700518a8A053367da1EaFDFBdE061E73F2` (confirmed via `eth_getCode` on
+the measurement date). `checkChain` correctly reported it as absent because
+it checks the current `IMPL` constant, not any address that once was
+canonical. Every other probe — P-256 availability, EIP-7702 authorization
+pricing, the CREATE2 deployer, the ERC-4337 EntryPoint, and the router
+(`GlauxDelegate`, unchanged by those fixes) — passed on both networks. The
+redeploy has since landed, so these verdicts no longer describe the current
+state of either chain.
 
 ## Testing
 

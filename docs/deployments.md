@@ -1,16 +1,16 @@
 # Deployments
 
-> **⚠️ SUPERSEDED by the 2026-08-03 internal-audit fixes (H-1 + L-1).** The audit
+> **⚠️ SUPERSEDED by the 2026-08-03 internal-review fixes (H-1 + L-1).** That review
 > (`docs/internal-audit-2026-08-03.md`) added two on-chain checks to
 > `GlauxAccount` — the birth-guard on `initializeAccount` (H-1) and the
 > reentrancy guard on `applyUpdate` (L-1) — both of which change the
 > implementation bytecode. Every `GlauxAccount` (impl) address and code hash
 > recorded below — `0x927ed570…` / `0x2c271f5a…` — is therefore **stale**. The
-> router is unchanged (`0xB8270e4B…`, runtime hash `0x6f90a8ec…`): the immutable
+> router is unchanged (`0xB8270e4B…`, deployed code hash `0x3c8374c2…`): the immutable
 > half did not move, as required. The local two-chain proof re-run after the full
 > batch gives:
 >
-> | Artifact | Current value (post H-1+L-1) | Original (pre-audit) |
+> | Artifact | Current value (post H-1+L-1) | Original (pre-review) |
 > |---|---|---|
 > | `GlauxAccount` (impl) CREATE2 | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` | `0x927ed570…` |
 > | impl runtime code hash | `0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106` | `0x2c271f5a…` |
@@ -20,7 +20,7 @@
 > `reconcile.py` across both local chains: `verdict: consistent (exit 0)`; the
 > refusal path still reverts as designed. **The public testnets were redeployed at
 > the new implementation on 2026-08-04** — see *Public testnet — redeploy at the
-> audited implementation* below, which supersedes the two 2026-07-31 sections for
+> post-internal-review implementation* below, which supersedes the two 2026-07-31 sections for
 > every address except the router. Blobs signed against `0x2c271f5a…` remain
 > invalid and always will be. History below is kept intact, not rewritten.
 
@@ -39,6 +39,15 @@ Before this run the router's build was checked directly:
 gives `0x6f90a8ec1d718d787bb3a3cdf0887caf750f65958a2b6e9cfef3cf103da8335c`, and the
 CREATE2 address below matching every previous run is the on-chain form of the same
 proof — same salt + same initcode is the only way to land on the same address.
+
+That build-artifact hash is **not** the deployed code hash, and the two must not be
+compared: `forge inspect` returns the artifact with the immutable `SELF` still
+unresolved, while the constructor writes `address(this)` into the runtime code at
+deployment. The deployed router hashes to
+`0x3c8374c2d23053a28d92e1e262beda882b9f9e5ac456476734835cebe4d679c0` — read back
+from `eth_getCode` on Sepolia and Base Sepolia on 2026-08-05, identical on both, and
+the value the tables below record. Use the artifact hash to compare builds, the
+deployed hash to compare chains.
 
 Two local `anvil` instances with EIP-7702 (Prague) support, on different chain ids:
 
@@ -314,7 +323,7 @@ they are rejected. The first birth is what settles it.
 
 ### The one remaining blocker
 
-> **Resolved on 2026-08-04** — see *Public testnet — redeploy at the audited
+> **Resolved on 2026-08-04** — see *Public testnet — redeploy at the post-internal-review
 > implementation*. The commands below are kept as the record of what was blocked
 > and how it was meant to run; the current procedure signs from an encrypted
 > keystore (`--account`) rather than exporting the key, which keeps it out of
@@ -501,11 +510,11 @@ deploy — Foundry writes the private key into it in the clear, exactly as it di
 for chain 84532. A grep for the key across the working tree comes back empty;
 what remains under `cache/` holds RPC URLs only.
 
-## Public testnet — redeploy at the audited implementation (2026-08-04)
+## Public testnet — redeploy at the post-internal-review implementation (2026-08-04)
 
 This supersedes the two 2026-07-31 sections for every value except the router.
-The implementation changed twice since then — the Phase 3 audit fixes (H-1, L-1)
-and nothing after them, since the Phase 4 audit touched only client code — so a
+The implementation changed twice since then — the Phase 3 internal-review fixes (H-1, L-1)
+and nothing after them, since the Phase 4 internal review touched only client code — so a
 redeploy was required before any further birth: blobs signed against the old code
 hash can never be spent.
 

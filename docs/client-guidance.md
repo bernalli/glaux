@@ -194,11 +194,18 @@ you generated.
 
 ## Never expose a factor key to a raw-hash signing API
 
-Glaux digests are plain `keccak256` values, not EIP-712 typed data (the decision
-is recorded as open in the threat model). Domain constants separate Glaux
-operations from other structured schemes, but nothing separates them from
-**raw-hash signing**: a key that can be induced to sign a bare 32-byte digest —
-`eth_sign` and its equivalents — can be induced to sign a Glaux operation.
+Glaux digests are EIP-191 version `0x00` payloads, not EIP-712 typed data —
+a decision the threat model records as *resolved*, not open. The `0x19 0x00`
+prefix and the router as validator keep a Glaux digest out of reach of the
+prefixing APIs (`personal_sign` / `eth_sign` and their equivalents), which
+wrap what they are given under a different prefix and therefore cannot be
+tricked into producing a Glaux signature.
+
+What the wrap does **not** cover is a signer that will put its key on an
+arbitrary 32-byte value with no prefix at all — a raw `sign-this-hash`
+primitive, which hardware signers and low-level libraries do expose. Against
+that, domain constants separate Glaux operations from other structured
+schemes, but nothing separates them from anything else.
 
 Therefore: a Glaux factor key is used for Glaux and nothing else. Never reuse an
 existing wallet key as a factor, never wire a factor key into a generic signing
@@ -248,12 +255,17 @@ Birth follows the sequence in `GlauxDelegate.initialize` and the
 2. Sign the single EIP-7702 authorization tuple naming the **router**
    (`GlauxDelegate`) with `chainId = 0` — this is what makes the same tuple
    valid on every chain the account is later delegated on, present or future.
-3. Sign the initialization blob. The digest is
+3. Sign the initialization blob. The digest is the EIP-191 version `0x00`
+   wrap of the struct hash, with the **router** as validator:
 
    ```
-   keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, implementation,
-                        expectedCodeHash, keccak256(initData)))
+   structHash = keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, implementation,
+                                     expectedCodeHash, keccak256(initData)))
+   digest     = keccak256(abi.encodePacked(hex"1900", ROUTER, structHash))
    ```
+
+   Omitting the wrap produces a digest the router rejects: it computes
+   `GlauxStorage.eip191(SELF, structHash)` and compares against that.
 
    verified against `address(this)` as the signing key
    (`GlauxDelegate.initialize`'s call to `SignatureVerify.verify` with

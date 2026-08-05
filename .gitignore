@@ -18,7 +18,3 @@ __pycache__/
 report.json
 aderyn-report.json
 
-# Editor and working notes stay in the local checkout. Contributors who keep
-# such files should add their own patterns to .git/info/exclude rather than
-# here: what belongs in this file is what every clone must ignore.
-chat-archives/

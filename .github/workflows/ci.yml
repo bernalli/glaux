@@ -22,8 +22,12 @@ jobs:
       # Foundry project. Scoping to first-party code is slither.config.json's
       # job (filter_paths excludes lib/, test/ and script/) and the two targets
       # produce identical findings.
+      # Fail loudly rather than skipping: a gate that silently passes when it
+      # analysed nothing is worse than no gate. Slither is the authoritative
+      # analyser here, so an empty source set is a CI failure, not a green run.
+      - name: Assert there are contracts to analyse
+        run: test -n "$(find src -name '*.sol' -print -quit)" || { echo "::error::no Solidity sources under src/ — Slither would analyse nothing"; exit 1; }
       - uses: crytic/slither-action@v0.4.0
-        if: hashFiles('src/**/*.sol') != ''
         with: { target: ".", fail-on: high, slither-config: "slither.config.json" }
   aderyn:
     runs-on: ubuntu-latest
