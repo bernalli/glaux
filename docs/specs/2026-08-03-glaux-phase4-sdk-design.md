@@ -1,7 +1,9 @@
 # Glaux Phase 4 — Client SDK and cross-chain gas account: design
 
 Status: approved 2026-08-03 (brainstorming session; model, language,
-scope and design each ratified explicitly).
+scope and design each ratified explicitly). Amended 2026-08-05 by the rootless
+birth change (protocol spec v0.10): the `birth` module no longer generates a
+key, it crafts the authorization tuple. Everything else here stands.
 Base branch: `audit/phase3-internal` (contains the Phase 3 audit fixes; not yet
 merged to `main`).
 
@@ -57,7 +59,7 @@ Provider non-coverage is never a funds-safety problem:
    permissionless relay, where the batch itself may reimburse the relayer.
 
 The **real** hazard is elsewhere and is owned by this SDK: the account address
-is an EOA whose birth key is destroyed. On a chain where the account has not
+is an EOA for which no private key has ever existed. On a chain where the account has not
 been born, funds sent to the address arrive but are **frozen until a birth
 happens there**. The birth blob does not expire (`chainId 0` authorization), so
 on an *eligible* chain this is recoverable at any time; on an *ineligible*
@@ -101,8 +103,8 @@ internals of the others.
   browser WebAuthn passkey does **not** (it signs the WebAuthn envelope, not
   the digest). Browser-passkey support would require an on-chain WebAuthn
   verifier type: out of scope, recorded as a future verifier candidate.
-- **`birth`** — ephemeral birth key generation, birth-blob construction
-  (authorization with `chainId 0`), the pre-birth preflight (port of
+- **`birth`** — crafting of the rootless authorization tuple, birth-blob
+  construction (authorization with `chainId 0`), the pre-birth preflight (port of
   `preflight_fresh_account` as hardened by audit finding H-2: IMPL_SLOT plus
   all namespaced words checked, and exactly `0xef0100‖router` admitted as
   pre-existing code), and submission through a relayer.

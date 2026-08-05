@@ -41,23 +41,33 @@ moving funds or changing address: today it verifies secp256k1 and P-256, and
 the slot is the designed migration path for schemes that become verifiable
 on-chain later, post-quantum ones included.
 
+Birth is **rootless**: no key for the account is generated at any point. The
+EIP-7702 authorization tuple is crafted so that its `r` is a hash commitment to
+the account's own birth configuration, and the address is whoever `ecrecover`
+returns for it. Forging that with a real key would mean inverting the discrete
+log, so a born Glaux account is provably one whose private key nobody has ever
+held — the property [EIP-8164](https://eips.ethereum.org/EIPS/eip-8164) names as
+a goal for protocol-level rootless accounts, obtained here without waiting for
+it. The price is that the delegation can never be revoked or repointed, by
+anyone.
+
 That agility stops at the factor layer, and the distinction matters. The
 account *is* an EOA, so its EIP-7702 delegation stays under a secp256k1
-authority no rotation can replace, and the birth key's public key is on chain
-in the authorization of every birth. An adversary who breaks secp256k1
-therefore bypasses the factors entirely, whatever they have been rotated to —
-closing that requires a change at the protocol layer (the direction
-[EIP-8164](https://eips.ethereum.org/EIPS/eip-8164) explores) or moving the
-assets to a new account. Residual 1 of the
-[threat model](docs/threat-model.md) states this in full.
+authority no rotation can replace, and the account's public key is recoverable
+from the authorization tuple of every birth. An adversary who breaks secp256k1
+therefore bypasses the factors entirely, whatever they have been rotated to, and
+rootlessness does not help: the key nobody holds is still computable by whoever
+breaks the curve. Closing that requires a change at the protocol layer or moving
+the assets to a new account. Residual 1 of the
+[threat model](docs/threat-model.md) states this in full, alongside the residuals
+the project has decided to accept rather than fix.
 
 ## The cross-chain proof
 
 The claim the design rests on — one signature, every chain, same account —
-is demonstrated on public networks, not argued. One birth blob, signed once
-by an ephemeral key that was then discarded, was submitted unmodified to two
-independent testnets. It produced **the same account, with the same three
-factors, at the same address, for the same gas to the unit**:
+is demonstrated on public networks, not argued. One birth blob was submitted
+unmodified to two independent testnets. It produced **the same account, with the
+same three factors, at the same address, for the same gas to the unit**:
 
 | | Sepolia (11155111) | Base Sepolia (84532) |
 |---|---|---|
@@ -67,7 +77,7 @@ factors, at the same address, for the same gas to the unit**:
 | birth gas | 376,704 | 376,704 |
 | born account | [`0x327b2D99…`](https://sepolia.etherscan.io/address/0x327b2D9932Cdf39Ebef54f897A81a8137dC0c126) | [`0x327b2D99…`](https://sepolia.basescan.org/address/0x327b2D9932Cdf39Ebef54f897A81a8137dC0c126) |
 
-| Canonical artifact | Value (identical on both chains) |
+| Artifact of that run | Value (identical on both chains) |
 |---|---|
 | `GlauxAccount` (implementation) | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` |
 | `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` |
@@ -82,6 +92,15 @@ byte for byte, and the raw-first reconciliation tool reports
 `verdict: consistent` across both. The full run, including a live refusal on
 a chain that cannot verify P-256, is in
 [`docs/deployments.md`](docs/deployments.md).
+
+**These accounts predate rootless birth.** Moving birth to a crafted
+authorization put the router's own address into an immutable constant, so the
+router's bytecode changed and its canonical address is now
+`0x3ccF1cc0F702C084B31e691e057d8742ADF35790`; the implementation above is
+unchanged. The run recorded here is the previous generation — the mechanism it
+demonstrates is the same one, and blobs of that format can no longer be spent.
+The end-to-end proof has been re-run in full under the new format on two local
+chains, and the public redeploy is pending.
 
 ## What is here
 
@@ -113,7 +132,7 @@ Read in this order:
 | Document | What it is |
 |---|---|
 | [`docs/specs/2026-07-28-glaux-design.md`](docs/specs/2026-07-28-glaux-design.md) | The design specification (v0.9), with its full revision history |
-| [`docs/threat-model.md`](docs/threat-model.md) | What is protected, against whom, and the residuals the project declares openly |
+| [`docs/threat-model.md`](docs/threat-model.md) | What is protected, against whom, the residuals the project declares openly, and the three it has [accepted rather than fixed](docs/threat-model.md#accepted-residuals) |
 | [`docs/client-guidance.md`](docs/client-guidance.md) | **Required reading before integrating**: several residuals are closed only by a client-side rule |
 | [`docs/internal-audit-2026-08-03.md`](docs/internal-audit-2026-08-03.md) | First internal audit (contracts): findings, reproductions, fixes |
 | [`docs/internal-audit-2026-08-04-phase4.md`](docs/internal-audit-2026-08-04-phase4.md) | Second internal audit (client code): findings, fixes, open residuals |

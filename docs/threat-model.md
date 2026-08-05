@@ -25,10 +25,14 @@ Reachable through `executeWithSigs` or, via an ERC-4337 bundler, through
 1, F3 the cloud co-signer at slot 2. Their compromise, singly or in
 combination, determines what an adversary can do.
 
-**The birth key.** The ephemeral EOA private key that signs the one EIP-7702
-authorization tuple and the initialization blob. It is meant to exist only
-until the account is born. If it survives, it is a permanent master key — see
-the first residual, which is the most serious property in this document.
+**The birth blob — and no birth key.** Until 2026-08-05 the account was born
+from an ephemeral EOA key that signed its own delegation tuple, and a surviving
+copy of that key was the most serious property in this document. That key no
+longer exists at any point: the delegation tuple is *crafted*, never signed, and
+the address is whoever `ecrecover` reports for it (residual 1). What remains is
+the blob itself, and its asset property is availability rather than secrecy — it
+is public by construction, and losing it makes chains the account has not
+reached yet unreachable (residual 4).
 
 **The update nonce and the configuration it gates.** `updateNonce` in
 `GlauxStorage.Layout` and the three `FactorSlot` entries: whoever can produce
@@ -104,9 +108,14 @@ worth pointing at and cheap to check — immutable, deployed deterministically a
 the same address on every chain, with a code hash a client can compare against a
 published constant before signing anything. That is why the router is frozen and
 CREATE2-deployed rather than upgradeable, and why `initialize` binds the
-implementation's code hash into the birth signature. A wallet integrating Glaux
+implementation's code hash into the birth proof. A wallet integrating Glaux
 must show the user the target address and verify it against the canonical one;
-no on-chain check can help a user who signed for someone else's contract.
+no on-chain check can help a user who signed for someone else's contract. Under
+rootless birth the user signs no delegation at all, which removes the phishing
+surface at birth but not the need for that check: the router's address is inside
+the authorization preimage the account address is recovered from, so crafting
+against the wrong router produces an account delegated to it, born correctly and
+irrevocably.
 Sources: [CrimeEnjoyor
 analysis](https://dev.to/ohmygod/the-crimeenjoyor-epidemic-how-eip-7702-delegation-phishing-drained-450k-wallets-and-how-to-e2g),
 [QNT pool drain via a delegated admin
@@ -169,44 +178,57 @@ These are not omissions found during review; they are properties of the design
 that the project states openly rather than implies away. They are ordered by
 how much damage they do.
 
-### 1. A surviving birth key is a permanent master key
+### 1. A surviving birth key was a permanent master key *(closed by construction, 2026-08-05)*
 
-**No on-chain mitigation. Closed only by process.**
+The account's EOA key used to be a real key. EIP-7702 delegation does not strip
+an EOA of its own authority — a delegated EOA can still originate ordinary
+transactions and sign further authorization tuples — so a surviving copy of the
+key that signed the birth could spend the account's funds directly, bypassing
+the 2-of-3 entirely, and re-delegate the account permanently. Rotating all three
+factors did not revoke it: the factors govern the delegate's state, not the
+EOA's authority. The mitigation was a promise about a process: generate the key
+in one process, destroy it after exactly two signatures. A promise is not a
+guarantee, and nothing on chain could tell "the owner's key" from "a copy of the
+owner's key".
 
-The birth key *is* the account's EOA key. EIP-7702 delegation does not strip
-the EOA of its own authority: a delegated EOA can still originate ordinary
-transactions, and can still sign further authorization tuples. A surviving copy
-of the birth key can therefore spend the account's funds directly — bypassing
-the 2-of-3 entirely — and can re-delegate the account to a contract of the
-attacker's choosing, permanently.
+**No key is generated any more, so there is none to survive.** The delegation
+tuple is crafted rather than signed: `r` is `keccak256(digest ‖ salt)`, a
+commitment to this exact birth configuration; `s` carries a 13-byte tag; and the
+account *is* whatever address `ecrecover` returns for that pair against the
+authorization preimage. The router recomputes all three facts at birth and
+reverts unless they hold. Producing the same tuple with a real key would require
+either a nonce `k` with `x(kG) = r` — inverting the discrete log — or a private
+key whose signature happens to carry 13 chosen bytes of `s`, about 2^103 work.
+So a born Glaux account is *provably* one for which no private key has ever
+existed. This is the property [EIP-8164](https://eips.ethereum.org/EIPS/eip-8164)
+(Draft, February 2026) names as a goal for protocol-level rootless accounts;
+Glaux now has it in userland, without depending on 8164 or on EIP-7851 shipping.
 
-Rotating all three factors does **not** revoke it: the factors govern the
-delegate's state, not the EOA's authority. This is not a race to initialize
-first, and it does not end when the account is born. It is unlimited authority,
-for the lifetime of the address.
+Precisely what is claimed: no party has ever *held* the key. A private key for
+that address exists mathematically — every curve point has a discrete log — and
+an adversary who breaks secp256k1 recovers it from the public key the
+authorization tuple exposes, exactly as for any EOA. Rootlessness removes the
+custody problem, not the cryptographic assumption — which is why the crypto
+agility of the factor slots stops at the delegation itself, as the README says
+in the same terms.
 
-The only remedy for a suspected compromise is **migrating every asset to a
-newly born account**. Two protocol-level proposals would be the real fix, and
-Glaux depends on neither: EIP-7851, which would let a delegated EOA disable its
-residual ECDSA authority, and [EIP-8164](https://eips.ethereum.org/EIPS/eip-8164)
-(Draft, February 2026), which replaces the EOA's ECDSA authentication with an
-embedded ML-DSA-44 key under a `0xef0101` prefix, making the original key
-permanently inert — and which names "provably rootless accounts", created so
-that no party ever possessed the ECDSA private key, as an explicit goal. That is
-the same property Glaux buys in userland by generating the birth key inside one
-process and destroying it; if 8164 ships, this residual moves from a process
-guarantee to a protocol one. See §9 of the spec for what that would mean
-strategically.
+Two limits, stated because they are the price:
 
-The entire security of the account therefore rests on the birth key never
-leaving the process that generated it, and being destroyed immediately after
-producing exactly two signatures. That is a process guarantee, not a contract
-guarantee, and the contract cannot help: it verifies the birth signature
-against `address(this)` precisely because the birth key and the account address
-are the same authority, so "the owner's key" and "a copy of the owner's key"
-are indistinguishable at the cryptographic level.
+- **The delegation is irrevocable, and now unconditionally so.** There is no key
+  that could sign a different authorization tuple, so the account can never be
+  re-delegated to another wallet — not by an attacker, and not by its owner
+  either. Everything the account will ever do it does through this router, and
+  the only way its logic changes is a `SetImplementation` update signed by the
+  quorum (residual 12 covers what that direction does and does not allow).
+- **Rootlessness is verifiable from the blob, not from the chain.** The router
+  checks the proof at birth and stores nothing about it afterwards, so an
+  observer looking only at chain state sees an ordinary delegated EOA. Anyone
+  holding the birth blob can re-derive `r` from the configuration, check the
+  tag, recover the address, and confirm it — which is another reason the blob is
+  worth keeping (residual 4). An account whose blob is lost is still rootless;
+  it simply cannot be *demonstrated* to be, to someone who was not there.
 
-### 2. Two compromised factors is full control, by design
+### 2. Two compromised factors is full control, by design *(accepted, see below)*
 
 An attacker holding any two factor keys can execute arbitrary calls, rotate all
 three slots, change verifier types, and upgrade the implementation. There is no
@@ -258,9 +280,13 @@ reliably repairable; it is to be prevented.
 
 **No on-chain mitigation. Closed only by client retention policy.**
 
-Because the birth key is destroyed, the EIP-7702 authorization tuple and the
-initialization blob can never be regenerated — and without them the account can
-never be activated on a chain it has not yet reached. The same applies to the
+The authorization tuple is derived deterministically from the birth digest, so
+in principle it can always be recomputed — but only from the *same* `initData`,
+and `initData` carries the three possession proofs. A P-256 proof is signed with
+a random nonce, as any hardware signer will do, so re-signing one produces a
+different `initData`, a different digest, and therefore a **different account**.
+Recomputation is not recovery: without the original blob the account can never
+be activated on a chain it has not yet reached. The same applies to the
 update history: `applyUpdate` accepts only `updateNonce + 1`, so a lagging chain
 can be caught up only by replaying every signed update in order. A missing
 update at nonce N permanently strands every chain still below it, even with all
@@ -471,21 +497,39 @@ owners, and it provides no safety net if an upgrade breaks the upgrade path.
 Client guidance therefore requires staged rollout — land an upgrade on one
 low-value chain and verify the account still functions before propagating it.
 
-### 13. A signed birth blob never expires and cannot be revoked
+### 13. A birth blob never expires and cannot be revoked *(narrowed by rootless birth)*
 
-The update channel has an absolute signer-side rule — never sign two updates for
-one nonce. Birth has no equivalent, and it needs one: **any birth blob ever
-signed stays a live takeover primitive, forever, on every chain the account has
-not yet been born on.** The digest carries no deadline, the immutable router has
-no mechanism to invalidate one, and the birth key that could have signed a
-replacement is destroyed by design. `test_birth_noCodeImplementationRevertsAndOriginalBlobIsRetryable`
-deliberately proves that durability, because a blob must survive to reach chains
-that do not exist yet; the same property means a second, differently-configured
-blob signed during setup is an unrevokable backdoor.
+A birth blob stays valid forever, on every chain the account has not yet been
+born on. The digest carries no deadline and the immutable router has no
+mechanism to invalidate one.
+`test_birth_noCodeImplementationRevertsAndOriginalBlobIsRetryable` deliberately
+proves that durability, because a blob must survive to reach chains that do not
+exist yet.
 
-The rule is therefore: **sign exactly one birth blob, ever.** If a client's flow
-can produce two — a retry, a "regenerate", an aborted setup that already
-signed — that flow is broken, and no on-chain check will catch it.
+Until 2026-08-05 that durability was also a takeover primitive: the account
+address was the birth key's address, so a *second*, differently-configured blob
+signed during setup was a valid birth for **the same address** — an unrevokable
+backdoor that could be spent on any chain the account had not reached, installing
+factors the owner never chose. Rootless birth removes that: the address is
+recovered from `r`, which commits to the digest, which covers the implementation,
+its code hash and `initData`. Change any of them, or the salt, and the proof
+recovers to a different address. Two blobs are therefore two accounts, and a
+blob is only ever a birth for the account it names. Hitting an existing account
+with a different configuration would mean searching for a colliding recovery —
+2^160 work, not a setup mistake.
+
+What survives is a different failure, and it is not an attacker's: **a client
+flow that can produce two blobs produces two accounts.** A retry, a
+"regenerate", an aborted setup that already crafted — each yields a different
+address, even from the identical three factors, because the P-256 possession
+proof inside `initData` is re-signed with a fresh nonce. Both addresses answer
+to the same factors, so nothing is handed to anyone else; the danger is that
+funds sent to an address whose blob was discarded as "the failed attempt" are
+**unrecoverable**. That address cannot be born without its blob, cannot be
+reached without being born, and has no key that could move anything directly.
+Craft once, keep the blob, and treat a second craft as a new account rather than
+a repair of the first — and never discard a blob for an address that has ever
+been shown to anyone.
 
 ### 14. Execution deadlines *(closed, v0.7)*
 
@@ -550,7 +594,7 @@ not this one's.
   every 4337 execution logs the same value and an indexer cannot distinguish
   them by nonce alone.
 
-### 16. ERC-1271: authorized movement leaves no nonce trace
+### 16. ERC-1271: authorized movement leaves no nonce trace *(accepted, see below)*
 
 With the message channel live, `execNonce` is no longer a complete record of
 authorized value movement: the quorum can sign a Permit2 witness or a Seaport
@@ -599,11 +643,24 @@ run outside a router birth). This residual never passes through
 see it.
 
 **Precondition**: the EOA carried a hostile delegation designator on that chain
-at some earlier point. Unreachable in the canonical flow, where the birth key is
-an ephemeral EOA generated for the purpose. But it is squarely on the migration
-path this project plans, where the birth key *is* a long-lived user key — the
-same population residual 1 and the EIP-191 section already flag as the dangerous
-case. There is no honest on-chain fix: whoever can write one namespaced slot can
+at some earlier point. Rootless birth makes that precondition unreachable rather
+than merely unlikely. Writing an account's storage requires executing code as
+that account, which requires a delegation, which requires an authorization tuple
+that recovers to that exact address — and nobody holds a key for a rootless
+address, including whoever crafted it. Crafting cannot help either: it yields
+whatever address the chosen digest happens to recover to, never a chosen one, so
+aiming a craft at an address someone is about to use is the 2^160 search again.
+The address is also unknown to everyone until the blob exists.
+
+What kept this residual alive was the migration path — birthing an account from
+a long-lived user EOA, where the address is old, public, and may well have been
+delegated before. That path is not available under rootless birth (an address
+that answers to a key is not reachable from a proof that no key exists) and is
+deferred until the protocol can neutralise an EOA's signing authority; see the
+roadmap. The pre-birth verification below stays in the client as defence in
+depth, and because it costs one `eth_getStorageAt` per word.
+
+There is no honest on-chain fix: whoever can write one namespaced slot can
 write them all, so no in-contract check can distinguish planted state from
 genuine state. The defence is client-side and normative — see the pre-birth
 verification and the "never migrate an already-delegated EOA" rule in
@@ -615,13 +672,14 @@ pointer, a prior delegate plants a **fabricated `bytes` length** in a factor
 slot's data-head word (`BASE + 2 + 2i`). At birth, the memory→storage struct
 copy `l.slots[i] = s` must zero the old array's tail, and an enormous planted
 length turns that into an unbounded loop — birth runs out of gas and can never
-succeed on that chain, with the birth key already destroyed. Because
+succeed on that chain, and no key exists that could reach the address by any
+other route. Because
 `IMPL_SLOT` and the header word both stay zero, a check that reads only those
 two would pass. The pre-birth verification therefore reads **all** namespaced
 words (the implementation pointer, the header, and the six slot words
 `BASE+1..BASE+6`) and requires every one to be zero.
 
-### 18. A hostile RPC can solicit a future-nonce execution *(narrowed client-side, not closed)*
+### 18. A hostile RPC can solicit a future-nonce execution *(narrowed client-side, accepted, see below)*
 
 Both outbound execution paths put an RPC-supplied sequential nonce under the
 factor signatures. Direct execution signs the account's `execNonce`; ERC-4337
@@ -699,6 +757,40 @@ the relayer's own hot key, never charged to the account, so the exposure there
 belongs to whoever operates the relayer and is bounded by what they fund it
 with.
 
+## Accepted residuals
+
+Three of the residuals above will not be fixed. They were reviewed one by one on
+2026-08-05 and accepted as properties of the design, in writing, so that nobody
+later reads them as work still owed. The distinction that matters: residual 1
+and the fee ceiling of residual 19 were *defects* and were closed; these three
+are what the design is, and closing them would mean designing something else.
+
+**Residual 2 — two compromised factors is full control.** This is the definition
+of a 2-of-3 threshold, not a gap in it. A contract that could tell a legitimate
+quorum from a stolen one would be enforcing some other rule, and that rule would
+become the real security boundary. Accepted as stated. The mitigation is entirely
+in how factors are distributed — three genuinely independent custody domains, the
+property `client-guidance.md` makes normative and the contract cannot verify.
+
+**Residual 16 — ERC-1271 signatures carry no nonce.** The standard is stateless
+by construction: the consumer decides when to redeem a signature, so nothing the
+account does at signing time can make the redemption traceable in advance.
+Adding a Glaux nonce would break compatibility with every protocol the channel
+exists to reach (Permit2, Seaport), which is the whole value of supporting 1271.
+Accepted. Mitigated by what the channel does bind — chain id, account address
+and a deadline inside the blob — and by the client rule that a request to sign a
+message is presented as a request to authorize an action.
+
+**Residual 18 — a hostile RPC can misreport anything.** An endpoint is not a
+trust anchor and was never treated as one; a client that reads state through a
+single endpoint it does not control has already accepted whatever that endpoint
+says. No amount of in-contract logic reaches this, because the contract never
+sees the lie. Accepted, with two mitigations that are normative rather than
+optional in `client-guidance.md`: confirm a birth and source an `expectedNonce`
+from a second, independently operated endpoint, and note that the guards which
+do not depend on any endpoint — the absolute `maxCostWei` cap, the local clock
+bounding `validUntil` — keep holding against a fully hostile one.
+
 ## Formerly out of scope, shipped in Phase 2
 
 The receiver hooks (ERC-721/ERC-1155), ERC-165 and ERC-1271 were v1's two
@@ -732,10 +824,13 @@ weakness.
 constants separate Glaux from other *structured* signing schemes; they did not
 separate it from **raw-hash signing**. Any factor key that was also an ordinary
 EOA key, and that could be induced to sign a bare 32-byte digest through
-`eth_sign` or an equivalent, produced a valid Glaux signature. On the migration
-path this project plans, the birth key *is* a long-lived user key — so a single
-raw-hash signature obtained before birth would install an attacker's
-implementation and an attacker's slot set. That is what the wrap adopted below
+`eth_sign` or an equivalent, produced a valid Glaux signature. The sharpest form
+of that argument was the migration path — where the account's own key would have
+been a long-lived user key, so a single raw-hash signature obtained before birth
+would have installed an attacker's implementation and slot set. Rootless birth
+has since removed that path, but the argument holds without it: every factor key
+is long-lived by definition, and a raw-hash signature from two of them is a
+quorum. That is what the wrap adopted below
 closes. It does not, and cannot, protect a key exposed to a genuinely raw
 `sign-this-hash` primitive that applies no prefix at all, which is why the rule
 in client guidance against ever exposing a factor key to such an API still

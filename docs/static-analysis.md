@@ -37,7 +37,7 @@ constitute the contract's purpose.
 | `arbitrary-send-eth` | `GlauxAccount._execute` | A smart account exists to send value where its owners direct. Every destination, value and calldata is bound into the digest that the 2-of-3 quorum signed; the contract never chooses a destination. |
 | `calls-loop` | `GlauxAccount._execute` | Batching is a feature. A failing call reverts the whole batch (`CallFailed(index, revertData)`) rather than being silently skipped, so the loop cannot leave a partial batch applied. |
 | `reentrancy-eth` | `GlauxAccount._execute` | The state written after the external calls *is* the reentrancy guard being released. `executing` is set before the loop and any re-entry reverts `ReentrantCall()`; the transient flag is the mitigation Slither is reporting as the bug. |
-| `controlled-delegatecall` | `GlauxDelegate.initialize` | Delegatecall to a signed target is what a proxy is. The function id is a hardcoded literal, not input; the target is bound by the birth signature and by the code-hash and compatibility-marker checks performed immediately before. |
+| `controlled-delegatecall` | `GlauxDelegate.initialize` | Delegatecall to a signed target is what a proxy is. The function id is a hardcoded literal, not input; the target is bound by the birth proof and by the code-hash and compatibility-marker checks performed immediately before. |
 
 ### Accepted, not suppressed
 

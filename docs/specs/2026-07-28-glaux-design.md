@@ -1,12 +1,13 @@
 # Glaux — Design Specification
 
-- **Version**: v0.9
-- **Date**: 2026-07-28, revised 2026-07-30
+- **Version**: v0.10
+- **Date**: 2026-07-28, revised 2026-08-05
 - **Status**: v0.1 was ratified before implementation. v0.2 to v0.5 fold in the
   design changes that security review forced during Phase 1; v0.6, v0.7 and
   v0.9 are Phase 2 changes; v0.8 adds the field survey and the EIP-8164 risk
-  in §9 and changes no behaviour. Each is marked in place and all are listed
-  in §11.
+  in §9 and changes no behaviour; v0.10 replaces the ephemeral birth key with a
+  crafted authorization tuple, which closes residual 1 and moves the router.
+  Each is marked in place and all are listed in §11.
 - **Origin**: Minerva ADR-0003 (W3-R route) and research dossiers 11
   (cross-chain keystore state of the art) and 12 (post-quantum EVM state of
   the art). In the founding documents the project is referred to by its
@@ -97,9 +98,17 @@ abstraction UX (paymasters), commissioned audits.
 
 ## 4. Account birth and residual-key neutralization
 
-- An ephemeral EOA is generated client-side. It signs **one** EIP-7702
-  authorization tuple with `chain_id = 0` and nonce 0. The tuple (public) is
-  retained; the birth private key is **destroyed**.
+- *(revised v0.10)* **No key is generated: the authorization tuple is crafted.**
+  `r` is `keccak256(abi.encode(initDigest, salt))` — a commitment to the birth
+  configuration — and `s` carries a 13-byte tag whose leading byte keeps it
+  under `secp256k1n/2`; the account address is `ecrecover(AUTH_MSG_HASH, 27, r,
+  s)` against the preimage of `[chain_id = 0, ROUTER, nonce 0]`, and the router
+  recomputes all three facts at birth. Producing such a tuple with a real key
+  would require a nonce `k` with `x(kG) = r`, so the account is *provably*
+  rootless rather than rootless by promise. The tuple is public and retained;
+  there is no private key at any point, hence nothing to destroy and nothing
+  that can survive. This supersedes the ephemeral-birth-key construction of
+  v0.1–v0.9 and its process guarantee.
 - The account never transacts as a plain EOA, so its EOA nonce stays 0 on
   every chain **until first touch there**: applying the tuple consumes it on
   that chain (EIP-7702 increments the authority nonce), and the same tuple
@@ -146,17 +155,17 @@ abstraction UX (paymasters), commissioned audits.
 - Consequences, declared openly:
   - the delegation pointer is fixed forever; upgrades happen *inside* the
     delegate through an implementation slot governed by the 2-of-3;
-  - *(revised v0.2)* **a birth key that survives destruction is a permanent
-    master key, not a front-running risk.** The birth key *is* the account's
-    EOA key, and EIP-7702 lets a delegated EOA still originate ordinary
-    transactions and sign further authorizations — so a surviving copy can
-    spend directly and can replace the delegation itself, forever. No factor
-    rotation revokes it, because the 2-of-3 governs the delegate's state, not
-    the EOA's authority. Suspected birth-key compromise therefore means
-    migrating assets to a new address, never rotating factors. EIP-7851, when
-    live, will allow disabling residual ECDSA authority at the protocol level
-    and is the only real remedy; Glaux's construction does not depend on it,
-    but this is the residual that most deserves a client's attention.
+  - *(revised v0.10, closing the v0.2 residual)* the surviving-birth-key
+    hazard is **gone by construction**. Under v0.1–v0.9 the birth key *was* the
+    account's EOA key: EIP-7702 lets a delegated EOA still originate ordinary
+    transactions and sign further authorizations, so a surviving copy could
+    spend directly and replace the delegation forever, with no factor rotation
+    able to revoke it. Crafting removes the key rather than the copy. What
+    remains is the price of that: the delegation can never be repointed by
+    anyone, and an adversary who breaks secp256k1 still recovers the key from
+    the public point the tuple exposes — rootlessness is a custody property,
+    not a cryptographic one. EIP-7851 and EIP-8164 remain relevant to the
+    latter, not to the former.
 
 ## 5. Single update channel (sign once, replay many)
 
@@ -224,9 +233,10 @@ signer-side rules that follow from it.
 2. **Unlocked-device runtime compromise** controls F1+F3: the daily pair is
    defeated; full theft still requires F2. No mobile wallet covers this
    case; Glaux declares it instead of pretending otherwise.
-3. *(revised v0.2)* **A retained birth key is a permanent master key** — see
-   §4. This is the gravest residual and the only one whose remedy is migration
-   rather than rotation.
+3. *(closed v0.10)* **A retained birth key was a permanent master key** — the
+   gravest residual of v0.1–v0.9, and the only one whose remedy was migration
+   rather than rotation. Rootless birth (§4) removes the key entirely, so there
+   is nothing left to retain.
 4. **Never-touched chain**: previous configuration remains valid there until
    the update replay lands (declared in client UX).
 5. **Same-nonce cross-chain equivocation** (§5): detectable by reconciliation,
@@ -307,11 +317,13 @@ ML-DSA-44 post-quantum key under a `0xef0101` prefix that makes the account's
 original ECDSA key **permanently inert**, and it names provably rootless
 accounts — where no party ever held the ECDSA key — as an explicit goal.
 
-If it ships, two of this design's arguments change. The residual-key problem
-(threat model residual 1), which Glaux answers with an ephemeral birth key and a
-process guarantee, becomes a protocol guarantee available to everyone. And
-post-quantum readiness, listed here as a future verifier type, arrives at the
-EOA layer without Glaux.
+If it ships, one of this design's arguments changes and one has since been
+answered without it. Post-quantum readiness, listed here as a future verifier
+type, would arrive at the EOA layer without Glaux. The residual-key problem
+(threat model residual 1) is no longer waiting on it: *(revised v0.10)* crafting
+the authorization tuple gives Glaux the rootlessness 8164 names as a goal, in
+userland and today. What 8164 would still add there is making the ECDSA key
+permanently inert against a future break of the curve, which crafting cannot do.
 
 It does **not** subsume Glaux: 8164 authenticates with exactly one key at a
 time, so it offers no threshold, no factor independence, and nothing about
@@ -351,6 +363,20 @@ specification. Neither is a design question. The direct `executeWithSigs` path
 needs no bundler at all.
 
 ## 11. Revision history
+
+- **v0.10 (2026-08-05, pre-publication)** — **rootless birth**, closing the
+  gravest declared residual by removing what it was about. The account no longer
+  signs its own delegation: the authorization tuple is crafted so that `r`
+  commits to the birth digest and the address is whatever `ecrecover` returns
+  (§4), so no private key for the account has ever existed and none can survive.
+  Wire-format break: `initialize` takes `(salt, s)` in place of a birth
+  signature, old blobs are permanently unspendable, and the router — which now
+  holds the authorization preimage in an immutable — moved to
+  `0x3ccF1cc0F702C084B31e691e057d8742ADF35790`. The implementation is unchanged.
+  Also in this revision, and not a design change: the ERC-4337 fee residual is
+  closed client-side by a mandatory cost cap plus an independently computed fee
+  baseline before the quorum signs, and residuals 2, 16 and 18 are accepted in
+  writing rather than left open (threat model, *Accepted residuals*).
 
 - **v0.9 (2026-07-30, Phase 2)** — **account surface and reconciliation
   ordering**, specified in full in
