@@ -651,6 +651,28 @@ refuses the operation with `AA22 expired or not due` once it passes. A blob whos
 error`, so the window cannot be widened in flight. `validUntil == 0` is refused
 outright: the EntryPoint would read it as "no expiry".
 
+### Decide what the operation may cost before the quorum signs it
+
+`signUserOp` requires `maxCostWei`, the most the operation may ever charge the
+account: `(verificationGasLimit + callGasLimit + preVerificationGas + the
+paymaster's two gas limits) * maxFeePerGas`, which is what the signature
+authorizes the EntryPoint to take — not what the operation is expected to use.
+Choose it per operation from what the action is worth. There is no default and
+there will not be one: a default would be a number nobody chose, standing in
+for the only decision that bounds this exposure.
+
+`maxFeePerGas` is separately measured against a fee baseline. Supply
+`feeBaseline`, read from a **second, independently operated endpoint**, whenever
+the value at stake justifies it — the same rule birth confirmation follows, for
+the same reason: an endpoint that both proposes a fee and vouches for it has
+been asked nothing. Omitting it reads the baseline from the same client, which
+catches a broken or greedy quote but not a coordinated lie.
+
+Do not defeat the guard to make an operation go through. Raising `maxCostWei`
+until the refusal stops is the same as not having a cap; a
+`FeeExceedsBaselineError` on a chain whose base fee is negligible next to real
+tips calls for a baseline you supply, not a larger multiple applied blindly.
+
 A P-256 factor is compatible with the 4337 path: **ERC-7562 rule OP-062**
 explicitly permits the `P256VERIFY` precompile of EIP-7951 during validation,
 alongside the core precompiles. That holds only on networks that actually have

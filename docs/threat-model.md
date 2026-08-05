@@ -661,6 +661,41 @@ chain or it does not, and only a state view the endpoint does not control can sa
 which. Confirm a birth against a second, independently operated endpoint before
 funding the address — the same rule as `expectedNonce`, applied one step earlier.
 
+### 19. Gas and fee fields were signed without a ceiling *(closed on the 4337 path)*
+
+Every gas and fee field of a user operation was proposed by an endpoint and
+signed as given. That is not a quotation the account can shop around: the
+signature authorizes the EntryPoint to charge it up to `(verificationGasLimit +
+callGasLimit + preVerificationGas + the paymaster's two limits) * maxFeePerGas`,
+so an endpoint that inflated any factor of that product was inflating what the
+quorum agreed to pay, and the unspent remainder only returns after the fact.
+
+`signUserOp` now refuses two things before any factor signs. A mandatory
+`maxCostWei` bounds that whole product — no default, because a default is a
+number nobody chose standing in for the one decision this exists to force. And
+`maxFeePerGas` is measured against a baseline the SDK computes itself from
+`eth_feeHistory` (the next block's base fee and the median of the sampled
+blocks' median tips), refusing anything beyond a sanity multiple of it; the
+proposed value cannot also be the yardstick it is judged by. Both checks sit at
+the signing choke point rather than where the operation is built, because a
+paymaster decorates it in between and a caller may supply one the SDK never
+built.
+
+What this does not do: a hostile endpoint asked for both the fee quote and the
+fee history can lie consistently, so the baseline check degrades to nothing
+against it — which is why the cap is absolute and independent of every
+endpoint-supplied value, and why `client-guidance.md` requires the baseline
+from a second, independent endpoint when the value at stake justifies it. On a
+chain whose base fee is negligible next to the tips actually paid, the derived
+lane can be tighter than legitimate operations need; a caller that sees
+`FeeExceedsBaselineError` on healthy traffic there should supply its own
+baseline rather than raise the multiple blindly.
+
+The direct execution path is deliberately not covered. Its gas is fronted by
+the relayer's own hot key, never charged to the account, so the exposure there
+belongs to whoever operates the relayer and is bounded by what they fund it
+with.
+
 ## Formerly out of scope, shipped in Phase 2
 
 The receiver hooks (ERC-721/ERC-1155), ERC-165 and ERC-1271 were v1's two
