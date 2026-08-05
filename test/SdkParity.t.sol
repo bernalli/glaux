@@ -54,7 +54,9 @@ contract SdkParityTest is GlauxFixture {
         bytes initData;
         bytes32 expectedCodeHash;
         bytes32 initDigest;
-        bytes initSignature;
+        address rootlessAccount;
+        bytes32 rootlessSalt;
+        uint256 rootlessS;
         Call[] calls;
         bytes32 execDigest;
         SlotSig[2] execSigs;
@@ -156,6 +158,14 @@ contract SdkParityTest is GlauxFixture {
             _entry("initData", v.initData),
             ",\n      ",
             _entry("digest", v.initDigest),
+            ",\n      ",
+            _entry("authMsgHash", router.AUTH_MSG_HASH()),
+            ",\n      ",
+            _entry("salt", v.rootlessSalt),
+            ",\n      ",
+            _entry("s", bytes32(v.rootlessS)),
+            ",\n      ",
+            _entry("account", v.rootlessAccount),
             "\n    }"
         );
     }
@@ -282,7 +292,8 @@ contract SdkParityTest is GlauxFixture {
         v.initData = abi.encode(v.slots, proofs);
         v.expectedCodeHash = address(impl).codehash;
         v.initDigest = _initDigest(address(impl), v.expectedCodeHash, v.initData);
-        v.initSignature = _sig65(birthPk, v.initDigest);
+        (v.rootlessAccount, v.rootlessSalt, v.rootlessS) =
+            _craftRootlessBirth(address(impl), v.expectedCodeHash, v.initData);
 
         v.calls = new Call[](1);
         v.calls[0] = Call({to: EXEC_CALL_TO, value: EXEC_CALL_VALUE, data: EXEC_CALL_DATA});
@@ -302,9 +313,14 @@ contract SdkParityTest is GlauxFixture {
     /// @dev Proves the emitted initData, initDigest, and registrationDigest through
     ///      GlauxDelegate.initialize -> GlauxAccount.initializeAccount.
     function _proveBirth(Vectors memory v) internal {
-        vm.signAndAttachDelegation(address(router), birthPk);
+        // The emitted account address IS the one the crafted proof recovers to:
+        // if the derivation in this fixture and the router's own recomputation
+        // ever diverged, this birth would revert rather than quietly emit a
+        // vector no client could reproduce.
+        assertEq(v.rootlessAccount, account, "emitted account must be the fixture's derivation");
+        _attachDelegation(account, address(router));
         GlauxDelegate(payable(account))
-            .initialize(address(impl), v.expectedCodeHash, v.initData, v.initSignature);
+            .initialize(address(impl), v.expectedCodeHash, v.initData, v.rootlessSalt, v.rootlessS);
 
         GlauxAccount a = GlauxAccount(payable(account));
         for (uint8 i = 0; i < 3; i++) {

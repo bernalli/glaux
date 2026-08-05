@@ -6,11 +6,10 @@ import {
     AlreadyInitialized,
     NotInitialized,
     InvalidImplementation,
-    InvalidBirthSignature,
+    InvalidBirthProof,
     ReentrantCall,
     Initialized
 } from "./GlauxStorage.sol";
-import {SignatureVerify} from "./lib/SignatureVerify.sol";
 import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
 
 /// @notice Immutable EIP-7702 delegation target. Frozen forever: keep minimal.
@@ -28,15 +27,61 @@ contract GlauxDelegate {
     ///      value on every chain, so binding it costs nothing in replayability.
     address private immutable SELF = address(this);
 
-    /// @notice One-time initialization, authenticated by the birth key.
-    /// @dev The birth key IS address(this) (EIP-7702 EOA). The digest contains
-    ///      no chain-id: the same signed blob replays on every chain. Submitting
-    ///      is permissionless; forging is impossible without the birth key.
+    /// @dev The 13-byte tag every rootless `s` carries. It is NOT what makes
+    ///      birth safe — recomputing `r` and requiring the recovery to be this
+    ///      account is — and it should not be read as such: with `r` fixed to a
+    ///      hash, landing on a chosen address by varying `s` is a 2^160 search
+    ///      either way. What the tag adds is that rootlessness is observable
+    ///      from the tuple ALONE, by anyone who never saw the birth
+    ///      configuration: no real signer can place 13 chosen bytes in `s`
+    ///      (~2^103 work), so a tagged authorization cannot have come from a
+    ///      key. It also keeps `s` below `secp256k1n/2` for every tail, which
+    ///      EIP-2 requires of the tuple.
+    bytes13 public constant ROOTLESS_S_PREFIX = 0x476c6175785f524f4f544c4553;
+
+    /// @dev The recovery id every crafted authorization uses. Not an argument:
+    ///      whenever `r` is a valid curve x-coordinate, 27 recovers an address,
+    ///      and when it is not, no `v` does — so the caller has nothing to
+    ///      choose here, and an immutable contract is better off without an
+    ///      input it would only have to validate.
+    uint8 private constant ROOTLESS_V = 27;
+
+    /// @dev `keccak256(0x05 ‖ rlp([chainId 0, SELF, nonce 0]))`: the message an
+    ///      EIP-7702 authorization tuple naming this router is signed over.
+    ///      Fixed at construction because the router's own address is inside
+    ///      it. `0x05d78094` is the magic byte, the 23-byte list header, the
+    ///      zero chain id and the 20-byte address prefix; the trailing `0x80`
+    ///      is the zero nonce. Verified against a real signed authorization,
+    ///      not derived on paper.
+    bytes32 public immutable AUTH_MSG_HASH;
+
+    constructor() {
+        AUTH_MSG_HASH = keccak256(abi.encodePacked(hex"05d78094", address(this), hex"80"));
+    }
+
+    /// @notice One-time initialization, authenticated by the account's own
+    ///         delegation tuple rather than by a key.
+    /// @dev No birth key exists, and none ever did. The authorization that put
+    ///      this router at `address(this)` carries an `r` that is a hash
+    ///      commitment to exactly this birth configuration and an `s` bearing a
+    ///      fixed 13-byte tag: recomputing `r` here and recovering the signer
+    ///      proves the account address was DERIVED from the configuration
+    ///      instead of chosen. Producing such a signature with a real key would
+    ///      require a nonce `k` with `x(kG) = r`, which is the discrete-log
+    ///      problem — so there is no private key for this address to survive
+    ///      birth, be stolen, or bypass the 2-of-3 threshold later.
+    /// @dev The digest still contains no chain-id: the same blob replays on
+    ///      every chain, and submitting stays permissionless.
+    /// @param salt The crafting nonce that made `r` land on the curve; it binds
+    ///        nothing on its own, and is only an argument because `r` is not
+    ///        recoverable from the account address alone.
+    /// @param s The crafted `s` word of the authorization signature.
     function initialize(
         address implementation,
         bytes32 expectedCodeHash,
         bytes calldata initData,
-        bytes calldata birthSig
+        bytes32 salt,
+        uint256 s
     ) external {
         // Guards the window in which the untrusted initializer runs. The pointer is
         // only written after the delegatecall returns, so without this a re-entrant
@@ -75,9 +120,14 @@ contract GlauxDelegate {
                 )
             )
         );
-        if (!SignatureVerify.verify(
-                GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(this)), digest, birthSig
-            )) revert InvalidBirthSignature();
+        // `r` is recomputed here, never accepted: that is what ties the account
+        // address to THIS implementation, code hash and factor set. A caller
+        // who alters any of them changes the digest, hence `r`, hence the
+        // address the signature recovers to — which is no longer this account.
+        if (bytes13(bytes32(s)) != ROOTLESS_S_PREFIX) revert InvalidBirthProof();
+        address recovered =
+            ecrecover(AUTH_MSG_HASH, ROOTLESS_V, keccak256(abi.encode(digest, salt)), bytes32(s));
+        if (recovered == address(0) || recovered != address(this)) revert InvalidBirthProof();
 
         if (!ImplementationCheck.isInstallable(implementation, expectedCodeHash)) {
             revert InvalidImplementation();

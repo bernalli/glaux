@@ -30,14 +30,13 @@ contract GlauxInvariants is Test {
     uint256 internal constant K0 = 0xAA01;
     uint256 internal constant K1 = 0xAA02;
     uint256 internal constant K2 = 0xAA03;
-    uint256 internal constant BIRTH_PK = 0xB112;
+    bytes13 internal constant ROOTLESS_S_PREFIX = 0x476c6175785f524f4f544c4553;
 
     function setUp() public {
         impl = new GlauxAccount(address(0xE47105157017));
         compatibleImpl = new GlauxAccountV2Mock(address(0xE47105157017));
         noMarkerImpl = new NoMarkerImplementation();
         router = new GlauxDelegate();
-        account = vm.addr(BIRTH_PK);
 
         FactorSlot[3] memory slots;
         slots[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(K0)));
@@ -60,11 +59,10 @@ contract GlauxInvariants is Test {
                 )
             )
         );
-        bytes memory birthSig = _sig65(BIRTH_PK, digest);
-
-        vm.signAndAttachDelegation(address(router), BIRTH_PK);
+        (bytes32 salt, uint256 s) = _craftRootless(digest);
+        vm.etch(account, abi.encodePacked(hex"ef0100", address(router)));
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, birthSig);
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
 
         ExecutionSink sink = new ExecutionSink();
 
@@ -113,6 +111,23 @@ contract GlauxInvariants is Test {
     function _sig65(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return abi.encodePacked(r, s, v);
+    }
+
+    /// @dev Local copy of the rootless derivation (the shared fixture is not in
+    ///      this harness's inheritance chain). It also SETS `account`: under
+    ///      rootless birth the address is an output of the configuration, never
+    ///      an input.
+    function _craftRootless(bytes32 digest) internal returns (bytes32 salt, uint256 s) {
+        for (uint256 attempt = 0; attempt < 256; attempt++) {
+            salt = keccak256(abi.encode(digest, attempt));
+            s = uint256(bytes32(ROOTLESS_S_PREFIX))
+                | (uint256(keccak256(abi.encode(digest, salt, uint8(1)))) >> 104);
+            account = ecrecover(
+                router.AUTH_MSG_HASH(), 27, keccak256(abi.encode(digest, salt)), bytes32(s)
+            );
+            if (account != address(0)) return (salt, s);
+        }
+        revert("rootless derivation exhausted");
     }
 
     /// On-chain update nonce always equals the ghost model: no update ever applied

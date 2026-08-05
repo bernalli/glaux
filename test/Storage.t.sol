@@ -6,7 +6,7 @@ import {GlauxStorage, FactorSlot} from "../src/GlauxStorage.sol";
 import {
     AlreadyInitialized,
     NotInitialized,
-    InvalidBirthSignature,
+    InvalidBirthProof,
     BadUpdateNonce,
     DuplicateSlot,
     InvalidSignature,
@@ -201,7 +201,7 @@ contract StorageTest is Test {
     function test_error_vocabulary_selectors_are_nonzero() public pure {
         assertTrue(AlreadyInitialized.selector != bytes4(0));
         assertTrue(NotInitialized.selector != bytes4(0));
-        assertTrue(InvalidBirthSignature.selector != bytes4(0));
+        assertTrue(InvalidBirthProof.selector != bytes4(0));
         assertTrue(BadUpdateNonce.selector != bytes4(0));
         assertTrue(DuplicateSlot.selector != bytes4(0));
         assertTrue(InvalidSignature.selector != bytes4(0));

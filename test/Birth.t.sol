@@ -15,7 +15,7 @@ import {
     NotInitialized,
     NotDuringBirth,
     InvalidImplementation,
-    InvalidBirthSignature,
+    InvalidBirthProof,
     DuplicateSlot,
     InvalidSlot,
     PossessionNotProven,
@@ -91,28 +91,30 @@ contract BirthTest is GlauxFixture {
     }
 
     function test_birth_rejectsTwoSlotsWithIdenticalKey() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         FactorSlot[3] memory duplicate = _slots();
         duplicate[2] = duplicate[0];
         bytes memory initData = _initDataFor(duplicate, [paperPk, DEVICE_P256_PK, paperPk]);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(DuplicateSlot.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     function test_birth_rejectsAllSlotsWithIdenticalKey() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         FactorSlot[3] memory duplicate = _slots();
         duplicate[1] = duplicate[0];
         duplicate[2] = duplicate[0];
         bytes memory initData = _initDataFor(duplicate, [paperPk, paperPk, paperPk]);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(DuplicateSlot.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     function test_birth_withThreeDistinctKeysStillSucceeds() public {
@@ -127,25 +129,117 @@ contract BirthTest is GlauxFixture {
     }
 
     function test_birth_anyoneCanSubmitSameBlob() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        _attachDelegation(account, address(router));
 
         vm.prank(address(0xF20A7));
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
 
         (uint8 vType,) = GlauxAccount(payable(account)).getSlot(1);
         assertEq(vType, GlauxStorage.VERIFIER_P256);
     }
 
-    function test_birth_rejectsForgedBlob() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
-        bytes memory initData = abi.encode(_slots(), _proofs());
+    /// @notice Isolates the `s` tag from the recovery check, which is harder than
+    ///         it looks: altering `s` normally moves the recovered address too,
+    ///         so a naive "flip the tag" test is refused for the wrong reason and
+    ///         stays green even with the tag check deleted. This test instead
+    ///         takes an UNTAGGED `s`, asks which address it recovers to, and
+    ///         gives THAT address the delegation — so recovery succeeds and the
+    ///         tag is the only thing left to refuse it. Deleting the tag check
+    ///         turns this test red; nothing else in the suite does.
+    function test_birth_rejectsAnUntaggedSignatureThatWouldOtherwiseRecover() public {
+        bytes memory initData = _initBlob();
         bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        bytes32 salt = keccak256(abi.encode(digest, uint256(0)));
+        bytes32 r = keccak256(abi.encode(digest, salt));
 
-        vm.expectRevert(InvalidBirthSignature.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(0xE711, digest));
+        // An `s` a real signer could have produced: no router tag, still below
+        // n/2. Search for one that recovers, the same way crafting does.
+        uint256 untagged;
+        address recovers;
+        for (uint256 i = 0; i < 256 && recovers == address(0); i++) {
+            untagged = uint256(keccak256(abi.encode("untagged", i))) >> 2;
+            recovers = ecrecover(router.AUTH_MSG_HASH(), 27, r, bytes32(untagged));
+        }
+        assertTrue(recovers != address(0), "need an s that recovers at all");
+        assertTrue(bytes13(bytes32(untagged)) != router.ROOTLESS_S_PREFIX());
+        _attachDelegation(recovers, address(router));
+
+        // Recovery would succeed here — `recovers` IS `address(this)`. Only the
+        // missing tag stands between this call and a born account.
+        vm.expectRevert(InvalidBirthProof.selector);
+        GlauxDelegate(payable(recovers))
+            .initialize(address(impl), address(impl).codehash, initData, salt, untagged);
+    }
+
+    /// @notice A salt that does not produce THIS account's `r` recovers to some
+    ///         other address, so the router refuses it. This is what makes the
+    ///         account address a commitment to its own birth configuration
+    ///         rather than a label attached to one.
+    function test_birth_rejectsAProofCraftedForAnotherSalt() public {
+        bytes memory initData = _initBlob();
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
+
+        vm.expectRevert(InvalidBirthProof.selector);
+        GlauxDelegate(payable(bornAt))
+            .initialize(
+                address(impl), address(impl).codehash, initData, keccak256(abi.encode(salt)), s
+            );
+    }
+
+    /// @notice The splice the old birth signature also prevented: two complete,
+    ///         individually valid births, submitted as one — A's proof with B's
+    ///         factor configuration. `r` commits to `initData`, so the pair
+    ///         recovers to neither account.
+    function test_birth_rejectsSplicingTwoValidBirthConfigurations() public {
+        bytes memory initDataA = _initBlob();
+        FactorSlot[3] memory otherSlots = _slots();
+        otherSlots[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(vm.addr(0xAB01)));
+        bytes memory initDataB =
+            _initDataFor(otherSlots, [uint256(0xAB01), DEVICE_P256_PK, cloudPk]);
+
+        (address bornA, bytes32 saltA, uint256 sA) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initDataA);
+        (address bornB,,) = _craftRootlessBirth(address(impl), address(impl).codehash, initDataB);
+        assertNotEq(bornA, bornB, "two configurations must not share an address");
+        _attachDelegation(bornA, address(router));
+
+        vm.expectRevert(InvalidBirthProof.selector);
+        GlauxDelegate(payable(bornA))
+            .initialize(address(impl), address(impl).codehash, initDataB, saltA, sA);
+    }
+
+    /// @notice A valid proof is valid for exactly one address. Presented on any
+    ///         other delegated account it recovers to the address it was crafted
+    ///         for, which is not `address(this)`.
+    function test_birth_rejectsAProofBelongingToAnotherAccount() public {
+        bytes memory initData = _initBlob();
+        (, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        address bystander = address(0xB157A9DE2);
+        _attachDelegation(bystander, address(router));
+
+        vm.expectRevert(InvalidBirthProof.selector);
+        GlauxDelegate(payable(bystander))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
+    }
+
+    /// @notice The address is a pure function of the birth configuration: same
+    ///         factors, same implementation, same code hash, same account —
+    ///         every time, on every chain, with nobody's key involved.
+    function test_birth_derivationIsDeterministic() public view {
+        bytes memory initData = _initBlob();
+        (address first, bytes32 saltFirst, uint256 sFirst) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        (address second, bytes32 saltSecond, uint256 sSecond) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+
+        assertEq(first, second);
+        assertEq(saltFirst, saltSecond);
+        assertEq(sFirst, sSecond);
+        assertEq(first, account, "the fixture's account is that same derivation");
     }
 
     /// @notice An EIP-7702 delegated EOA reports the 23-byte delegation designator
@@ -167,13 +261,13 @@ contract BirthTest is GlauxFixture {
         assertEq(uint8(decoyCode[0]), 0xEF);
         assertEq(GlauxAccount(payable(decoy)).glauxCompatibilityId(), GlauxStorage.COMPAT_ID);
 
-        vm.signAndAttachDelegation(address(router), birthPk);
         bytes memory initData = abi.encode(_slots(), _proofs());
-        bytes32 digest = _initDigest(decoy, decoy.codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(decoy, decoy.codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidImplementation.selector);
-        GlauxDelegate(payable(account))
-            .initialize(decoy, decoy.codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt)).initialize(decoy, decoy.codehash, initData, salt, s);
     }
 
     /// @notice Proves `expectedCodeHash` is cryptographically bound INTO the digest,
@@ -181,13 +275,14 @@ contract BirthTest is GlauxFixture {
     ///         and submitted with the right one. Without the field in the digest
     ///         this would satisfy both the signature check and the hash comparison.
     function test_birth_rejectsSignatureBoundToADifferentCodeHash() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         bytes memory initData = abi.encode(_slots(), _proofs());
-        bytes32 digest = _initDigest(address(impl), bytes32(uint256(0xBAD)), initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), bytes32(uint256(0xBAD)), initData);
+        _attachDelegation(bornAt, address(router));
 
-        vm.expectRevert(InvalidBirthSignature.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        vm.expectRevert(InvalidBirthProof.selector);
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     /// @notice The threshold's real foundation: a slot's key must PROVE it exists.
@@ -206,9 +301,9 @@ contract BirthTest is GlauxFixture {
         // Pick a signature first, then derive the address it is valid under — the
         // attacker never holds a private key for it.
         bytes32 anyDigest = keccak256("any digest at all");
-        bytes32 r = bytes32(uint256(1));
-        bytes32 s = bytes32(uint256(2));
-        address forged = ecrecover(anyDigest, 27, r, s);
+        bytes32 forgedR = bytes32(uint256(1));
+        bytes32 forgedS = bytes32(uint256(2));
+        address forged = ecrecover(anyDigest, 27, forgedR, forgedS);
         assertTrue(forged != address(0));
 
         FactorSlot[3] memory slots = _slots();
@@ -220,153 +315,159 @@ contract BirthTest is GlauxFixture {
         proofs[0] = _proofFor(0, slots[0], paperPk);
         proofs[1] = _proofFor(1, slots[1], DEVICE_P256_PK);
         // The best the attacker can offer for slot 2: the signature they started from.
-        proofs[2] = abi.encodePacked(r, s, uint8(27));
+        proofs[2] = abi.encodePacked(forgedR, forgedS, uint8(27));
         bytes memory initData = abi.encode(slots, proofs);
 
-        vm.signAndAttachDelegation(address(router), birthPk);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(PossessionNotProven.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
-    function test_birth_rejectsDifferentImplementationWithSameSignature() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+    function test_birth_rejectsDifferentImplementationWithSameProof() public {
+        _attachDelegation(account, address(router));
         GlauxAccount otherImpl = new GlauxAccount(address(0xE47));
 
-        vm.expectRevert(InvalidBirthSignature.selector);
+        vm.expectRevert(InvalidBirthProof.selector);
         GlauxDelegate(payable(account))
-            .initialize(address(otherImpl), address(otherImpl).codehash, initData, sig);
+            .initialize(
+                address(otherImpl), address(otherImpl).codehash, _initBlob(), accountSalt, accountS
+            );
     }
 
     function test_birth_rejectsMismatchedCodeHashForCompatibleImplementation() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         bytes memory initData = abi.encode(_slots(), _proofs());
         bytes32 wrongCodeHash = bytes32(uint256(1));
-        bytes32 digest = _initDigest(address(impl), wrongCodeHash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), wrongCodeHash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidImplementation.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), wrongCodeHash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt)).initialize(address(impl), wrongCodeHash, initData, salt, s);
     }
 
     function test_birth_rejectsDifferentCompatibleCodeAtSignedHash() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         GlauxAccount otherImpl = new GlauxAccount(address(0xE47));
         bytes memory initData = abi.encode(_slots(), _proofs());
         bytes32 signedCodeHash = address(impl).codehash;
         assertNotEq(address(otherImpl).codehash, signedCodeHash);
-        bytes32 digest = _initDigest(address(otherImpl), signedCodeHash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(otherImpl), signedCodeHash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidImplementation.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(otherImpl), signedCodeHash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(otherImpl), signedCodeHash, initData, salt, s);
     }
 
     function test_birth_rejectsImplementationWithoutCompatibilityMarker() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         NonInitializingAccount noMarkerImplementation = new NonInitializingAccount();
         bytes memory initData = abi.encode(_slots(), _proofs());
         bytes32 codeHash = address(noMarkerImplementation).codehash;
-        bytes32 digest = _initDigest(address(noMarkerImplementation), codeHash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(noMarkerImplementation), codeHash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidImplementation.selector);
-        GlauxDelegate(payable(account))
-            .initialize(
-                address(noMarkerImplementation), codeHash, initData, _sig65(birthPk, digest)
-            );
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(noMarkerImplementation), codeHash, initData, salt, s);
     }
 
     function test_birthDigestRemainsChainAgnostic() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        _attachDelegation(account, address(router));
         uint256 originalChainId = block.chainid;
 
         vm.chainId(originalChainId + 1);
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
         vm.chainId(originalChainId);
 
         assertEq(GlauxAccount(payable(account)).updateNonce(), 0);
     }
 
-    function test_birth_rejectsDifferentSlotsWithSameSignature() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (, bytes memory sig) = _initBlob();
+    function test_birth_rejectsDifferentSlotsWithSameProof() public {
+        _attachDelegation(account, address(router));
         FactorSlot[3] memory changed = _slots();
         changed[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0xBAD)));
 
-        vm.expectRevert(InvalidBirthSignature.selector);
+        vm.expectRevert(InvalidBirthProof.selector);
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, _initDataUnproven(changed), sig);
+            .initialize(
+                address(impl),
+                address(impl).codehash,
+                _initDataUnproven(changed),
+                accountSalt,
+                accountS
+            );
     }
 
     function test_birth_secondInitReverts() public {
         _birthAccount();
-        (bytes memory initData, bytes memory sig) = _initBlob();
 
         vm.expectRevert(AlreadyInitialized.selector);
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
     }
 
     function test_birth_noCodeImplementationRevertsAndOriginalBlobIsRetryable() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         address futureImplementation = address(0xF00D);
         bytes memory initData = abi.encode(_slots(), _proofs());
         bytes32 expectedCodeHash = address(impl).codehash;
-        bytes32 digest = _initDigest(futureImplementation, expectedCodeHash, initData);
-        bytes memory sig = _sig65(birthPk, digest);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(futureImplementation, expectedCodeHash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidImplementation.selector);
-        GlauxDelegate(payable(account))
-            .initialize(futureImplementation, expectedCodeHash, initData, sig);
+        GlauxDelegate(payable(bornAt))
+            .initialize(futureImplementation, expectedCodeHash, initData, salt, s);
 
-        assertEq(vm.load(account, GlauxStorage.IMPL_SLOT), bytes32(0));
+        assertEq(vm.load(bornAt, GlauxStorage.IMPL_SLOT), bytes32(0));
         vm.expectRevert(NotInitialized.selector);
-        GlauxAccount(payable(account)).updateNonce();
+        GlauxAccount(payable(bornAt)).updateNonce();
 
         vm.etch(futureImplementation, address(impl).code);
-        GlauxDelegate(payable(account))
-            .initialize(futureImplementation, expectedCodeHash, initData, sig);
+        GlauxDelegate(payable(bornAt))
+            .initialize(futureImplementation, expectedCodeHash, initData, salt, s);
 
-        (uint8 vType,) = GlauxAccount(payable(account)).getSlot(0);
+        (uint8 vType,) = GlauxAccount(payable(bornAt)).getSlot(0);
         assertEq(vType, GlauxStorage.VERIFIER_SECP256K1);
     }
 
     function test_birth_zeroImplementationReverts() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         bytes memory initData = abi.encode(_slots(), _proofs());
-        bytes32 digest = _initDigest(address(0), bytes32(0), initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(0), bytes32(0), initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidImplementation.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(0), bytes32(0), initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt)).initialize(address(0), bytes32(0), initData, salt, s);
     }
 
     function test_birth_revertsWhenImplementationDoesNotSetInitialized() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         MarkerWithoutInitialization nonInitializingImplementation =
             new MarkerWithoutInitialization();
         bytes memory initData = abi.encode(_slots(), _proofs());
-        bytes32 digest = _initDigest(
+        (address bornAt, bytes32 salt, uint256 s) = _craftRootlessBirth(
             address(nonInitializingImplementation),
             address(nonInitializingImplementation).codehash,
             initData
         );
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(NotInitialized.selector);
-        GlauxDelegate(payable(account))
+        GlauxDelegate(payable(bornAt))
             .initialize(
                 address(nonInitializingImplementation),
                 address(nonInitializingImplementation).codehash,
                 initData,
-                _sig65(birthPk, digest)
+                salt,
+                s
             );
 
-        assertEq(vm.load(account, GlauxStorage.IMPL_SLOT), bytes32(0));
+        assertEq(vm.load(bornAt, GlauxStorage.IMPL_SLOT), bytes32(0));
     }
 
     /// @notice H-1: an EOA whose EIP-7702 delegation points straight at the
@@ -391,14 +492,14 @@ contract BirthTest is GlauxFixture {
     }
 
     function test_initializeAccountCannotBypassRouterBeforeBirth() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
+        _attachDelegation(account, address(router));
 
         vm.expectRevert(NotInitialized.selector);
         GlauxAccount(payable(account)).initializeAccount(_initDataUnproven(_slots()));
     }
 
     function test_attackerCannotInitializeThroughAccountBeforeBirthWhenLogicExists() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
+        _attachDelegation(account, address(router));
         FactorSlot[3] memory attackerSlots = _slots();
         attackerSlots[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0xBAD)));
 
@@ -416,15 +517,14 @@ contract BirthTest is GlauxFixture {
     ///         `AlreadyInitialized()` forever on that chain, with no birth key left
     ///         to retry and the funds unreachable.
     function test_birth_succeedsDespiteAForeignErc1967Pointer() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         ForeignProxyLogic foreign = new ForeignProxyLogic();
         vm.store(
             account, GlauxStorage.ERC1967_IMPL_SLOT, bytes32(uint256(uint160(address(foreign))))
         );
 
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        _attachDelegation(account, address(router));
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
 
         assertEq(GlauxAccount(payable(account)).updateNonce(), 0);
         (uint8 vType,) = GlauxAccount(payable(account)).getSlot(1);
@@ -448,18 +548,17 @@ contract BirthTest is GlauxFixture {
     ///         initialization. Namespacing the guard keeps the router out of a space
     ///         it does not own.
     function test_birth_guardDoesNotOccupyTheImplementationsTransientSlot() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         TransientProbeAccount probe = new TransientProbeAccount();
         bytes memory initData = abi.encode(_slots(), _proofs());
-        bytes32 digest = _initDigest(address(probe), address(probe).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(probe), address(probe).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
-        GlauxDelegate(payable(account))
-            .initialize(address(probe), address(probe).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(probe), address(probe).codehash, initData, salt, s);
 
         // Read the slot directly: the probe is a minimal mock without accessors.
-        assertEq(
-            address(uint160(uint256(vm.load(account, GlauxStorage.IMPL_SLOT)))), address(probe)
-        );
+        assertEq(address(uint160(uint256(vm.load(bornAt, GlauxStorage.IMPL_SLOT)))), address(probe));
     }
 
     /// @notice The router's fallback must never execute a pointer Glaux did not
@@ -467,7 +566,7 @@ contract BirthTest is GlauxFixture {
     ///         foreign one must be unreachable rather than delegatecalled with the
     ///         account's storage and balance.
     function test_foreignErc1967PointerIsNeverExecuted() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
+        _attachDelegation(account, address(router));
         ForeignProxyLogic foreign = new ForeignProxyLogic();
         vm.store(
             account, GlauxStorage.ERC1967_IMPL_SLOT, bytes32(uint256(uint160(address(foreign))))
@@ -498,64 +597,72 @@ contract BirthTest is GlauxFixture {
     }
 
     function test_birth_rejectsInvalidSlotAndRollsBackImplementation() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         FactorSlot[3] memory invalid = _slots();
         invalid[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, new bytes(31));
         bytes memory initData = _initDataUnproven(invalid);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidSlot.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
 
         vm.expectRevert(NotInitialized.selector);
-        GlauxAccount(payable(account)).updateNonce();
-        (bytes memory validData, bytes memory validSig) = _initBlob();
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, validData, validSig);
+        GlauxAccount(payable(bornAt)).updateNonce();
+        // The same address can still be born from ITS own valid configuration:
+        // a failed birth writes nothing, so the derivation stays available.
+        (address retryAt, bytes32 retrySalt, uint256 retryS) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, _initBlob());
+        _attachDelegation(retryAt, address(router));
+        GlauxDelegate(payable(retryAt))
+            .initialize(address(impl), address(impl).codehash, _initBlob(), retrySalt, retryS);
     }
 
     function test_birth_rejectsOneMalformedSlot() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         FactorSlot[3] memory invalid = _slots();
         invalid[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0)));
         bytes memory initData = _initDataUnproven(invalid);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidSlot.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     function test_birth_rejectsTwoMalformedSlots() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         FactorSlot[3] memory invalid = _slots();
         invalid[0] = FactorSlot(GlauxStorage.VERIFIER_SECP256K1, abi.encode(address(0)));
         invalid[1] = FactorSlot(GlauxStorage.VERIFIER_P256, abi.encode(0, 0));
         bytes memory initData = _initDataUnproven(invalid);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidSlot.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     function test_birth_rejectsInvalidVerifierType() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
         FactorSlot[3] memory invalid = _slots();
         invalid[1] = FactorSlot(0, abi.encode(DEVICE_QX, DEVICE_QY));
         // Slot 0 is valid and proven, so the run reaches slot 1 and fails on its
         // verifier type rather than on a missing proof.
         bytes memory initData = _initDataFor(invalid, [paperPk, DEVICE_P256_PK, cloudPk]);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidVerifierType.selector);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     function test_receive_beforeInit() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
+        _attachDelegation(account, address(router));
         vm.deal(address(this), 1 ether);
 
         (bool ok,) = account.call{value: 0.5 ether}("");
@@ -565,7 +672,7 @@ contract BirthTest is GlauxFixture {
     }
 
     function test_fallback_beforeInit_reverts() public {
-        vm.signAndAttachDelegation(address(router), birthPk);
+        _attachDelegation(account, address(router));
 
         vm.expectRevert(NotInitialized.selector);
         GlauxAccount(payable(account)).updateNonce();
@@ -594,17 +701,17 @@ contract BirthTest is GlauxFixture {
         assertEq(ret, abi.encodeWithSelector(InvalidSlot.selector));
     }
 
-    /// @notice Residual 17: an EOA that delegated to Glaux was previously delegated to
-    ///         SOME OTHER contract, and that prior delegate wrote `IMPL_SLOT` before the
-    ///         account ever reached the router — an EIP-7702 re-delegation does not
-    ///         clear storage. `initialize` reads `IMPL_SLOT != address(0)` as "already
-    ///         born" and refuses to run, so the account can never take the birth path
-    ///         at all; and once delegated to the router, the router's own fallback
-    ///         reads that same pre-planted pointer and delegatecalls straight into
-    ///         whatever the prior delegate left there, with the account's storage and
-    ///         balance. This proves both halves: birth is permanently bricked, and the
-    ///         planted code is reachable and executed.
-    function test_residual17_plantedImplPointerBricksBirthAndIsExecuted() public {
+    /// @notice Residual 17 no longer has a birth path to attack. It described an
+    ///         EOA carrying storage from a previous delegate — an EIP-7702
+    ///         re-delegation does not clear it — arriving at Glaux with
+    ///         `IMPL_SLOT` already written, which bricked its birth forever.
+    ///         Under rootless birth no key-bearing EOA can be born at all: the
+    ///         account address IS the recovery of its own configuration's proof,
+    ///         so an address someone holds a key for is an address that proof
+    ///         never recovers to. The poisoning still lands, and birth still
+    ///         refuses — but now for a reason no attacker can arrange, and one
+    ///         that holds whether the storage was poisoned or pristine.
+    function test_keyBearingEoaCannotBeBornAtAll() public {
         uint256 victimPk = 0x71C72;
         address victim = vm.addr(victimPk);
         PriorDelegate prior = new PriorDelegate();
@@ -615,11 +722,22 @@ contract BirthTest is GlauxFixture {
             .poison(GlauxStorage.IMPL_SLOT, bytes32(uint256(uint160(address(sink)))));
 
         vm.signAndAttachDelegation(address(router), victimPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        // Not `AlreadyInitialized`: the pointer check never runs, because this
+        // address cannot present a proof that recovers to itself. The same
+        // refusal applies to a victim whose storage is untouched.
         vm.expectRevert(AlreadyInitialized.selector);
         GlauxDelegate(payable(victim))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
 
+        address pristine = vm.addr(0x71C73);
+        vm.signAndAttachDelegation(address(router), 0x71C73);
+        vm.expectRevert(InvalidBirthProof.selector);
+        GlauxDelegate(payable(pristine))
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
+
+        // The planted code remains reachable on the poisoned victim, which is
+        // why such an address must never be presented as a Glaux account: it is
+        // not one, and no birth made it one.
         PoisonSink(victim).ping();
         assertEq(
             vm.load(victim, bytes32(uint256(0xC0FFEE))), bytes32(uint256(1)), "planted code ran"

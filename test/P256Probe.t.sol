@@ -96,21 +96,22 @@ contract P256ProbeTest is GlauxFixture {
     }
 
     function _birthWith(FactorSlot[3] memory slots, uint256[3] memory keys) internal {
-        vm.signAndAttachDelegation(address(router), birthPk);
         bytes memory initData = _initDataFor(slots, keys);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
+        account = bornAt;
     }
 
     function test_birth_withP256Slot_revertsWhenVerifierAbsent() public {
         _removeP256Verifier();
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        _attachDelegation(account, address(router));
 
         vm.expectRevert(UNAVAILABLE);
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
     }
 
     /// @dev The dangerous shape the roadmap names: two P-256 slots against one
@@ -121,34 +122,34 @@ contract P256ProbeTest is GlauxFixture {
         (uint256 qx, uint256 qy) = vm.publicKeyP256(SECOND_DEVICE_P256_PK);
         FactorSlot[3] memory slots = _slots();
         slots[2] = FactorSlot(GlauxStorage.VERIFIER_P256, abi.encode(qx, qy));
-        vm.signAndAttachDelegation(address(router), birthPk);
+        _attachDelegation(account, address(router));
         bytes memory initData =
             _initDataFor(slots, [paperPk, DEVICE_P256_PK, SECOND_DEVICE_P256_PK]);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(UNAVAILABLE);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     function test_birth_withP256Slot_revertsWhenVerifierAlwaysAccepts() public {
         vm.etch(address(0x100), address(new P256AlwaysAcceptVerifier()).code);
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        _attachDelegation(account, address(router));
 
         vm.expectRevert(UNAVAILABLE);
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
     }
 
     function test_birth_withP256Slot_revertsWhenVerifierAlwaysRejects() public {
         vm.etch(address(0x100), address(new P256AlwaysRejectVerifier()).code);
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        _attachDelegation(account, address(router));
 
         vm.expectRevert(UNAVAILABLE);
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(address(impl), address(impl).codehash, _initBlob(), accountSalt, accountS);
     }
 
     /// @dev Guard against probing unconditionally: an account with no P-256 slot has
@@ -202,13 +203,14 @@ contract P256ProbeTest is GlauxFixture {
         (uint256 qx, uint256 qy) = vm.publicKeyP256(PROBE_PK);
         FactorSlot[3] memory slots = _slots();
         slots[1] = FactorSlot(GlauxStorage.VERIFIER_P256, abi.encode(qx, qy));
-        vm.signAndAttachDelegation(address(router), birthPk);
         bytes memory initData = _initDataFor(slots, [paperPk, PROBE_PK, cloudPk]);
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
+        (address bornAt, bytes32 salt, uint256 s) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, initData);
+        _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(PROBE_KEY_REFUSED);
-        GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, _sig65(birthPk, digest));
+        GlauxDelegate(payable(bornAt))
+            .initialize(address(impl), address(impl).codehash, initData, salt, s);
     }
 
     function test_setSlot_toProbeKey_reverts() public {

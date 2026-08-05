@@ -114,7 +114,7 @@ error AlreadyInitialized();
 error NotInitialized();
 error NotDuringBirth();
 error InvalidImplementation();
-error InvalidBirthSignature();
+error InvalidBirthProof();
 error BadUpdateNonce(uint64 expected, uint64 got);
 error DuplicateSlot();
 error InvalidSignature();
