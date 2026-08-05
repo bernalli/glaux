@@ -53,6 +53,24 @@ describe("published package", () => {
   });
 
   /**
+   * `exports` points every subpath at `./dist/*.js`, but `dist/` is gitignored
+   * and, with no `files` allowlist, `npm pack` honours that ignore: the tarball
+   * ships `src` and `test` and NO `dist`, so every documented import fails on a
+   * consumer's machine. `files` has to carry `dist`, and `prepack` has to build
+   * it — otherwise a publish can ship whatever stale build happens to be on the
+   * publisher's disk, or none at all.
+   */
+  it("ships dist/ in the tarball and rebuilds it on pack", () => {
+    const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as {
+      files?: unknown;
+      scripts?: Record<string, unknown>;
+    };
+
+    expect(manifest.files).toContain("dist");
+    expect(manifest.scripts?.prepack).toBe("npm run build");
+  });
+
+  /**
    * The price of inlining the P-256 probe vector into `src/`: the contract
    * remains its only source of truth, so the copy has to be pinned to the
    * fixture `test/SdkParity.t.sol` emits. Without this, a vector regenerated on
