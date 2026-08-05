@@ -774,15 +774,15 @@ export class PaymasterNotConfiguredError extends Error {
  * issuing a getter call at all, fails for a reason that is not itself an EVM
  * revert.
  *
- * `scripts/reconcile.py`'s single `except Exception` around its getter reads
- * deliberately folds a genuine transport failure (the RPC call never
- * completed) into the same "getter call failed" finding as a getter that
- * reverts because the implementation cannot answer for its own state. This
- * SDK keeps the two apart: an implementation that cannot describe its own
- * state IS a reconciliation finding (the `"unreadable"` verdict), but a
- * dropped connection or malformed JSON-RPC response is not evidence about
- * the chain's state at all — it is evidence about nothing, and reporting any
- * verdict from it would be silently treating unknown state as reconciled.
+ * The two failures are kept apart, and `scripts/reconcile.py` keeps them
+ * apart the same way (its own `ReconciliationReadError`, exit 3): an
+ * implementation that cannot describe its own state IS a reconciliation
+ * finding (the `"unreadable"` verdict, Python's exit 2), but a dropped
+ * connection or malformed JSON-RPC response is not evidence about the chain's
+ * state at all — it is evidence about nothing, and reporting any verdict from
+ * it would be silently treating unknown state as reconciled. The Python tool's
+ * exit codes are therefore 0/1/2/3, with 3 outside the verdict range
+ * altogether.
  */
 export class ReconciliationReadError extends Error {
   readonly chain: string;
