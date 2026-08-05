@@ -171,11 +171,24 @@ $PY scripts/reconcile.py --account "$ACCT" --router "$CANONICAL_ROUTER" \
 
 step "9. refusal where the verifier is gone (chain B), fresh blob"
 cast rpc anvil_setCode 0x0000000000000000000000000000000000000100 0x --rpc-url "$RPC_B" >/dev/null
+# A rootless account's address is derived from its birth digest, so a blob that
+# repeats the same initData — same factors AND the same possession proofs, which
+# is exactly what reusing the shell variables above would do — lands on the
+# account already born in step 5. The submitter would then refuse it as
+# pre-planted, and the refusal would say nothing about the missing verifier.
+# Swapping the cloud factor for a different key changes initData, hence the
+# digest, hence the address; the equality check below keeps that honest.
+CLOUD2_PK="0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6" # anvil 3
+CLOUD2_ADDR="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+CLOUD2_PROOF=$(GLAUX_FACTOR_KEY="$CLOUD2_PK" $PY scripts/prove_possession.py --slot 2 --type 1)
 $PY scripts/birth.py \
   --router "$CANONICAL_ROUTER" --impl "$IMPL_ADDR" --expected-code-hash "$IMPL_CODEHASH" \
-  --paper "$PAPER_ADDR" --device-qx "$QX" --device-qy "$QY" --cloud "$CLOUD_ADDR" \
-  --paper-proof "$PAPER_PROOF" --device-proof "$DEVICE_PROOF" --cloud-proof "$CLOUD_PROOF" \
+  --paper "$PAPER_ADDR" --device-qx "$QX" --device-qy "$QY" --cloud "$CLOUD2_ADDR" \
+  --paper-proof "$PAPER_PROOF" --device-proof "$DEVICE_PROOF" --cloud-proof "$CLOUD2_PROOF" \
   >"$WORK/blob2.json"
+CAND=$($PY -c "import json;print(json.load(open('$WORK/blob2.json'))['account'])")
+[[ "$CAND" != "$ACCT" ]] \
+  || fail "refusal candidate equals the born account — the config was not changed, the check below would be vacuous"
 # The submitter refuses a reverted birth outright — non-zero exit, reason on
 # stderr, nothing on stdout — so the refusal is read from its exit code rather
 # than from a result it deliberately no longer prints.
@@ -184,7 +197,6 @@ $PY scripts/submit_birth.py --rpc "$RPC_B" --blob "$WORK/blob2.json"
 birth_rc=$?
 set -e
 [[ "$birth_rc" != "0" ]] || fail "birth SUCCEEDED without a verifier"
-CAND=$($PY -c "import json;print(json.load(open('$WORK/blob2.json'))['account'])")
 set +e
 $PY scripts/reconcile.py --account "$CAND" --rpc chain-31337="$RPC_A" --rpc chain-31338="$RPC_B" >/dev/null 2>&1
 rc=$?
