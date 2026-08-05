@@ -52,8 +52,12 @@ step() { echo; echo "== $*"; }
 
 step "0. router immobility (build-level)"
 forge build --quiet
-ROUTER_HASH=$(cast keccak "$(forge inspect src/GlauxDelegate.sol:GlauxDelegate deployedBytecode)")
-echo "router runtime code hash: $ROUTER_HASH"
+# Build-artifact hash, NOT the deployed code hash: `forge inspect` returns the
+# artifact with the immutable SELF still unresolved, while deployment writes
+# address(this) into the runtime code. Use this to compare builds; use
+# EXTCODEHASH to compare what is deployed on two chains.
+ROUTER_BUILD_HASH=$(cast keccak "$(forge inspect src/GlauxDelegate.sol:GlauxDelegate deployedBytecode)")
+echo "router build-artifact hash: $ROUTER_BUILD_HASH"
 
 step "1. boot two anvil chains (prague)"
 anvil --port 8545 --chain-id 31337 --hardfork prague >"$WORK/anvil_a.log" 2>&1 &
@@ -172,16 +176,21 @@ $PY scripts/birth.py \
   --paper "$PAPER_ADDR" --device-qx "$QX" --device-qy "$QY" --cloud "$CLOUD_ADDR" \
   --paper-proof "$PAPER_PROOF" --device-proof "$DEVICE_PROOF" --cloud-proof "$CLOUD_PROOF" \
   >"$WORK/blob2.json"
-res=$($PY scripts/submit_birth.py --rpc "$RPC_B" --blob "$WORK/blob2.json" || true)
-echo "$res"
-[[ "$($PY -c "import json;print(json.loads('''$res''')['status'])")" == "0" ]] || fail "birth SUCCEEDED without a verifier"
+# The submitter refuses a reverted birth outright — non-zero exit, reason on
+# stderr, nothing on stdout — so the refusal is read from its exit code rather
+# than from a result it deliberately no longer prints.
+set +e
+$PY scripts/submit_birth.py --rpc "$RPC_B" --blob "$WORK/blob2.json"
+birth_rc=$?
+set -e
+[[ "$birth_rc" != "0" ]] || fail "birth SUCCEEDED without a verifier"
 CAND=$($PY -c "import json;print(json.load(open('$WORK/blob2.json'))['account'])")
 set +e
 $PY scripts/reconcile.py --account "$CAND" --rpc chain-31337="$RPC_A" --rpc chain-31338="$RPC_B" >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" == "2" ]] || fail "reconcile on the half-born candidate: expected exit 2, got $rc"
-echo "refused (status 0), raw side legible, reconcile exit 2 — as designed"
+echo "refused (submitter exit $birth_rc), raw side legible, reconcile exit 2 — as designed"
 # restore, for hygiene, in case the anvils outlive us
 cast rpc anvil_setCode 0x0000000000000000000000000000000000000100 "$VERIFIER_CODE" --rpc-url "$RPC_B" >/dev/null
 
@@ -189,7 +198,7 @@ echo
 echo "ALL CHECKS PASSED — values for docs/deployments.md:"
 echo "  impl:              $IMPL_ADDR"
 echo "  impl codehash:     $IMPL_CODEHASH"
-echo "  router:            $CANONICAL_ROUTER (hash $ROUTER_HASH)"
+echo "  router:            $CANONICAL_ROUTER (build-artifact hash $ROUTER_BUILD_HASH)"
 echo "  verifier codehash: $VHASH"
 echo "  born account:      $ACCT"
 echo "  refusal candidate: $CAND"
