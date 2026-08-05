@@ -673,7 +673,12 @@ account moving a token in a batch and the token calling back in while
 
 ## Resolved: EIP-191 version 0x00, not EIP-712 typed data
 
-All three digests are raw `keccak256(abi.encode(...))` values, each prefixed
+> **The section below is the argument that produced the decision, and describes
+> the design as it stood BEFORE it.** The resolution is at the end: the birth,
+> update and execution digests are wrapped as `0x19 ‖ 0x00 ‖ validator ‖
+> structHash` and have been since v0.6. Read the past tense as past tense.
+
+Before the wrap, all three digests were raw `keccak256(abi.encode(...))` values, each prefixed
 with a distinct domain constant (`GLAUX_INIT_V1`, `GLAUX_UPDATE_V1`,
 `GLAUX_EXEC_V1`), and the update and execution digests additionally bind the
 account address. That provides domain separation *between Glaux operations and
@@ -685,16 +690,18 @@ hash, not a rendered description of what they are authorizing. For a project
 whose stated ambition is an ERC draft and third-party adoption, that is a real
 weakness.
 
-**And there is a security half, which is the stronger argument.** The domain
-constants separate Glaux from other *structured* signing schemes; they do not
-separate it from **raw-hash signing**. Any factor key that is also an ordinary
-EOA key, and that can be induced to sign a bare 32-byte digest through
-`eth_sign` or an equivalent, produces a valid Glaux signature. On the migration
+**And there was a security half, which was the stronger argument.** The domain
+constants separate Glaux from other *structured* signing schemes; they did not
+separate it from **raw-hash signing**. Any factor key that was also an ordinary
+EOA key, and that could be induced to sign a bare 32-byte digest through
+`eth_sign` or an equivalent, produced a valid Glaux signature. On the migration
 path this project plans, the birth key *is* a long-lived user key — so a single
-raw-hash signature obtained before birth installs an attacker's implementation
-and an attacker's slot set. Until this is addressed, the rule in client guidance
-against ever exposing a factor key to an unprefixed-digest API is the only thing
-standing in the way.
+raw-hash signature obtained before birth would install an attacker's
+implementation and an attacker's slot set. That is what the wrap adopted below
+closes. It does not, and cannot, protect a key exposed to a genuinely raw
+`sign-this-hash` primitive that applies no prefix at all, which is why the rule
+in client guidance against ever exposing a factor key to such an API still
+stands.
 
 This also admits a third option, which dissolves the chain-agnosticism tension
 entirely: **EIP-191 version `0x00`** — `0x19 ‖ 0x00 ‖ validator ‖ data`. It
@@ -713,13 +720,19 @@ and something wallet tooling may render or reject inconsistently.
 **Resolved: EIP-191 version `0x00` is adopted.** The birth, update and execution
 digests are each wrapped as `0x19 ‖ 0x00 ‖ validator ‖ structHash`, with the
 router as validator for birth and the account for the other two. This closes the
-raw-hash-signing hole — a bare 32-byte value signed through `eth_sign` can no
-longer be a Glaux digest — and it binds the validating contract into every
-signature, while carrying **no `chainId` field**, so blobs keep replaying on
-every chain. It buys no legibility, being untyped; adopting full EIP-712 on top
+hole for the *prefixing* APIs — `personal_sign` and `eth_sign` wrap what they
+are given under a different prefix, so what they produce can no longer be a
+Glaux digest — and it binds the validating contract into every signature, while
+carrying **no `chainId` field**, so blobs keep replaying on every chain. It does
+not close, and cannot close, a signer that will put its key on an arbitrary
+32-byte value with no prefix at all: hardware signers and low-level libraries
+expose exactly that, and against it the client-guidance rule remains the only
+protection. It buys no legibility, being untyped; adopting full EIP-712 on top
 remains open for a future version and would be a spec change, not a security
-fix. The decision was taken before deployment: nothing here has been deployed
-anywhere except local test chains.
+fix. The decision was taken before any public deployment — at that time nothing
+had been deployed beyond local test chains — so the Sepolia and Base Sepolia
+deployments recorded in `docs/deployments.md` have carried the v0x00 wrap from
+the start.
 
 ## Declared residual: deployment reproducibility
 

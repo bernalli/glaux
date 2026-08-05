@@ -179,3 +179,89 @@ def test_the_sanitizing_boundary_lets_a_deliberate_exit_through() -> None:
         sys.exit("a deliberate refusal")
 
     assert str(exit_info.value) == "a deliberate refusal"
+
+
+def test_a_library_exception_carrying_the_key_is_sanitized_on_the_real_path(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Pins the production wrappers, not just the context manager in isolation.
+
+    The length and range checks refuse malformed keys before any library sees
+    them, so nothing else in this suite would notice if the wrappers around the
+    signing calls were deleted. This forces a well-formed key through a library
+    that raises with the key in its message — which is what every key-parsing
+    library actually does — and asserts none of it survives.
+    """
+    key = "0x" + "11" * 32
+
+    def exploding_key_data(private_key: str) -> bytes:
+        raise ValueError(f"bad key: {private_key}")
+
+    monkeypatch.setattr(prove_possession, "secp256k1_key_data", exploding_key_data)
+    message = _run(monkeypatch, ["--slot", "0", "--type", "1"], key)
+
+    captured = capsys.readouterr()
+    assert key not in message
+    assert "1111" not in message
+    assert key not in captured.out
+    assert key not in captured.err
+
+
+def test_a_library_exception_on_the_p256_signing_call_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same, for the other curve's wrapper."""
+    key = "0x" + "22" * 32
+
+    def exploding_sign(scalar: int, digest: bytes) -> bytes:
+        raise ValueError(f"bad scalar: {scalar:#x}")
+
+    monkeypatch.setattr(prove_possession, "sign_p256", exploding_sign)
+    message = _run(
+        monkeypatch,
+        [
+            "--slot",
+            "1",
+            "--type",
+            str(VERIFIER_P256),
+            "--qx",
+            PROBE_QX,
+            "--qy",
+            PROBE_QY,
+        ],
+        key,
+    )
+
+    captured = capsys.readouterr()
+    assert "2222" not in message
+    assert "2222" not in captured.out
+    assert "2222" not in captured.err
+
+
+@pytest.mark.parametrize("verifier_type", [VERIFIER_SECP256K1, VERIFIER_P256])
+def test_the_scalar_must_lie_inside_the_curve_order(verifier_type: int) -> None:
+    """Zero and n are not private keys; 1 and n-1 are. Pins the check itself.
+
+    Without this, the order check could be deleted and the suite would stay
+    green — a library might refuse some of these later, or might not.
+    """
+    order = prove_possession.CURVE_ORDER[verifier_type]
+
+    for accepted in (1, order - 1):
+        assert (
+            prove_possession.parse_factor_key(f"{accepted:#066x}", verifier_type)
+            == accepted
+        )
+
+    for refused in (0, order):
+        with pytest.raises(SystemExit) as exit_info:
+            prove_possession.parse_factor_key(f"{refused:#066x}", verifier_type)
+        assert "curve order" in str(exit_info.value)
+
+
+@pytest.mark.parametrize("body", ["11" * 31, "11" * 33, "", "0x", "zz" * 32])
+def test_only_exactly_32_bytes_of_hex_are_accepted(body: str) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        prove_possession.parse_factor_key(body, VERIFIER_SECP256K1)
+
+    assert "32 bytes of hex" in str(exit_info.value)

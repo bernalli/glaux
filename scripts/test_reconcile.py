@@ -326,6 +326,35 @@ def test_dirty_implementation_address_padding_is_exit_two(fx: dict) -> None:
     assert state.getter_mismatches[0].startswith("getter call failed:")
 
 
+def test_foreign_code_does_not_downgrade_an_unreadable_chain(fx: dict) -> None:
+    """Exit 2 outranks exit 1, and the foreign clause must not undo that.
+
+    Without this, making the foreign assignment unconditional would leave every
+    other test green while silently turning "the implementation misreports its
+    own state" into the milder "chains diverge" — a downgrade of the most
+    serious verdict the tool has.
+    """
+    storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    getter_slots = {
+        i: bytes.fromhex(slot["data"].removeprefix("0x"))
+        for i, slot in enumerate(fx["expected"]["slots"])
+    }
+    unreadable = inspect_chain(
+        _DirtyImplementationWeb3(storage, getter_slots),
+        "dirty-implementation-padding",
+        ACCOUNT,
+    )
+    foreign = inspect_chain(
+        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
+    )
+
+    assert compare([unreadable], None) == 2
+    assert compare([unreadable, foreign], None) == 2
+    assert compare([foreign, unreadable], None) == 2
+
+
 def test_dirty_get_slot_trailing_padding_is_exit_two(fx: dict) -> None:
     storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)

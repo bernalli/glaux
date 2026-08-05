@@ -533,6 +533,19 @@ describe("reconcile", () => {
     expect(state.getterMismatches[0]).toContain("implementation()");
   });
 
+  it("does not let a foreign-code chain downgrade an unreadable one", async () => {
+    // `unreadable` outranks `divergent`, and the foreign clause must not undo
+    // that: making it unconditional would leave every other test green while
+    // silently turning "the implementation misreports its own state" into the
+    // milder "chains diverge".
+    const malformed = { name: "malformed-abi", client: clientWithValidRawState(async () => ({ data: "0x" })) };
+    const foreign = { name: "delegated-elsewhere", client: clientWithAccountCode("0x60806040") };
+
+    expect((await reconcile([malformed], CANDIDATE_ACCOUNT)).verdict).toBe("unreadable");
+    expect((await reconcile([malformed, foreign], CANDIDATE_ACCOUNT)).verdict).toBe("unreadable");
+    expect((await reconcile([foreign, malformed], CANDIDATE_ACCOUNT)).verdict).toBe("unreadable");
+  });
+
   it("reports unreadable when implementation() returns an address word with dirty high padding", async () => {
     const dirtyImplementationWord = `0x01${"00".repeat(30)}01` as Hex;
     const client = clientWithValidRawState(async ({ data }) => {
