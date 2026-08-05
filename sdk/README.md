@@ -23,8 +23,10 @@ EIP-7702 to the Glaux router — and nobody has ever held its private key. The
 delegation is authorized by a *crafted* tuple whose `r` commits to the account's
 own birth configuration, not by a signature, so there is no key to lose, hold or
 destroy. (A scalar for that public point exists mathematically, as for any EOA;
-what rootlessness removes is anyone's possession of it, not the curve.) The `BirthBlob` is therefore the only artifact that matters: preserve
-it, or the account can never be born on another chain. That address is identical
+what rootlessness removes is anyone's possession of it, not the curve.) The `BirthBlob` is therefore the artifact that matters: preserve it, or the
+account cannot be born on a further chain — with one qualification, since a
+successful birth publishes the whole blob in its own calldata and authorization
+list, so after the first birth it can be rebuilt from that transaction. That address is identical
 on every EVM chain by construction — nothing about Glaux prevents someone from
 sending funds to it on a chain where the account has never been born.
 

@@ -285,11 +285,17 @@ reliably repairable; it is to be prevented.
 
 The authorization tuple is derived deterministically from the birth digest, so
 in principle it can always be recomputed — but only from the *same* `initData`,
-and `initData` carries the three possession proofs. A P-256 proof is signed with
-a random nonce, as any hardware signer will do, so re-signing one produces a
-different `initData`, a different digest, and therefore a **different account**.
-Recomputation is not recovery: without the original blob the account can never
-be activated on a chain it has not yet reached. The same applies to the
+and `initData` carries the three possession proofs. Under a random-nonce signer,
+re-signing a proof produces a different `initData`, a different digest, and
+therefore a **different account**; under a deterministic (RFC 6979) signer it
+reproduces the same one. Recomputation is recovery only in the second case.
+
+Two qualifications keep this from being read as worse than it is. Once the
+account has been born anywhere, that transaction publishes the entire blob — the
+calldata carries `implementation`, `expectedCodeHash`, `initData` and the salt,
+the authorization list carries the tuple — so it can be rebuilt from chain
+history for as long as that history is reachable. The retention rule is
+therefore absolute only before the first birth. The same applies to the
 update history: `applyUpdate` accepts only `updateNonce + 1`, so a lagging chain
 can be caught up only by replaying every signed update in order. A missing
 update at nonce N permanently strands every chain still below it, even with all
@@ -529,9 +535,10 @@ on exactly this point — which is itself worth knowing before integrating:
 - with **deterministic (RFC 6979) signers**, which the TypeScript reference
   signers are, re-signing yields identical proofs, so a second craft from the
   same factors reproduces the same `initData` and the same address;
-- with a **random-nonce signer** — every hardware P-256 factor, and the Python
-  `prove_possession.py`, which signs through OpenSSL — each craft yields a
-  different proof, hence a different address.
+- with a **random-nonce signer** — the Python `prove_possession.py`, which
+  signs through OpenSSL, and any signer that draws a fresh `k` — each craft
+  yields a different proof, hence a different address. Hardware backing does not
+  settle which of the two a factor is; its nonce policy does.
 
 Production uses the second kind, so the second is the case to design for. Both
 addresses answer to the same factors, so nothing is handed to anyone else; the

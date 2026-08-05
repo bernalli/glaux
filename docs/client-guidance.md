@@ -219,8 +219,11 @@ Birth follows the sequence in `GlauxDelegate.initialize` and the
 
 **Before anything else — two preconditions that no on-chain check can enforce.**
 Under rootless birth the first of them is close to self-enforcing, because the
-address is derived rather than chosen and nobody can delegate it in advance
-(threat-model residual 17). Both checks stay in the client anyway: they are cheap,
+address is derived rather than chosen, so nobody can delegate it to code of their
+own choosing before you get there (threat-model residual 17). Note what this does
+not say: anyone holding the blob can relay the birth itself early, since
+submission is permissionless by design — that produces your account with your
+configuration, not someone else's. Both checks stay in the client anyway: they are cheap,
 and they are the difference between a design argument and an observation.
 
 - **The account must be a fresh address that has never carried a delegation
@@ -365,10 +368,12 @@ question of whether your signers reproduce their proofs:
   reference `LocalP256Signer` and `LocalSecp256k1Signer` are — re-signs the same
   digest to the same bytes, so crafting again from the same three factors lands
   on the **same** address, and a lost blob can be rebuilt by repeating the craft.
-- **A random-nonce signer** — every hardware P-256 factor, the Secure Enclave
-  included, and this repository's Python `prove_possession.py`, which signs
-  through OpenSSL — produces different bytes each time, hence a different
-  `initData`, a different digest and a **different** address. A blob discarded
+- **A random-nonce signer** — this repository's Python `prove_possession.py`,
+  which signs through OpenSSL, and any signer that draws a fresh `k` — produces
+  different bytes each time, hence a different `initData`, a different digest and
+  a **different** address. Classify your signer by its documented nonce policy,
+  not by whether it is hardware: hardware backing says nothing either way, and
+  some hardware implements RFC 6979. A blob discarded
   as "the failed attempt" then names an address that can never be born, and
   anything sent to it is **gone**: there is no key, and no way back to the proof.
 
