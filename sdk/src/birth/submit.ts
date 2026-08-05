@@ -1,9 +1,18 @@
-import { encodeFunctionData, keccak256, type Address, type Hex, type PublicClient } from "viem";
+import {
+  encodeAbiParameters,
+  encodeFunctionData,
+  keccak256,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { sendRawTransaction } from "viem/actions";
 import { privateKeyToAddress, signTransaction } from "viem/accounts";
 import { recoverAuthorizationAddress } from "viem/utils";
 import { IMPL, IMPL_CODE_HASH, ROUTER, designator } from "../core/constants.js";
+import { initDigest } from "../core/digests.js";
 import { decodeInitData } from "../core/encoding.js";
+import { assertRecoversTo } from "./blob.js";
 import type { BirthBlob } from "../core/types.js";
 import {
   BirthGasEstimationError,
@@ -25,7 +34,8 @@ const INITIALIZE_ABI = [
       { name: "implementation", type: "address" },
       { name: "expectedCodeHash", type: "bytes32" },
       { name: "initData", type: "bytes" },
-      { name: "birthSig", type: "bytes" },
+      { name: "salt", type: "bytes32" },
+      { name: "s", type: "uint256" },
     ],
     outputs: [],
   },
@@ -67,7 +77,7 @@ function buildInitializeCalldata(blob: BirthBlob): Hex {
   return encodeFunctionData({
     abi: INITIALIZE_ABI,
     functionName: "initialize",
-    args: [blob.implementation, blob.expectedCodeHash, blob.initData, blob.birthSig],
+    args: [blob.implementation, blob.expectedCodeHash, blob.initData, blob.salt, BigInt(blob.authorization.s)],
   });
 }
 
@@ -125,6 +135,27 @@ async function assertCanonicalBlob(blob: BirthBlob): Promise<void> {
   // hash off the wire names the same 32 bytes and must not be refused.
   if (blob.expectedCodeHash.toLowerCase() !== IMPL_CODE_HASH) {
     throw new ImplementationCodeHashMismatchError(blob.expectedCodeHash);
+  }
+  // Everything above establishes only that the blob agrees with itself: that
+  // `account` really is what this tuple recovers to. The router does not check
+  // that — it rebuilds the proof from the birth configuration and recovers with
+  // a fixed v = 27. A blob can therefore be perfectly self-consistent and still
+  // be one `initialize` refuses, and refusal is not free: EIP-7702 applies the
+  // authorization regardless, so the address is left delegated, unborn, and —
+  // having no key — beyond repair. Re-run the router's own authentication here,
+  // before the relayer spends anything.
+  const digest = initDigest(blob.router, blob.implementation, blob.expectedCodeHash, blob.initData);
+  const expectedR = keccak256(
+    encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [digest, blob.salt]),
+  );
+  if (blob.authorization.r.toLowerCase() !== expectedR) {
+    throw new InvalidBirthBlobError("authorization r");
+  }
+  if (blob.authorization.yParity !== 0) {
+    throw new InvalidBirthBlobError("authorization parity");
+  }
+  if (!assertRecoversTo(digest, blob.salt, blob.authorization.s, blob.account)) {
+    throw new InvalidBirthBlobError("authorization rootless proof");
   }
 }
 

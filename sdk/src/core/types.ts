@@ -58,5 +58,12 @@ export interface BirthBlob {
     s: Hex;
   };
   initData: Hex;
-  birthSig: Hex;
+  /**
+   * The crafting nonce that put `authorization.r` on the curve. There is no
+   * birth signature to carry any more: `authorization` IS the proof, and the
+   * router rebuilds `r` from this salt and the init digest to check that the
+   * tuple recovers to `account`. It travels in the blob only because `r` is
+   * not recoverable from the address alone.
+   */
+  salt: Hex;
 }

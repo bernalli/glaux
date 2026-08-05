@@ -144,11 +144,16 @@ decode under both.
 These are real and were not addressed. They are recorded here rather than
 silently carried forward.
 
-- **Gas and fee values are taken from the RPC and signed with no ceiling**
+- ~~**Gas and fee values are taken from the RPC and signed with no ceiling**
   (converged on by three of the four reviewer passes). On the direct path the
   exposure is the relayer's hot key; on the ERC-4337 path the signed gas fields
   become prefund charged to the account, so there the exposure is the user's
-  funds. No caller-authored maximum exists on any path.
+  funds. No caller-authored maximum exists on any path.~~ **Closed on the
+  ERC-4337 path** — see residual 19 of `threat-model.md`: `signUserOp` now takes
+  a mandatory `maxCostWei` and refuses a `maxFeePerGas` beyond a sanity multiple
+  of a baseline computed from the chain's own fee history. The direct path's
+  exposure — the relayer's own hot key, never the account's funds — is unchanged
+  and is the relayer operator's to bound.
 - **Success can be fabricated by a hostile endpoint**: receipts, logs and the
   post-birth readback all come from the same source that broadcasts. There is no
   independent receipt, block proof or provider quorum anywhere in the client.
@@ -200,9 +205,9 @@ fail without its fix — by removing the defended line and observing the suite g
 red, not by assertion. Suites at the close of this pass: 142 SDK, 47 Python, 209
 Solidity, all CI jobs green.
 
-The items under *Open* remain. They do not block the current state of the
-repository, but the gas/fee ceiling on the ERC-4337 path touches user funds and
-should be closed before this client is used with real value.
+The items under *Open* remain, except the gas/fee ceiling: it touched user
+funds on the ERC-4337 path, and was closed afterwards rather than carried into
+publication (residual 19 of `threat-model.md`).
 
 Still out of scope, as in Phase 3: the external audit itself, and the public
 testnet redeploy at the current implementation address.

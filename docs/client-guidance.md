@@ -208,17 +208,23 @@ that, domain constants separate Glaux operations from other structured
 schemes, but nothing separates them from anything else.
 
 Therefore: a Glaux factor key is used for Glaux and nothing else. Never reuse an
-existing wallet key as a factor, never wire a factor key into a generic signing
-API, and on any migration path treat the birth key as the most dangerous key in
-the system, because one raw-hash signature obtained from it before birth
-installs an attacker's implementation and an attacker's slots.
+existing wallet key as a factor and never wire a factor key into a generic
+signing API — a raw-hash signature from any two factors is a quorum, which is
+every operation the account exposes.
 
 ## Birth
 
 Birth follows the sequence in `GlauxDelegate.initialize` and the
 `GLAUX_INIT_V1` domain it checks:
 
-**Before anything else — two preconditions that no on-chain check can enforce:**
+**Before anything else — two preconditions that no on-chain check can enforce.**
+Under rootless birth the first of them is close to self-enforcing, because the
+address is derived rather than chosen, so nobody can delegate it to code of their
+own choosing before you get there (threat-model residual 17). Note what this does
+not say: anyone holding the blob can relay the birth itself early, since
+submission is permissionless by design — that produces your account with your
+configuration, not someone else's. Both checks stay in the client anyway: they are cheap,
+and they are the difference between a design argument and an observation.
 
 - **The account must be a fresh address that has never carried a delegation
   designator — or, exactly once, be retrying a birth whose `initialize()`
@@ -251,12 +257,16 @@ Birth follows the sequence in `GlauxDelegate.initialize` and the
   EOA while the transaction delegates another; without zero chain id, the blob is
   silently unusable on every other chain.
 
-1. Generate the ephemeral birth EOA client-side.
-2. Sign the single EIP-7702 authorization tuple naming the **router**
-   (`GlauxDelegate`) with `chainId = 0` — this is what makes the same tuple
-   valid on every chain the account is later delegated on, present or future.
-3. Sign the initialization blob. The digest is the EIP-191 version `0x00`
-   wrap of the struct hash, with the **router** as validator:
+**No key is generated, at any point.** The account does not sign its own birth;
+the authorization tuple is *crafted* so that it recovers to an address for which
+no private key exists, and the router re-derives the same facts on chain. The
+account address is an output of this derivation, not something chosen.
+
+1. Build `initData` — the three `FactorSlot` entries, F2 at index 0, F1 at
+   index 1, F3 at index 2, each carrying its possession proof. This is the
+   moment the three factor keys are committed to the account.
+2. Compute the birth digest: the EIP-191 version `0x00` wrap of the struct
+   hash, with the **router** as validator.
 
    ```
    structHash = keccak256(abi.encode(GlauxStorage.INIT_DOMAIN, implementation,
@@ -266,16 +276,34 @@ Birth follows the sequence in `GlauxDelegate.initialize` and the
 
    Omitting the wrap produces a digest the router rejects: it computes
    `GlauxStorage.eip191(SELF, structHash)` and compares against that.
+3. Craft the authorization tuple for `[chainId = 0, address = ROUTER,
+   nonce = 0]`, whose preimage hashes to `AUTH_MSG_HASH =
+   keccak256(0x05 ‖ rlp([0, ROUTER, 0]))`. For `i = 0, 1, 2, …`:
 
-   verified against `address(this)` as the signing key
-   (`GlauxDelegate.initialize`'s call to `SignatureVerify.verify` with
-   `GlauxStorage.VERIFIER_SECP256K1` and `abi.encode(address(this))`).
-   `initData` decodes to the three `FactorSlot` entries — F2 at index 0,
-   F1 at index 1, F3 at index 2 — so this is also the moment the three
-   factor keys are committed to the account for the first time.
-4. Destroy the birth key immediately once both signatures exist — see the
-   warning below for why this is the single most consequential step in the
-   whole lifecycle.
+   ```
+   salt = keccak256(abi.encode(digest, uint256(i)))
+   r    = keccak256(abi.encode(digest, salt))
+   s    = ROOTLESS_S_PREFIX ‖ top19bytes(keccak256(abi.encode(digest, salt, uint8(1))))
+   ```
+
+   with `ROOTLESS_S_PREFIX = 0x476c6175785f524f4f544c4553` occupying the top 13
+   bytes (its leading `0x47` is what keeps `s` below `secp256k1n/2`, which
+   EIP-7702 requires of the tuple) and the tail hash shifted right by 104 bits,
+   so tag and tail cannot overlap.
+
+   and take the first `salt` whose `r` is a valid curve x-coordinate — about
+   half of them are, so this terminates in a couple of attempts. The account is
+   `ecrecover(AUTH_MSG_HASH, 27, r, s)`. Recovery id 27 is not a choice: when
+   `r` is on the curve it always recovers, and when it is not, neither parity
+   does. `chainId = 0` is what makes the tuple valid on every chain, present or
+   future.
+4. Verify what you crafted before you transmit it, against the same three
+   checks `GlauxDelegate.initialize` performs: `s` carries the 13-byte prefix,
+   `r` recomputes from `(digest, salt)`, and the recovery equals `blob.account`.
+   A blob failing any of them is a wasted broadcast at best; the SDK and the
+   Python submitter both refuse it locally rather than spend gas on it.
+
+There is no key to destroy at the end, and no window during which one exists.
 
 **The birth blob binds the implementation's code, not just its address.**
 `expectedCodeHash` is checked against `implementation.codehash`, and the
@@ -306,54 +334,91 @@ Still, verify the implementation is deployed *and* that its live code hash
 equals the one in the blob before broadcasting, rather than discovering it
 at submission time.
 
-### ⚠️ A surviving birth key is a permanent master key
+### ⚠️ Never introduce a key for the account
 
-This deserves to be stated without hedging, because it is easy to
-under-rate as a mere front-running window.
+The account's security rests on there being no key at all. Do not "improve" the
+flow by generating an EOA and signing the authorization tuple with it, and do
+not accept a blob whose tuple was signed rather than crafted — the router
+accepts only a crafted one, but a client that builds one is building an account
+whose EOA key is a permanent master key, bypassing the 2-of-3 entirely and able
+to re-delegate the account for good. That was the design until 2026-08-05 and
+the reason it changed (threat-model residual 1).
 
-The birth key **is the account's EOA key**. EIP-7702 delegation does not
-take the EOA's own authority away: a delegated EOA can still originate
-ordinary transactions and can still sign further authorization tuples. A
-surviving copy of the birth key can therefore spend the account's funds
-directly, bypassing the 2-of-3 entirely, and can re-delegate the account to
-a different contract of the attacker's choosing — permanently.
+The check that keeps this honest is the same one the router performs, and any
+client can run it on any blob, at any time: recompute `r` from the digest and
+the salt, confirm `s` carries the 13-byte tag, and confirm the tuple recovers to
+the account address. A tuple that satisfies all three cannot have come from a
+signer — producing one with a key means either inverting the discrete log or a
+2^103 search for chosen bytes of `s`.
 
-Nothing in Glaux revokes it. Rotating all three factors does not, because
-the factors govern the delegate's state, not the EOA's authority. This is
-the one compromise whose remedy is **migrating every asset to a newly born
-account**, never rotation. EIP-7851, if and when it ships, would let a
-delegated EOA disable its residual ECDSA authority at the protocol level
-and is the only real fix; Glaux does not depend on it existing.
+### Craft exactly one birth blob per account
 
-Practically: generate the key in memory, use it for exactly two signatures,
-and destroy it without it ever touching disk, a log, a clipboard, a crash
-dump, or a backup. If you cannot guarantee that, you cannot guarantee the
-account.
+A birth blob **never expires and cannot be revoked**: there is no deadline in
+the digest and no mechanism in the immutable router to invalidate one. Under
+rootless birth that durability is no longer a takeover risk — the address is
+recovered from `r`, which commits to the whole configuration, so a differently
+configured blob is a different account rather than a second key to the same one.
 
-### Sign exactly one birth blob, ever
+The hazard is now a bookkeeping one, and whether it is recoverable depends on
+your signers. The address covers `initData`, which carries the three possession
+proofs, so whether a second craft reproduces the first address is exactly the
+question of whether your signers reproduce their proofs:
 
-The update channel has an absolute rule against signing two updates for one
-nonce. Birth needs the same rule, for a sharper reason: a birth blob **never
-expires and cannot be revoked**. There is no deadline in the digest, no
-mechanism in the immutable router to invalidate one, and no birth key left to
-sign a replacement.
+- **A deterministic signer (RFC 6979)** — which is what this repository's
+  reference `LocalP256Signer` and `LocalSecp256k1Signer` are — re-signs the same
+  digest to the same bytes, so crafting again from the same three factors lands
+  on the **same** address, and a lost blob can be rebuilt by repeating the craft.
+- **A random-nonce signer** — this repository's Python `prove_possession.py`,
+  which signs through OpenSSL, and any signer that draws a fresh `k` — produces
+  different bytes each time, hence a different `initData`, a different digest and
+  a **different** address. Classify your signer by its documented nonce policy,
+  not by whether it is hardware: hardware backing says nothing either way, and
+  some hardware implements RFC 6979. A blob discarded
+  as "the failed attempt" then names an address that can never be born, and
+  anything sent to it is **gone**: there is no key, and no way back to the proof.
 
-So a second blob signed during setup — a retry, a "regenerate", an aborted flow
-that had already signed — remains a permanent takeover primitive on every chain
-the account has not yet been born on. Anyone holding it can bring the account up
-there with *its* factor configuration instead of yours, and submission is
-permissionless. If your setup flow can produce two signed blobs under any
-circumstance, that flow is broken; no on-chain check will catch it.
+Since the production configuration is the second one, treat it as the rule:
+craft once, keep the blob that names the address you publish, and treat any later
+craft as a new account rather than a repair of the first.
+
+### Never broadcast a birth you could not price
+
+A birth transaction cannot be taken back in the way a failed transaction usually
+can. EIP-7702 applies the authorization even when `initialize` reverts, so a
+broadcast that fails still leaves the address delegated and unborn — and a
+rootless address has no key that could correct it. Anything later sent there is
+lost.
+
+So the estimate is a precondition, not an optimization. If the node will not
+price the transaction *with its authorization list attached*, or prices it below
+what a real birth costs — under about 200,000 gas, which means it ignored the
+list and quoted a plain EOA call — refuse and retry elsewhere. Never substitute
+a fixed gas limit for an estimate you could not obtain: the guess is what turns
+"this chain cannot host the account yet" into a burned address. Both reference
+submitters refuse, and `scripts/two_chain_proof.sh` proves the address is left
+untouched on a chain whose P-256 verifier is missing.
 
 ### Retain the public artifacts durably — forever
 
-The birth key is destroyed, so these can never be regenerated, and every
-one of them is public data with no secrecy requirement:
+Every one of them is public data with no secrecy requirement. What is hard to
+reconstruct is `initData`: with a hardware signer, re-signing a possession proof
+produces different bytes, hence a different digest and a different account. The
+tuple and salt are recomputable *from* the rest of the blob, and worth storing
+anyway so that verification needs no derivation code.
+
+One qualification, so retention is not treated as more fragile than it is: once
+the account has been born on **any** chain, that birth transaction carries the
+whole blob in public — `initialize`'s calldata holds `implementation`,
+`expectedCodeHash`, `initData` and `salt`, and the transaction's authorization
+list holds the tuple. A client that has lost its local copy can rebuild it from
+that transaction. The retention rule is therefore absolute only *before* the
+first birth; after it, the chain is the backup, provided that chain's history
+stays reachable to you.
 
 - **the EIP-7702 authorization tuple**, without which the account can never
   be delegated on a chain it has not yet reached;
 - **the initialization blob** (`implementation`, `expectedCodeHash`,
-  `initData`, `birthSig`), without which it can never be initialized there;
+  `initData`, `salt`), without which it can never be initialized there;
 - **every quorum-signed update, in order, from nonce 1 onward.**
   `applyUpdate` accepts exactly `updateNonce + 1` and nothing else, so a
   lagging chain can only be caught up by replaying the whole sequence. Lose
@@ -657,6 +722,32 @@ alongside the core precompiles. That holds only on networks that actually have
 the precompile, and an individual bundler may still lag the specification, so
 test against the bundlers you intend to use. The direct `executeWithSigs` path
 needs no bundler at all and is unaffected either way.
+
+### Decide what the operation may cost before the quorum signs it
+
+`signUserOp` requires `maxCostWei`, the largest prefund the operation can
+authorize: `(verificationGasLimit + callGasLimit + preVerificationGas + the
+paymaster's two gas limits) * maxFeePerGas`, which is what the signature authorizes the
+EntryPoint to collect — not what the operation is expected to use. With no
+paymaster that prefund comes from the account; with one, from the paymaster's
+deposit. Cap it either way: sponsorship can be withdrawn between signing and
+inclusion, and a well-formed paymaster field naming the zero address puts the
+whole amount back on the account.
+Choose it per operation from what the action is worth. There is no default and
+there will not be one: a default would be a number nobody chose, standing in
+for the only decision that bounds this exposure.
+
+`maxFeePerGas` is separately measured against a fee baseline. Supply
+`feeBaseline`, read from a **second, independently operated endpoint**, whenever
+the value at stake justifies it — the same rule birth confirmation follows, for
+the same reason: an endpoint that both proposes a fee and vouches for it has
+been asked nothing. Omitting it reads the baseline from the same client, which
+catches a broken or greedy quote but not a coordinated lie.
+
+Do not defeat the guard to make an operation go through. Raising `maxCostWei`
+until the refusal stops is the same as not having a cap; a
+`FeeExceedsBaselineError` on a chain whose base fee is negligible next to real
+tips calls for a baseline you supply, not a larger multiple applied blindly.
 
 ## WebAuthn as a future verifier type
 

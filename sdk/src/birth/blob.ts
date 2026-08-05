@@ -1,8 +1,20 @@
-import { createPublicClient, getAddress, hexToBytes, http, keccak256, recoverAddress, size, type Hex } from "viem";
-import { recoverAuthorizationAddress } from "viem/utils";
+import {
+  concat,
+  createPublicClient,
+  encodeAbiParameters,
+  getAddress,
+  hexToBytes,
+  http,
+  keccak256,
+  recoverAddress,
+  size,
+  toHex,
+  type Address,
+  type Hex,
+} from "viem";
 import { p256 } from "@noble/curves/nist.js";
-import { generatePrivateKey, privateKeyToAddress, sign, signAuthorization } from "viem/accounts";
-import { IMPL, IMPL_CODE_HASH, ROUTER } from "../core/constants.js";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { AUTH_MSG_HASH, IMPL, IMPL_CODE_HASH, ROOTLESS_S_PREFIX, ROUTER } from "../core/constants.js";
 import { initDigest, registrationDigest } from "../core/digests.js";
 import { encodeInitData } from "../core/encoding.js";
 import { VERIFIER_P256, VERIFIER_SECP256K1, type BirthBlob, type FactorSlot } from "../core/types.js";
@@ -16,6 +28,7 @@ import {
   InvalidBirthSlotError,
   InvalidBirthVerifierTypeError,
   ProbeKeyNotInstallableError,
+  RootlessDerivationError,
 } from "../errors.js";
 import type { Signer } from "../signers/signer.js";
 
@@ -148,18 +161,90 @@ export async function buildInitData(
   return encodeInitData(slots, proofs as [Hex, Hex, Hex]);
 }
 
+/** Largest value the 19-byte tail of a tagged `s` can hold. */
+const ROOTLESS_TAIL_MASK = (1n << 152n) - 1n;
 /**
- * Signs `digest` with the ephemeral birth key using a raw (non-EIP-191)
- * secp256k1 signature — ported from `scripts/birth.py:sign_birth_digest`.
- * Returns the 65-byte `r || s || v` signature `GlauxDelegate.initialize`
- * recovers directly against `address(this)` (the birth key IS the delegated
- * EOA's own key). Unlike the Python side, no defensive low-s/`v` assertions
- * are needed here: `viem`'s `sign` already guarantees canonical low-s,
- * `v ∈ {27, 28}` output by construction (the same primitive
- * `LocalSecp256k1Signer.sign` relies on, verified by `sdk/test/signers.test.ts`).
+ * Attempts before giving up. Roughly half of candidate `r` values are not
+ * curve x-coordinates, so two attempts is the expected cost and 256 is
+ * unreachable in practice — it exists so a derivation can never spin forever.
  */
-export function signBirthDigest(privateKey: Hex, digest: Hex): Promise<Hex> {
-  return sign({ hash: digest, privateKey, to: "hex" });
+const MAX_CRAFT_ATTEMPTS = 256;
+
+export interface RootlessAuthorization {
+  /** The address this proof recovers to — the account, derived not chosen. */
+  readonly account: Address;
+  readonly salt: Hex;
+  readonly r: Hex;
+  readonly s: Hex;
+  readonly yParity: 0;
+}
+
+/**
+ * Builds the EIP-7702 authorization for an account whose private key never
+ * existed, mirroring `GlauxDelegate.initialize`'s own reconstruction.
+ *
+ * The signature is assembled backwards instead of signed: `r` is fixed to a
+ * hash committing to this exact birth configuration, `s` is tagged with the
+ * router's constant prefix, and `ecrecover` then reveals which address that
+ * pair is valid for — that address becomes the account. Nobody can hold its
+ * key, because producing this signature from a key would require a nonce `k`
+ * with `x(kG) = r` for a hash-chosen `r`.
+ *
+ * `yParity` is always 0: when `r` is a valid x-coordinate the recovery id 27
+ * succeeds, and when it is not, no recovery id does — so the salt is advanced
+ * instead. The router hard-codes the same constant.
+ *
+ * `authMsgHash` defaults to the canonical router's. It is a parameter only so
+ * a test network running its own router deployment can derive against it; on
+ * any real chain the router is at one deterministic address and the default is
+ * the only correct value.
+ *
+ * @throws {RootlessDerivationError} if 256 salts yield no curve point, which
+ * would mean the hash function had failed, not the caller.
+ */
+export function craftRootlessAuthorization(
+  digest: Hex,
+  authMsgHash: Hex = AUTH_MSG_HASH,
+): RootlessAuthorization {
+  for (let attempt = 0; attempt < MAX_CRAFT_ATTEMPTS; attempt += 1) {
+    const salt = keccak256(
+      encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }], [digest, BigInt(attempt)]),
+    );
+    const r = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [digest, salt]));
+    // The tag owns the top 13 bytes; shifting the tail hash down by 104 bits
+    // leaves exactly the low 19, so the two can never overlap.
+    const tail =
+      BigInt(
+        keccak256(
+          encodeAbiParameters(
+            [{ type: "bytes32" }, { type: "bytes32" }, { type: "uint8" }],
+            [digest, salt, 1],
+          ),
+        ),
+      ) >> 104n;
+    const s = toHex((ROOTLESS_S_PREFIX << 152n) | (tail & ROOTLESS_TAIL_MASK), { size: 32 });
+
+    const account = recoverPublicKeyAddress(r, s, authMsgHash);
+    if (account !== null) return { account, salt, r, s, yParity: 0 };
+  }
+  throw new RootlessDerivationError(digest, MAX_CRAFT_ATTEMPTS);
+}
+
+/**
+ * The address `(r, s)` recovers to against `authMsgHash`, or `null` when `r`
+ * is not a curve x-coordinate — the outcome that simply costs one more salt,
+ * never an error.
+ */
+function recoverPublicKeyAddress(r: Hex, s: Hex, authMsgHash: Hex): Address | null {
+  try {
+    const point = secp256k1.Signature.fromBytes(
+      hexToBytes(concat([r, s])),
+      "compact",
+    ).addRecoveryBit(0).recoverPublicKey(hexToBytes(authMsgHash));
+    return getAddress(`0x${keccak256(`0x${point.toHex(false).slice(2)}`).slice(-40)}`);
+  } catch {
+    return null;
+  }
 }
 
 export interface BuildBirthBlobParams {
@@ -219,52 +304,55 @@ export async function buildBirthBlob({ factors, chainRpc }: BuildBirthBlobParams
   await Promise.all(proofs.map((proof, index) => validatePossessionProof(slots[index]!, proof, index)));
   const initData = encodeInitData(slots, proofs as [Hex, Hex, Hex]);
 
-  const birthPrivateKey = generatePrivateKey();
-  const account = privateKeyToAddress(birthPrivateKey);
-
-  const signedAuthorization = await signAuthorization({
-    address: ROUTER,
-    chainId: 0,
-    nonce: 0,
-    privateKey: birthPrivateKey,
-  });
-
+  // No key is generated here, and none is destroyed afterwards, because none
+  // ever exists: the account address falls out of the configuration above.
   const digest = initDigest(ROUTER, IMPL, expectedCodeHash, initData);
-  const birthSig = await signBirthDigest(birthPrivateKey, digest);
+  const authorization = craftRootlessAuthorization(digest);
 
-  // `signAuthorization`'s return type allows either `yParity` or the
-  // deprecated `v` (a `OneOf` union), even though `viem`'s own secp256k1
-  // signer always populates both at runtime; the fallback below only ever
-  // exercises the standard `v - 27` mapping if a future `viem` version ever
-  // omitted `yParity`.
-  const yParity = signedAuthorization.yParity ?? Number(signedAuthorization.v ?? 27n) - 27;
-
-  try {
-    const [birthSigner, authorizationSigner] = await Promise.all([
-      recoverAddress({ hash: digest, signature: birthSig }),
-      recoverAuthorizationAddress({ authorization: { ...signedAuthorization, yParity } }),
-    ]);
-    if (birthSigner !== account) throw new BirthBlobSelfCheckError("birth signature");
-    if (authorizationSigner !== account) throw new BirthBlobSelfCheckError("authorization");
-  } catch (error) {
-    if (error instanceof BirthBlobSelfCheckError) throw error;
-    throw new BirthBlobSelfCheckError("birth signature");
+  // Same self-check as before, now over the crafted tuple: recompute the
+  // recovery from the blob's OWN fields and require it to be the account. A
+  // blob whose parts disagree is never handed to a caller.
+  if (assertRecoversTo(digest, authorization.salt, authorization.s, authorization.account) === false) {
+    throw new BirthBlobSelfCheckError("authorization");
   }
 
   return {
-    account,
+    account: authorization.account,
     router: ROUTER,
     implementation: IMPL,
     expectedCodeHash,
     authorization: {
-      chainId: signedAuthorization.chainId,
-      address: signedAuthorization.address,
-      nonce: signedAuthorization.nonce,
-      yParity,
-      r: signedAuthorization.r,
-      s: signedAuthorization.s,
+      chainId: 0,
+      address: ROUTER,
+      nonce: 0,
+      yParity: authorization.yParity,
+      r: authorization.r,
+      s: authorization.s,
     },
     initData,
-    birthSig,
+    salt: authorization.salt,
   };
+}
+
+/**
+ * Recomputes `r` from `digest` and `salt` exactly as `GlauxDelegate.initialize`
+ * does, checks the router's tag on `s`, and reports whether the resulting
+ * authorization recovers to `expected`.
+ *
+ * This is the whole of the router's authentication, re-run locally. It is what
+ * lets a client refuse a blob before spending a relayer's gas on a birth the
+ * chain would reject — and, for a blob that arrived from elsewhere, before
+ * trusting that its `account` field means anything at all.
+ */
+export function assertRecoversTo(
+  digest: Hex,
+  salt: Hex,
+  s: Hex,
+  expected: Address,
+  authMsgHash: Hex = AUTH_MSG_HASH,
+): boolean {
+  if ((BigInt(s) >> 152n) !== ROOTLESS_S_PREFIX) return false;
+  const r = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [digest, salt]));
+  const recovered = recoverPublicKeyAddress(r, s, authMsgHash);
+  return recovered !== null && recovered === getAddress(expected);
 }

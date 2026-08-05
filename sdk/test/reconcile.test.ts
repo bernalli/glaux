@@ -272,7 +272,7 @@ function reconciledState(name: string, initialized: boolean): ActiveChainState {
   return {
     name,
     active: true,
-    router: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
+    router: "0x3ccF1cc0F702C084B31e691e057d8742ADF35790",
     implPointer: "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d",
     implCodehash: `0x${"cd".repeat(32)}` as Hex,
     initialized,

@@ -13,8 +13,9 @@ abstract contract GlauxFixture is Test {
     GlauxAccount internal impl;
     EntryPoint internal ep;
 
-    uint256 internal birthPk = 0xB112;
     address internal account;
+    bytes32 internal accountSalt;
+    uint256 internal accountS;
 
     uint256 internal paperPk = 0x9A9E5;
     uint256 internal cloudPk = 0xC10D;
@@ -27,7 +28,55 @@ abstract contract GlauxFixture is Test {
         ep = new EntryPoint();
         impl = new GlauxAccount(address(ep));
         router = new GlauxDelegate();
-        account = vm.addr(birthPk);
+        // The account address is DERIVED from its own birth configuration, not
+        // picked: there is no key to pick it with. Everything the default
+        // configuration needs must exist before this line.
+        (account, accountSalt, accountS) =
+            _craftRootlessBirth(address(impl), address(impl).codehash, _defaultInitData());
+    }
+
+    function _defaultInitData() internal view returns (bytes memory) {
+        return abi.encode(_slots(), _proofs());
+    }
+
+    /**
+     * @notice Constructs the EIP-7702 authorization that gives birth to an
+     *         account nobody holds the key to, mirroring the SDK's own
+     *         derivation.
+     * @dev The signature is built backwards: pick `r` as a hash committing to
+     *      the birth digest, tag `s` with the router's constant prefix, and let
+     *      `ecrecover` reveal which address that pair is valid for. Roughly
+     *      half of the candidate `r` values are not curve x-coordinates, so a
+     *      counter-derived salt is retried until one is — about two attempts in
+     *      practice. Exhausting 256 is not a case a caller can trigger: the
+     *      salts depend only on the digest.
+     */
+    function _craftRootlessBirth(
+        address implementation,
+        bytes32 expectedCodeHash,
+        bytes memory initData
+    ) internal view returns (address craftedAccount, bytes32 salt, uint256 s) {
+        bytes32 digest = _initDigest(implementation, expectedCodeHash, initData);
+        for (uint256 attempt = 0; attempt < 256; attempt++) {
+            salt = keccak256(abi.encode(digest, attempt));
+            // The prefix owns the top 13 bytes; shifting keccak down by 104
+            // bits leaves exactly the low 19 for the tail, so the two can never
+            // overlap.
+            s = uint256(bytes32(router.ROOTLESS_S_PREFIX()))
+                | (uint256(keccak256(abi.encode(digest, salt, uint8(1)))) >> 104);
+            craftedAccount = ecrecover(
+                router.AUTH_MSG_HASH(), 27, keccak256(abi.encode(digest, salt)), bytes32(s)
+            );
+            if (craftedAccount != address(0)) return (craftedAccount, salt, s);
+        }
+        revert("rootless derivation exhausted");
+    }
+
+    /// @notice Installs the EIP-7702 delegation designator on `target`, which is
+    ///         what applying an authorization tuple does. Etched rather than
+    ///         signed: no key for that address exists, which is the point.
+    function _attachDelegation(address target, address delegate) internal {
+        vm.etch(target, abi.encodePacked(hex"ef0100", delegate));
     }
 
     function _slots() internal view returns (FactorSlot[3] memory slots) {
@@ -96,10 +145,8 @@ abstract contract GlauxFixture is Test {
         return abi.encode(slots, proofs);
     }
 
-    function _initBlob() internal view returns (bytes memory initData, bytes memory sig) {
-        initData = abi.encode(_slots(), _proofs());
-        bytes32 digest = _initDigest(address(impl), address(impl).codehash, initData);
-        sig = _sig65(birthPk, digest);
+    function _initBlob() internal view returns (bytes memory initData) {
+        return _defaultInitData();
     }
 
     function _initDigest(address implementation, bytes32 expectedCodeHash, bytes memory initData)
@@ -139,10 +186,11 @@ abstract contract GlauxFixture is Test {
     }
 
     function _birthAccount() internal {
-        vm.signAndAttachDelegation(address(router), birthPk);
-        (bytes memory initData, bytes memory sig) = _initBlob();
+        _attachDelegation(account, address(router));
         GlauxDelegate(payable(account))
-            .initialize(address(impl), address(impl).codehash, initData, sig);
+            .initialize(
+                address(impl), address(impl).codehash, _defaultInitData(), accountSalt, accountS
+            );
     }
 
     function _sig65(uint256 privateKey, bytes32 digest) internal pure returns (bytes memory) {

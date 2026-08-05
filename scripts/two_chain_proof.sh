@@ -19,7 +19,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
-CANONICAL_ROUTER="0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9"
+CANONICAL_ROUTER="0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
 RPC_A="http://127.0.0.1:8545"
 RPC_B="http://127.0.0.1:8546"
 DEPLOYER_PK="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" # anvil 0
@@ -171,26 +171,56 @@ $PY scripts/reconcile.py --account "$ACCT" --router "$CANONICAL_ROUTER" \
 
 step "9. refusal where the verifier is gone (chain B), fresh blob"
 cast rpc anvil_setCode 0x0000000000000000000000000000000000000100 0x --rpc-url "$RPC_B" >/dev/null
+# A rootless account's address is derived from its birth digest, so a blob that
+# repeats the same initData — same factors AND the same possession proofs, which
+# is exactly what reusing the shell variables above would do — lands on the
+# account already born in step 5. The submitter would then refuse it as
+# pre-planted, and the refusal would say nothing about the missing verifier.
+# Swapping the cloud factor for a different key changes initData, hence the
+# digest, hence the address; the equality check below keeps that honest.
+CLOUD2_PK="0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6" # anvil 3
+CLOUD2_ADDR="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+CLOUD2_PROOF=$(GLAUX_FACTOR_KEY="$CLOUD2_PK" $PY scripts/prove_possession.py --slot 2 --type 1)
 $PY scripts/birth.py \
   --router "$CANONICAL_ROUTER" --impl "$IMPL_ADDR" --expected-code-hash "$IMPL_CODEHASH" \
-  --paper "$PAPER_ADDR" --device-qx "$QX" --device-qy "$QY" --cloud "$CLOUD_ADDR" \
-  --paper-proof "$PAPER_PROOF" --device-proof "$DEVICE_PROOF" --cloud-proof "$CLOUD_PROOF" \
+  --paper "$PAPER_ADDR" --device-qx "$QX" --device-qy "$QY" --cloud "$CLOUD2_ADDR" \
+  --paper-proof "$PAPER_PROOF" --device-proof "$DEVICE_PROOF" --cloud-proof "$CLOUD2_PROOF" \
   >"$WORK/blob2.json"
-# The submitter refuses a reverted birth outright — non-zero exit, reason on
-# stderr, nothing on stdout — so the refusal is read from its exit code rather
-# than from a result it deliberately no longer prints.
+CAND=$($PY -c "import json;print(json.load(open('$WORK/blob2.json'))['account'])")
+[[ "$CAND" != "$ACCT" ]] \
+  || fail "refusal candidate equals the born account — the config was not changed, the check below would be vacuous"
+# The submitter refuses outright — non-zero exit, reason on stderr, nothing on
+# stdout — so the refusal is read from its exit code rather than from a result
+# it deliberately no longer prints.
+# The relayer's PENDING nonce is the only thing that distinguishes "never
+# broadcast" from "broadcast and not yet mined". Empty code at the candidate
+# address proves neither: a transaction sitting in the pool would show exactly
+# the same, and could still delegate the address later.
+RELAYER_ADDR=$(cast wallet address --private-key "$DEPLOYER_PK")
+NONCE_BEFORE=$(cast nonce "$RELAYER_ADDR" --block pending --rpc-url "$RPC_B")
 set +e
 $PY scripts/submit_birth.py --rpc "$RPC_B" --blob "$WORK/blob2.json"
 birth_rc=$?
 set -e
 [[ "$birth_rc" != "0" ]] || fail "birth SUCCEEDED without a verifier"
-CAND=$($PY -c "import json;print(json.load(open('$WORK/blob2.json'))['account'])")
-set +e
-$PY scripts/reconcile.py --account "$CAND" --rpc chain-31337="$RPC_A" --rpc chain-31338="$RPC_B" >/dev/null 2>&1
-rc=$?
-set -e
-[[ "$rc" == "2" ]] || fail "reconcile on the half-born candidate: expected exit 2, got $rc"
-echo "refused (submitter exit $birth_rc), raw side legible, reconcile exit 2 — as designed"
+# The refusal happens BEFORE broadcasting: the node cannot price a birth that
+# would revert, and a guessed gas limit would send it anyway. That matters more
+# than the exit code, because EIP-7702 applies the authorization even when
+# `initialize` reverts — a broadcast here would leave this address delegated,
+# unborn and, being rootless, unreachable forever.
+NONCE_AFTER=$(cast nonce "$RELAYER_ADDR" --block pending --rpc-url "$RPC_B")
+[[ "$NONCE_BEFORE" == "$NONCE_AFTER" ]] \
+  || fail "the relayer's pending nonce moved ($NONCE_BEFORE -> $NONCE_AFTER): a birth transaction WAS broadcast on the verifier-less chain"
+[[ "$(cast code "$CAND" --rpc-url "$RPC_B")" == "0x" ]] \
+  || fail "candidate $CAND was delegated on the verifier-less chain: the refusal came too late"
+# And prove the refusal is about the missing verifier rather than about a blob
+# this run happened to build wrong: the SAME blob must be born on chain A, where
+# the verifier is present. Without this the check above passes for any reason at
+# all, including a broken blob.
+$PY scripts/submit_birth.py --rpc "$RPC_A" --blob "$WORK/blob2.json" >/dev/null \
+  || fail "the refusal candidate could not be born on the healthy chain either — the blob is at fault, not the verifier"
+[[ "$(cast code "$CAND" --rpc-url "$RPC_A")" != "0x" ]] || fail "candidate not delegated on chain A"
+echo "refused before broadcast (submitter exit $birth_rc, relayer pending nonce unmoved at $NONCE_AFTER), address untouched, same blob born on the healthy chain"
 # restore, for hygiene, in case the anvils outlive us
 cast rpc anvil_setCode 0x0000000000000000000000000000000000000100 "$VERIFIER_CODE" --rpc-url "$RPC_B" >/dev/null
 

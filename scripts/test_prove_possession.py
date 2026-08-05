@@ -8,10 +8,14 @@ be printed in full by the default excepthook and collected by whatever gathers
 that output. These tests pin both halves.
 """
 
+import json
 import sys
+from pathlib import Path
 
+import birth
 import prove_possession
 import pytest
+from eth_utils import keccak
 from prove_possession import FACTOR_KEY_ENV, VERIFIER_P256, VERIFIER_SECP256K1, main
 
 # Well-formed prefix, wrong length: plausible enough that a library will try to
@@ -265,3 +269,51 @@ def test_only_exactly_32_bytes_of_hex_are_accepted(body: str) -> None:
         prove_possession.parse_factor_key(body, VERIFIER_SECP256K1)
 
     assert "32 bytes of hex" in str(exit_info.value)
+
+
+class TestRootlessDerivationParity:
+    """The Solidity fixture is the referee for all three implementations.
+
+    `test/SdkParity.t.sol` crafts this vector with the router's own derivation
+    and then BIRTHS an account with it, so a vector that reached the fixture is
+    one the router accepted. A Python client whose derivation drifted would
+    compute an address the chain never confirms — and would find out only after
+    someone funded it.
+    """
+
+    @staticmethod
+    def _fixture() -> dict:
+        path = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "sdk_parity.json"
+        return json.loads(path.read_text())["initDigest"]
+
+    def test_authorization_message_hash_matches_the_contract(self) -> None:
+        fx = self._fixture()
+        assert "0x" + birth.authorization_message_hash(fx["router"]).hex() == fx["authMsgHash"]
+
+    def test_derivation_reproduces_the_contract_emitted_vector(self) -> None:
+        fx = self._fixture()
+        proof = birth.craft_rootless_authorization(bytes.fromhex(fx["digest"][2:]), fx["router"])
+
+        assert proof.account.lower() == fx["account"].lower()
+        assert "0x" + proof.salt.hex() == fx["salt"]
+        assert "0x" + format(proof.s, "064x") == fx["s"]
+        assert proof.y_parity == 0
+
+    def test_recovers_to_accepts_the_vector_and_refuses_tampering(self) -> None:
+        fx = self._fixture()
+        digest = bytes.fromhex(fx["digest"][2:])
+        salt = bytes.fromhex(fx["salt"][2:])
+        s = int(fx["s"], 16)
+
+        assert birth.recovers_to(digest, salt, s, fx["account"], fx["router"])
+        # A different salt recovers elsewhere.
+        assert not birth.recovers_to(digest, keccak(salt), s, fx["account"], fx["router"])
+        # An untagged `s` is refused before any recovery is attempted.
+        assert not birth.recovers_to(digest, salt, s & ((1 << 152) - 1), fx["account"], fx["router"])
+
+    def test_crafted_s_is_below_half_the_curve_order(self) -> None:
+        fx = self._fixture()
+        proof = birth.craft_rootless_authorization(bytes.fromhex(fx["digest"][2:]), fx["router"])
+        # EIP-7702 requires it of the tuple: a high-s authorization is invalid
+        # at consensus, so an account derived from one could never be delegated.
+        assert proof.s <= birth.SECP256K1_N_DIV_2

@@ -9,6 +9,7 @@ import { GasPolicy, type GasFallbackEvent } from "../src/gas/policy.js";
 import { Erc7677Client } from "../src/gas/erc7677.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
+import { computeUserOpMaxCost } from "../src/gas/feeGuard.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import {
   deployCanonical,
@@ -159,6 +160,10 @@ describe.skipIf(process.env.GLAUX_ALTO !== "1")(`bundler e2e: a real Alto bundle
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        // Deliberately tautological: this suite's subject is not the fee guard,
+        // so the cap is set to the operation's own worst case to keep it out of
+        // the way. Never do this in a client — see docs/client-guidance.md.
+        maxCostWei: computeUserOpMaxCost(op),
         signers: [born.paper, born.cloud],
       });
       const userOpHash = computeUserOpHash(signed, ENTRYPOINT, chainId);
@@ -214,6 +219,7 @@ describe.skipIf(process.env.GLAUX_ALTO !== "1")(`bundler e2e: a real Alto bundle
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        maxCostWei: computeUserOpMaxCost(op),
         signers: [born.device, born.paper],
       });
       const userOpHash = computeUserOpHash(signed, ENTRYPOINT, chainId);
@@ -315,7 +321,7 @@ describe.skipIf(process.env.GLAUX_ALTO !== "1")(`bundler e2e: a real Alto bundle
           throw new Error(`expected a sponsored plan, got ${plan.kind}`);
         }
 
-        const signed = await signUserOp({ op: plan.op, entryPoint: ENTRYPOINT, chainId, client, signers: [paper, cloud] });
+        const signed = await signUserOp({ op: plan.op, entryPoint: ENTRYPOINT, chainId, client, maxCostWei: computeUserOpMaxCost(plan.op), signers: [paper, cloud] });
         const userOpHash = computeUserOpHash(signed, ENTRYPOINT, chainId);
 
         const submittedHash = await sendUserOperation(bundler.url, toBundlerRpcUserOp(signed), ENTRYPOINT);

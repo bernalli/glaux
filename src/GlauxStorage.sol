@@ -75,8 +75,8 @@ library GlauxStorage {
     /// @dev Two reasons this exists. It makes a Glaux digest unreachable through
     ///      raw-hash signing APIs (`eth_sign` and friends): without the prefix, any
     ///      factor key that can be induced to sign a bare 32-byte value produces a
-    ///      valid Glaux signature, which matters most on the migration path where a
-    ///      birth key is a long-lived user key. And it binds the validating contract
+    ///      valid Glaux signature, and every factor key is long-lived by
+    ///      definition. And it binds the validating contract
     ///      into every digest. Version `0x00` is used deliberately over EIP-712:
     ///      it carries no `chainId` field, so birth and update blobs keep replaying
     ///      on every chain, which is the whole design.
@@ -114,7 +114,7 @@ error AlreadyInitialized();
 error NotInitialized();
 error NotDuringBirth();
 error InvalidImplementation();
-error InvalidBirthSignature();
+error InvalidBirthProof();
 error BadUpdateNonce(uint64 expected, uint64 got);
 error DuplicateSlot();
 error InvalidSignature();

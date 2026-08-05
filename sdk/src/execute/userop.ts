@@ -33,6 +33,13 @@ import {
   UserOpTransactionRevertedError,
 } from "../errors.js";
 import {
+  assertFeeWithinBaseline,
+  assertUserOpCost,
+  fetchFeeBaseline,
+  userOpMaxFeePerGas,
+  type FeeBaseline,
+} from "../gas/feeGuard.js";
+import {
   matchSlotIndex,
   assertExecutionValidityWindow,
   readChainId,
@@ -478,6 +485,23 @@ export interface SignUserOpParams {
   readonly entryPoint: Address;
   readonly chainId: bigint;
   readonly client: PublicClient;
+  /**
+   * The most this operation may ever charge the account, in wei. Mandatory,
+   * and deliberately so: every gas and fee field of a user operation is
+   * proposed by an endpoint, and a signature over them authorizes the
+   * EntryPoint to spend the whole product. A caller that has not decided what
+   * that operation is worth cannot delegate the decision to a default.
+   */
+  readonly maxCostWei: bigint;
+  /**
+   * Fee baseline to judge `maxFeePerGas` against. Supply one read from a
+   * SECOND, independent endpoint (`docs/client-guidance.md`) whenever the
+   * value at stake justifies it; when omitted, it is read from `client` —
+   * useful, but it lets one endpoint both propose the fee and vouch for it.
+   */
+  readonly feeBaseline?: FeeBaseline;
+  /** How far above the baseline lane a fee may sit; defaults to `DEFAULT_FEE_SANITY_MULTIPLE` (`../gas/feeGuard.js`). */
+  readonly feeSanityMultiple?: bigint;
   /** Optional independently obtained nonce, checked before live slot reads. */
   readonly expectedNonce?: bigint;
   /** Local-clock validity ceiling; defaults to one hour. */
@@ -504,16 +528,60 @@ export interface SignUserOpParams {
  * `op.validUntil === 0` is rejected BEFORE any RPC call, mirroring
  * `buildUserOp`'s and `signExecution`'s duplicated check ahead of their own reads.
  *
+ * The gas and fee fields are checked here, at the last moment before a
+ * signature exists, and not where they were built: `buildUserOp` is only one
+ * of the ways an operation reaches this function — an ERC-7677 paymaster
+ * decorates it in between (`../gas/policy.js`), and a caller may hand over an
+ * operation this SDK never built at all. This is the single choke point every
+ * one of those paths crosses, so it is the only place a bound is worth
+ * anything. `maxCostWei` is enforced first because it needs no chain state:
+ * an operation nobody would pay for is refused without spending a round trip.
+ *
  * @throws {OperationExpiredError} if `op.validUntil === 0`.
  * @throws {ExecutionValidityWindowError} if the deadline exceeds the local ceiling.
  * @throws {ExecutionNonceMismatchError} if `expectedNonce` disagrees with the operation.
+ * @throws {UserOpCostExceedsCapError} if the operation could charge the account
+ * more than `maxCostWei`.
+ * @throws {MalformedPaymasterFieldError} if `paymasterAndData` cannot be priced.
+ * @throws {FeeBaselineReadError} if no baseline was supplied and none can be read.
+ * @throws {FeeExceedsBaselineError} if `maxFeePerGas` is beyond what the baseline justifies.
  * @throws {ExecutionStateReadError} if a factor slot cannot be read in a well-formed response.
  * @throws {UnrecognizedSignerError} if a signer's key material matches none
  * of the account's three installed slots.
  * @throws {DuplicateExecutionSignerError} if both signers occupy one slot.
  */
 export async function signUserOp(params: SignUserOpParams): Promise<PackedUserOperation> {
-  const { op, entryPoint, chainId, client, signers, expectedNonce, maxValidityWindowSeconds } = params;
+  const {
+    op: suppliedOp,
+    entryPoint,
+    chainId,
+    client,
+    signers,
+    expectedNonce,
+    maxValidityWindowSeconds,
+    maxCostWei,
+    feeBaseline,
+    feeSanityMultiple,
+  } = params;
+  // Everything from here on reads THIS copy, never the caller's object. The
+  // guards below are separated from the hashing by two awaits, and the argument
+  // stays reachable and mutable throughout them: checking a cost on an object
+  // someone else can still edit, then hashing that same object, bounds nothing.
+  // A snapshot makes the values that were checked and the values that get
+  // signed the same values by construction.
+  const op: PackedUserOperation = {
+    sender: suppliedOp.sender,
+    nonce: suppliedOp.nonce,
+    initCode: suppliedOp.initCode,
+    callData: suppliedOp.callData,
+    accountGasLimits: suppliedOp.accountGasLimits,
+    preVerificationGas: suppliedOp.preVerificationGas,
+    gasFees: suppliedOp.gasFees,
+    paymasterAndData: suppliedOp.paymasterAndData,
+    signature: suppliedOp.signature,
+    validUntil: suppliedOp.validUntil,
+  };
+
   if (op.validUntil === 0) {
     throw new OperationExpiredError();
   }
@@ -521,6 +589,10 @@ export async function signUserOp(params: SignUserOpParams): Promise<PackedUserOp
   if (expectedNonce !== undefined && op.nonce !== expectedNonce) {
     throw new ExecutionNonceMismatchError("erc4337", "caller expectation", expectedNonce, op.nonce);
   }
+
+  assertUserOpCost(op, maxCostWei);
+  const baseline = feeBaseline ?? (await fetchFeeBaseline(client));
+  assertFeeWithinBaseline(userOpMaxFeePerGas(op), baseline, feeSanityMultiple);
 
   const userOpHash = computeUserOpHash(op, entryPoint, chainId);
   const slots = await readAccountSlots(client, op.sender);

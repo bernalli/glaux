@@ -19,14 +19,16 @@ Node.js >= 20.19.
 ### The frozen-funds hazard — `checkChain` is a safety gate, not a nicety
 
 Glaux's account address is an ordinary EOA that has been delegated via
-EIP-7702 to the Glaux router; the private key that produced that delegation
-(the "birth key") is destroyed immediately after it produces the
-authorization and birth signatures, before any submission or on-chain
-success. The `BirthBlob` is the only thing that survives: preserve that blob,
-not the birth key, to birth the same account later on another chain. That
-address is identical on every EVM chain by construction — nothing about Glaux
-prevents someone from sending funds to it on a chain where the account has
-never been born.
+EIP-7702 to the Glaux router — and nobody has ever held its private key. The
+delegation is authorized by a *crafted* tuple whose `r` commits to the account's
+own birth configuration, not by a signature, so there is no key to lose, hold or
+destroy. (A scalar for that public point exists mathematically, as for any EOA;
+what rootlessness removes is anyone's possession of it, not the curve.) The `BirthBlob` is therefore the artifact that matters: preserve it, or the
+account cannot be born on a further chain — with one qualification, since a
+successful birth publishes the whole blob in its own calldata and authorization
+list, so after the first birth it can be rebuilt from that transaction. That address is identical
+on every EVM chain by construction — nothing about Glaux prevents someone from
+sending funds to it on a chain where the account has never been born.
 
 If that happens, the funds are **frozen**: there is no key left to move
 them, and the account cannot execute anything until it is born on that exact
@@ -155,7 +157,7 @@ need by subpath.
 | `core/types.ts` | Shared value types: `FactorSlot`, `SlotSig`, `Call`, `BirthBlob`, and the two verifier-type constants. |
 | `signers/signer.ts` | The pluggable `Signer` interface every factor implements, plus `registrationProof` (the possession-proof signer). |
 | `signers/p256.ts`, `signers/secp256k1.ts` | Local (software) reference implementations of `Signer` for P-256 and secp256k1 — for tests and development; production factors implement the same interface against hardware. |
-| `birth/blob.ts` | Builds a `BirthBlob`: the EIP-7702 authorization, init data, and birth signature for a set of three factors. |
+| `birth/blob.ts` | Builds a `BirthBlob` for a set of three factors: init data, and the crafted EIP-7702 authorization (`craftRootlessAuthorization`) the account address is recovered from. |
 | `birth/preflight.ts` | `preflightFreshAccount` — refuses to attempt a birth against an address that already carries Glaux state. |
 | `birth/submit.ts` | `submitBirth` — requires a caller-selected chain id, validates canonical blob bindings and the live implementation hash, then sends the authorization + `initializeAccount` call and reads back the installed state. |
 | `eligibility/probes.ts`, `eligibility/verdict.ts` | The individual live probes (P-256, EIP-7702, deployment, account-born) and `checkChain`, which combines them into the `"born" \| "eligible" \| "ineligible"` verdict and reuses birth preflight before calling an un-born account safe to receive. |

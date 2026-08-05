@@ -333,7 +333,7 @@ describe("birth blob JSON schema", () => {
         "expectedCodeHash",
         "authorization",
         "initData",
-        "birthSig",
+        "salt",
       ].sort();
       const pythonAuthorizationKeys = ["chainId", "address", "nonce", "yParity", "r", "s"].sort();
 

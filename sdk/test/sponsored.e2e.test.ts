@@ -27,6 +27,7 @@ import {
 import { signVerifyingPaymasterData, startMock7677Server } from "./helpers/mock7677.js";
 import { Erc7677Client } from "../src/gas/erc7677.js";
 import { GasPolicy, type GasFallbackEvent } from "../src/gas/policy.js";
+import { computeUserOpMaxCost } from "../src/gas/feeGuard.js";
 
 /** Same well-known anvil accounts every other SDK e2e suite uses (see `sdk/test/userop.e2e.test.ts`). */
 const DEPLOYER_PK: Hex = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -162,6 +163,10 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
           entryPoint: ENTRYPOINT,
           chainId,
           client,
+          // Deliberately tautological: this suite's subject is not the fee guard,
+          // so the cap is set to the operation's own worst case to keep it out of
+          // the way. Never do this in a client — see docs/client-guidance.md.
+          maxCostWei: computeUserOpMaxCost(plan.op),
           signers: [paper, cloud],
         });
 

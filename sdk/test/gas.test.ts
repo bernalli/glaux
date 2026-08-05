@@ -12,6 +12,7 @@ import { deployCanonical, deployEntryPoint, deployP256Oracle } from "./helpers/d
 import { MockHttpError, startMock7677Server, type Mock7677ServerHandle } from "./helpers/mock7677.js";
 import { Erc7677Client } from "../src/gas/erc7677.js";
 import { GasPolicy, type GasFallbackEvent } from "../src/gas/policy.js";
+import { computeUserOpMaxCost } from "../src/gas/feeGuard.js";
 
 /**
  * Same well-known anvil accounts `sdk/test/userop.e2e.test.ts` uses (see its
@@ -369,6 +370,10 @@ describe("GasPolicy: no silent fallbacks", () => {
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        // Deliberately tautological: this suite's subject is not the fee guard,
+        // so the cap is set to the operation's own worst case to keep it out of
+        // the way. Never do this in a client — see docs/client-guidance.md.
+        maxCostWei: computeUserOpMaxCost(plan.op),
         signers: [born.paper, born.cloud],
       });
       const txHash = await submitUserOpDirect(client, RELAYER_PK, BENEFICIARY, signed);

@@ -10,7 +10,7 @@ import {
 } from "../src/core/constants.js";
 
 it("matches every canonical Glaux constant", () => {
-  expect(ROUTER).toBe("0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9");
+  expect(ROUTER).toBe("0x3ccF1cc0F702C084B31e691e057d8742ADF35790");
   expect(IMPL).toBe("0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d");
   expect(CREATE2_DEPLOYER).toBe("0x4e59b44847b379578588920cA78FbF26c0B4956C");
   expect(ENTRYPOINT).toBe("0x0000000071727De22E5E9d8BAf0edAc6f37da032");
@@ -23,7 +23,7 @@ it("matches every canonical Glaux constant", () => {
     REG: "0xc6ac354f53fed9914072133601f691782a6902c504211f2dad8581066535ba39",
     MSG: "0x81b19556e5c48050cf054cad533961c2de5bc0bfcaa4f7cc36e73e4a9344c469",
   });
-  expect(designator()).toBe("0xef0100b8270e4b9aaea6933716409bb648fb3cda3ccbe9");
+  expect(designator()).toBe("0xef01003ccf1cc0f702c084b31e691e057d8742adf35790");
 });
 
 it("eip191v0 is keccak(0x19 || 0x00 || validator || structHash)", () => {

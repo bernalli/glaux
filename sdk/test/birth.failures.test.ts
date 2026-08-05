@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { Address, Hex, PublicClient } from "viem";
 import { signAuthorization } from "viem/accounts";
 import { recoverAuthorizationAddress } from "viem/utils";
+import { craftRootlessAuthorization } from "../src/birth/blob.js";
 import { preflightFreshAccount } from "../src/birth/preflight.js";
 import { submitBirth } from "../src/birth/submit.js";
-import { IMPL_CODE_HASH } from "../src/core/constants.js";
+import { IMPL, IMPL_CODE_HASH, ROUTER } from "../src/core/constants.js";
+import { initDigest } from "../src/core/digests.js";
 import type { BirthBlob } from "../src/core/types.js";
 import {
   BirthGasEstimationError,
@@ -17,21 +19,30 @@ const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Address;
 const ZERO_WORD = `0x${"00".repeat(32)}` as Hex;
 const RELAYER = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
 
+/**
+ * A blob that is internally COHERENT: the account, salt and authorization are
+ * the real derivation for this init data. A hand-written one is now refused
+ * before any RPC call — `submitBirth` re-runs the router's authentication
+ * locally — so a stale literal here would test the refusal instead of whatever
+ * each case is about.
+ */
+const CRAFTED = craftRootlessAuthorization(initDigest(ROUTER, IMPL, IMPL_CODE_HASH, "0x"));
+
 const BLOB: BirthBlob = {
-  account: ACCOUNT,
-  router: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
-  implementation: "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d",
+  account: CRAFTED.account,
+  router: ROUTER,
+  implementation: IMPL,
   expectedCodeHash: IMPL_CODE_HASH,
   authorization: {
     chainId: 0,
-    address: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
+    address: ROUTER,
     nonce: 0,
-    yParity: 0,
-    r: "0xd85ba67a8ce9cd387b44acf700176415ced15a38159594775e25cbcbfb46a0be",
-    s: "0x195da6c632682dc5cbefb7b35315f857e347708a97f2d85ebba264969783728e",
+    yParity: CRAFTED.yParity,
+    r: CRAFTED.r,
+    s: CRAFTED.s,
   },
   initData: "0x",
-  birthSig: "0x",
+  salt: CRAFTED.salt,
 };
 
 describe("birth preflight unread RPC responses", () => {
@@ -189,6 +200,96 @@ it("rejects an authorization whose nonce is not zero before preflight", async ()
   await expect(submitBirth(client, RELAYER, { ...BLOB, authorization }, 31337)).rejects.toMatchObject({
     name: "InvalidBirthBlobError",
     field: "authorization nonce",
+  } satisfies Partial<InvalidBirthBlobError>);
+  expect(preflightRead).toBe(false);
+});
+
+/**
+ * The three checks below are the router's own authentication, re-run locally.
+ * Without them a blob that is merely self-consistent — its `account` really is
+ * what its tuple recovers to — passes every earlier check, is broadcast, and
+ * installs an EIP-7702 designator on an address the router then refuses. That
+ * address has no key, so nothing can ever be corrected there.
+ */
+it("rejects an authorization whose r does not bind the initialization fields", async () => {
+  let preflightRead = false;
+  const client = {
+    getChainId: async () => 31337,
+    request: async () => {
+      preflightRead = true;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+
+  // A complete, internally coherent proof — crafted for a DIFFERENT init data.
+  // Presented against this blob's fields it stays self-consistent (it recovers
+  // to the account it names), so only recomputing r from the configuration
+  // catches it. This is the realistic shape: a tuple valid for one birth,
+  // submitted for another.
+  const foreign = craftRootlessAuthorization(initDigest(ROUTER, IMPL, IMPL_CODE_HASH, "0xdead"));
+  await expect(
+    submitBirth(
+      client,
+      RELAYER,
+      {
+        ...BLOB,
+        account: foreign.account,
+        authorization: { ...BLOB.authorization, r: foreign.r, s: foreign.s, yParity: foreign.yParity },
+      },
+      31337,
+    ),
+  ).rejects.toMatchObject({
+    name: "InvalidBirthBlobError",
+    field: "authorization r",
+  } satisfies Partial<InvalidBirthBlobError>);
+  expect(preflightRead).toBe(false);
+});
+
+it("rejects an authorization with parity 1, which the router can never accept", async () => {
+  let preflightRead = false;
+  const client = {
+    getChainId: async () => 31337,
+    request: async () => {
+      preflightRead = true;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+
+  // `GlauxDelegate.initialize` recovers with a fixed v = 27. A parity-1 tuple
+  // is a real tuple for a real address — just never the one the router derives.
+  const parityOne = { ...BLOB.authorization, yParity: 1 };
+  const account = await recoverAuthorizationAddress({ authorization: parityOne });
+  await expect(
+    submitBirth(client, RELAYER, { ...BLOB, account, authorization: parityOne }, 31337),
+  ).rejects.toMatchObject({
+    name: "InvalidBirthBlobError",
+    field: "authorization parity",
+  } satisfies Partial<InvalidBirthBlobError>);
+  expect(preflightRead).toBe(false);
+});
+
+it("rejects a tuple whose s carries no rootless tag", async () => {
+  let preflightRead = false;
+  const client = {
+    getChainId: async () => 31337,
+    request: async () => {
+      preflightRead = true;
+      return "0x";
+    },
+  } as unknown as PublicClient;
+
+  // Same r, so the binding check passes and this isolates the tag alone: strip
+  // the 13-byte marker and keep the tail. Whatever that recovers to becomes the
+  // account, so the blob stays self-consistent — which is the point. Only the
+  // tag distinguishes a crafted tuple from one a key could have produced.
+  const untagged = `0x00${BLOB.authorization.s.slice(4)}` as Hex;
+  const authorization = { ...BLOB.authorization, s: untagged };
+  const account = await recoverAuthorizationAddress({ authorization });
+  await expect(
+    submitBirth(client, RELAYER, { ...BLOB, account, authorization }, 31337),
+  ).rejects.toMatchObject({
+    name: "InvalidBirthBlobError",
+    field: "authorization rootless proof",
   } satisfies Partial<InvalidBirthBlobError>);
   expect(preflightRead).toBe(false);
 });
