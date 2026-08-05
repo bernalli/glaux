@@ -33,6 +33,11 @@ import { ReconciliationReadError } from "../errors.js";
  *   cross-chain comparison built on its answers, so it is reported ahead of
  *   a plain divergence.
  *
+ * The Python tool has a fourth exit code, 3, which has no verdict here
+ * BECAUSE it is not a verdict there either: a chain that could not be read at
+ * all. This module's counterpart is {@link ReconciliationReadError}, thrown
+ * instead of returning a result (see the transport paragraph below).
+ *
  * Order per chain, per `docs/client-guidance.md` (normative, "Read raw
  * storage first"): `eth_getCode(account)` for the EIP-7702 designator, the
  * raw `IMPL_SLOT` word, `eth_getCode` at that pointer for its live code
@@ -48,12 +53,12 @@ import { ReconciliationReadError } from "../errors.js";
  * reconciliation tool that trusted the account's own eligibility module for
  * its slot math would no longer be an independent cross-check.
  *
- * DEVIATION from `scripts/reconcile.py`, required by this port's brief: the
- * Python tool's single `except Exception` around its getter reads
- * deliberately conflates a getter that reverts (a genuine reconciliation
- * finding -- the implementation cannot answer for its own state) with a
- * transport failure (the RPC call never completed at all). This port keeps
- * those two apart. A getter call whose failure is an EVM revert --
+ * A getter that reverts (a genuine reconciliation finding -- the
+ * implementation cannot answer for its own state) and a transport failure
+ * (the RPC call never completed at all) are kept apart, and
+ * `scripts/reconcile.py` keeps them apart the same way: its own
+ * `ReconciliationReadError` aborts with exit 3 instead of folding a network
+ * blip into a security verdict. A getter call whose failure is an EVM revert --
  * recognized here via `viem`'s `ExecutionRevertedError` walking the error's
  * cause chain, exactly as `../execute/direct.js` already does for its own
  * revert decoding -- or whose successful-but-empty/malformed return data
@@ -282,7 +287,7 @@ type RawCallOutcome = { readonly kind: "value"; readonly value: Hex } | { readon
  * An EVM revert (recognized via `viem`'s `ExecutionRevertedError` in the
  * error's cause chain, the same walk `../execute/direct.js` uses to decode
  * its own reverts) is a reconciliation finding, not a transport failure --
- * see the module doc comment's DEVIATION note. Anything else viem could not
+ * see the module doc comment's transport paragraph. Anything else viem could not
  * classify as an on-chain revert is a genuine transport failure and throws.
  */
 async function callRaw(client: PublicClient, chain: string, account: Address, data: Hex): Promise<RawCallOutcome> {
@@ -435,7 +440,7 @@ async function collectGetterMismatches(
  *
  * @throws {ReconciliationReadError} if any raw code/storage read, or issuing
  * a getter call at all, fails for a reason that is not itself an EVM revert
- * (see the module doc comment's DEVIATION note) -- chain state is unknown,
+ * (see the module doc comment's transport paragraph) -- chain state is unknown,
  * never reported as a verdict.
  */
 export async function inspectChain(client: PublicClient, name: string, account: Address): Promise<ChainState> {
@@ -592,8 +597,9 @@ export interface ReconcileResult {
  * Reconciles a Glaux account across every chain in `clients`: raw storage
  * first, the account's own getters only as a cross-check -- the TypeScript
  * port of `scripts/reconcile.py`. See the module doc comment for the exact
- * verdict-to-exit-code mapping and the one deliberate behavioral deviation
- * (transport failures throw rather than folding into a verdict).
+ * verdict-to-exit-code mapping, including transport failures, which throw
+ * rather than folding into a verdict on either side (the Python tool's
+ * exit 3).
  *
  * @throws {ReconciliationReadError} if any chain's raw state, or a getter
  * call itself, cannot be read for a reason other than an EVM revert.

@@ -211,8 +211,11 @@ across chains. A chain where the account has no code is reported as "not yet act
 is a state and not a conflict.
 
 Exit codes: `0` all chains consistent, `1` divergence between chains, `2` raw storage and
-getters disagree on at least one chain. `2` outranks `1`: an implementation that misreports
-its own state invalidates any comparison built on its answers.
+getters disagree on at least one chain, `3` a chain could not be read at all. `2` outranks
+`1`: an implementation that misreports its own state invalidates any comparison built on its
+answers. `3` is outside that ordering entirely: an RPC transport failure never executed
+on-chain, so it is unknown state rather than evidence about the implementation, and it is
+never folded into a verdict.
 
 ### Parity vectors
 

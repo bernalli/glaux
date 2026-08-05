@@ -406,6 +406,37 @@ describe("paymaster response hardening", () => {
     ).rejects.toThrow(PaymasterUnavailableError);
   });
 
+  it("refuses a response with no readable body rather than sizing it in UTF-16 code units", async () => {
+    // A `null` body leaves nothing to bound chunk by chunk, and the buffered
+    // fallback could only measure `text().length` — UTF-16 code units, not
+    // bytes. Three UTF-8 bytes collapse to one unit, so a hostile paymaster
+    // could push ~3x the cap past a check written that way. Nothing legitimate
+    // arrives here (a JSON-RPC reply on Node's fetch always exposes a stream),
+    // so the client refuses outright instead of measuring the wrong quantity.
+    // The response stubbed below is otherwise perfectly well formed: only the
+    // missing stream may reject it.
+    const wellFormed = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { paymaster: PAYMASTER, paymasterData: "0x1234" },
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({ ok: true, status: 200, body: null, text: async () => wellFormed }) as unknown as Response) as typeof fetch;
+
+    try {
+      const client = new Erc7677Client("http://paymaster.invalid");
+      await expect(
+        client.getPaymasterData({ op: stubOp(), entryPoint: ENTRYPOINT, chainId: 31337n }),
+        // The message is asserted, not just the type: a fetch stub that failed
+        // to install would reject with "the provider was unreachable" and pass
+        // a type-only expectation for the wrong reason.
+      ).rejects.toThrow(/body was not a readable stream/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("refuses a paymaster gas limit past the EntryPoint's uint120 ceiling before the quorum signs", () => {
     const overCeiling = 1n << 120n; // exactly one past the uint120 max
     const finalData = { paymaster: PAYMASTER, paymasterData: "0x" as Hex };

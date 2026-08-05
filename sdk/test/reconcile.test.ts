@@ -244,7 +244,8 @@ interface PythonReconcileRun {
  * Runs the REAL `scripts/reconcile.py` (repo venv, never a fresh install)
  * against the same anvil endpoints the TypeScript side just inspected, and
  * returns its exit code — 0 consistent, 1 divergent, 2 raw-vs-getter
- * mismatch, exactly as `docs/client-guidance.md` documents.
+ * mismatch, 3 a chain that could not be read at all (a transport failure, no
+ * verdict), exactly as `docs/client-guidance.md` documents.
  */
 function runPythonReconcile(
   account: Address,
