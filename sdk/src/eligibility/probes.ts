@@ -1,6 +1,5 @@
 import { getAddress, keccak256, stringToBytes, toHex, type Address, type Hex, type PublicClient } from "viem";
 import { IMPL, designator } from "../core/constants.js";
-import fixtures from "../../../test/fixtures/sdk_parity.json" with { type: "json" };
 
 /**
  * RIP-7212 / EIP-7951 P-256 verifier precompile address. Mirrors
@@ -9,15 +8,26 @@ import fixtures from "../../../test/fixtures/sdk_parity.json" with { type: "json
 export const P256_VERIFIER: Address = "0x0000000000000000000000000000000000000100";
 
 /**
- * Known-answer P-256 vector emitted by `test/SdkParity.t.sol` from the
- * `SignatureVerify` probe. The parity test fails if this vector no longer
- * drives the contract's positive and flipped-negative calls.
+ * Known-answer P-256 vector of `SignatureVerify.PROBE_*`, inlined rather than
+ * read from `test/fixtures/sdk_parity.json`: that file lives outside this
+ * package and could not travel with a published tarball. The fixture stays
+ * authoritative — `test/packaging.test.ts` fails if these five words ever
+ * drift from the ones `test/SdkParity.t.sol` emits, which are in turn the ones
+ * the contract feeds to the verifier on its positive and flipped-negative arms.
  */
-const PROBE_DIGEST = fixtures.p256Probe.digest as Hex;
-const PROBE_R = fixtures.p256Probe.r as Hex;
-const PROBE_S = fixtures.p256Probe.s as Hex;
-const PROBE_QX = fixtures.p256Probe.qx as Hex;
-const PROBE_QY = fixtures.p256Probe.qy as Hex;
+export const P256_PROBE_VECTOR = {
+  digest: "0x867725ff3c347f7537e90a9166778796299dcc35b965e51a431e53a9d4b2b5a4",
+  r: "0x980d841a72d73ef73cfd9baadc862485aecac52b199bbd3df24e834f737ed46c",
+  s: "0x4ac2a1c22aa9ff18958b5d11775f7dced116f8f5a6c95f2d859bf6f0035df385",
+  qx: "0x6e116efa770f5c5455124d86df9b00525dab28db280c3c8f33bb64c0ef313489",
+  qy: "0x8961e3da77e0f8d247f099835070289b64906c509ec256eec976858516ae8d81",
+} as const satisfies Record<string, Hex>;
+
+const PROBE_DIGEST: Hex = P256_PROBE_VECTOR.digest;
+const PROBE_R: Hex = P256_PROBE_VECTOR.r;
+const PROBE_S: Hex = P256_PROBE_VECTOR.s;
+const PROBE_QX: Hex = P256_PROBE_VECTOR.qx;
+const PROBE_QY: Hex = P256_PROBE_VECTOR.qy;
 
 function stripPrefix(hex: Hex): string {
   return hex.slice(2);
