@@ -61,7 +61,10 @@ jobs:
       # The scripts sign the blobs the contracts verify: they are first-party
       # code and get the same gate the Solidity does. The pytest asserts the
       # committed storage-parity fixture from the Python side.
-      - run: pip install -r scripts/requirements.txt ruff pytest
+      # ruff/pytest pinned so the lint+test gate is reproducible and matches the
+      # local .venv (ruff 0.16.1, pytest 9.1.1). The ruff behaviour itself is
+      # pinned by the [tool.ruff] section in the root pyproject.toml.
+      - run: pip install -r scripts/requirements.txt ruff==0.16.1 pytest==9.1.1
       - run: ruff check scripts
       - run: python -m pytest scripts -q
   node:

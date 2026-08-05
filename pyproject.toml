@@ -1,0 +1,16 @@
+# Ruff configuration for the off-chain Python tooling in scripts/.
+# Pins the lint behaviour so the CI gate (`ruff check scripts`) is reproducible
+# instead of tracking ruff's shifting defaults. The ruff version itself is
+# pinned in .github/workflows/ci.yml. Python 3.12 is the CI runtime floor
+# (actions/setup-python python-version "3.12"); the scripts must run there.
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# Conservative set: pyflakes (F), a subset of pycodestyle errors (E) and import
+# sorting (I). Left OUT of the default `E` group so the existing code keeps
+# passing without source edits. BLE (blind-except) is enabled so the two
+# `# noqa: BLE001` suppressions in reconcile.py / prove_possession.py stay
+# meaningful rather than silencing a rule nobody runs.
+select = ["E", "F", "I", "BLE"]
