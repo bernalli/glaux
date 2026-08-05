@@ -766,3 +766,95 @@ export class SelfFundingUnavailableError extends Error {
     this.available = available;
   }
 }
+
+/**
+ * Thrown when the fee baseline cannot be established from a well-formed
+ * `eth_feeHistory` response.
+ *
+ * The baseline exists to price an operation WITHOUT trusting the fee values
+ * the same endpoint proposes, so there is no safe fallback when it cannot be
+ * read: guessing one, or silently reverting to the proposed fee, would restore
+ * exactly the situation the guard removes. A caller that cannot reach a usable
+ * fee history must decide — retry, switch endpoint, or supply its own
+ * baseline — rather than have the SDK decide for it.
+ */
+export class FeeBaselineReadError extends Error {
+  readonly field: string;
+
+  constructor(field: string) {
+    super(`cannot establish a fee baseline: ${field} is missing or malformed in the fee history.`);
+    this.name = "FeeBaselineReadError";
+    this.field = field;
+  }
+}
+
+/**
+ * Thrown before signing when an operation's `maxFeePerGas` exceeds a sanity
+ * multiple of the independently computed baseline.
+ *
+ * This is the wallet-grade anomaly check (Rabby's "this costs far more than
+ * this kind of call should", MetaMask's habit of computing fees itself rather
+ * than accepting what it is handed), applied at the only moment that matters
+ * for a 2-of-3 account: before the quorum's signature exists. It bounds the
+ * PRICE per gas; the absolute worst-case spend is bounded separately by
+ * {@link UserOpCostExceedsCapError}'s cap, which holds even when the baseline
+ * itself is a lie.
+ */
+export class FeeExceedsBaselineError extends Error {
+  readonly maxFeePerGas: bigint;
+  readonly allowed: bigint;
+
+  constructor(maxFeePerGas: bigint, allowed: bigint) {
+    super(
+      `maxFeePerGas ${maxFeePerGas} exceeds ${allowed}, the sanity ceiling derived from this chain's own fee history; ` +
+        "refusing to sign.",
+    );
+    this.name = "FeeExceedsBaselineError";
+    this.maxFeePerGas = maxFeePerGas;
+    this.allowed = allowed;
+  }
+}
+
+/**
+ * Thrown before signing when an operation's worst-case cost exceeds the
+ * caller's absolute cap.
+ *
+ * The cap is mandatory and deliberately independent of every value an endpoint
+ * supplies: a signature over a user operation authorizes the EntryPoint to
+ * charge the account up to `(verificationGas + callGas + preVerificationGas +
+ * paymaster limits) * maxFeePerGas`, so that product — not the expected cost —
+ * is what a caller is really agreeing to. A hostile or broken endpoint that
+ * inflates any factor of it runs into this before a factor ever signs.
+ */
+export class UserOpCostExceedsCapError extends Error {
+  readonly cost: bigint;
+  readonly cap: bigint;
+
+  constructor(cost: bigint, cap: bigint) {
+    super(`operation authorizes up to ${cost} wei, above the caller's cap of ${cap} wei; refusing to sign.`);
+    this.name = "UserOpCostExceedsCapError";
+    this.cost = cost;
+    this.cap = cap;
+  }
+}
+
+/**
+ * Thrown when `paymasterAndData` is non-empty but too short to carry the
+ * `address ‖ uint128 ‖ uint128` header ERC-4337 v0.7 defines.
+ *
+ * Fail-closed on purpose: the alternative reading — "no parsable limits, so
+ * charge nothing for the paymaster" — would under-price the operation exactly
+ * when the field is malformed, which is when scrutiny should be highest.
+ */
+export class MalformedPaymasterFieldError extends Error {
+  readonly length: number;
+
+  constructor(length: number) {
+    super(
+      `paymasterAndData is ${length} bytes: too short for the 52-byte address+gas-limits header, ` +
+        "so its cost cannot be bounded.",
+    );
+    this.name = "MalformedPaymasterFieldError";
+    this.length = length;
+  }
+}
