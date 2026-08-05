@@ -1,5 +1,5 @@
 import { concat, encodePacked, hexToBigInt, numberToHex, slice, type Address, type Hex } from "viem";
-import type { PackedUserOperation } from "../execute/userop.js";
+import { type PackedUserOperation, requireEntryPointGasValue } from "../execute/userop.js";
 import { PaymasterUnavailableError } from "../errors.js";
 
 const UINT128_MASK = (1n << 128n) - 1n;
@@ -226,6 +226,61 @@ function parsePaymasterFinalResult(result: unknown): PaymasterFinalData {
   return { paymaster: candidate.paymaster, paymasterData: candidate.paymasterData };
 }
 
+/**
+ * A decorated user operation plus a paymaster's own fields is well under a
+ * kilobyte; 128 KiB leaves generous room for any legitimate response while
+ * denying a hostile paymaster the chance to exhaust the client's memory. Its
+ * value is not signed and never reaches the chain — it only bounds what this
+ * process will hold at once.
+ */
+const MAX_PAYMASTER_RESPONSE_BYTES = 128 * 1024;
+
+/**
+ * Reads a response body a chunk at a time, refusing it the moment it passes the
+ * cap, instead of `response.json()`/`response.text()` which materialise the whole
+ * payload first — an unbounded body from a hostile paymaster would otherwise be
+ * pulled entirely into memory before any length was known. The stream is
+ * cancelled on the way out so a refused (or partially read) body is not left
+ * draining in the background.
+ */
+async function readBoundedResponseText(response: Response, method: Erc7677Method): Promise<string> {
+  const body = response.body;
+  if (body === null) {
+    // Some runtimes hand back a null body (e.g. certain error responses); fall
+    // back to the buffered read but still refuse an over-cap payload.
+    const text = await response.text();
+    if (text.length > MAX_PAYMASTER_RESPONSE_BYTES) {
+      throw new PaymasterUnavailableError(method, `response exceeded ${MAX_PAYMASTER_RESPONSE_BYTES} bytes`);
+    }
+    return text;
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value !== undefined) {
+        total += value.byteLength;
+        if (total > MAX_PAYMASTER_RESPONSE_BYTES) {
+          throw new PaymasterUnavailableError(method, `response exceeded ${MAX_PAYMASTER_RESPONSE_BYTES} bytes`);
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+}
+
 async function callErc7677(
   url: string,
   method: Erc7677Method,
@@ -257,9 +312,10 @@ async function callErc7677(
       throw new PaymasterUnavailableError(method, `provider responded with HTTP ${response.status}`);
     }
 
+    const rawBody = await readBoundedResponseText(response, method);
     let payload: unknown;
     try {
-      payload = await response.json();
+      payload = JSON.parse(rawBody);
     } catch {
       if (timedOut) {
         throw new PaymasterUnavailableError(method, `request timed out after ${timeoutMs}ms`);
@@ -377,8 +433,19 @@ export function applyPaymasterData(
   data: PaymasterFinalData,
   gasLimits: PaymasterGasLimits = {},
 ): PackedUserOperation {
-  const verificationGasLimit = gasLimits.paymasterVerificationGasLimit ?? DEFAULT_PAYMASTER_VERIFICATION_GAS_LIMIT;
-  const postOpGasLimit = gasLimits.paymasterPostOpGasLimit ?? DEFAULT_PAYMASTER_POSTOP_GAS_LIMIT;
+  // A paymaster's gas limits ride the wire as uint128, but the EntryPoint refuses
+  // any gas value past its uint120 ceiling — the same bound the account's own gas
+  // fields are held to. Validating here, before the quorum signs over the decorated
+  // operation, refuses a paymaster that returns an out-of-range limit rather than
+  // turning it into a signature the EntryPoint is guaranteed to reject.
+  const verificationGasLimit = requireEntryPointGasValue(
+    "paymasterVerificationGasLimit",
+    gasLimits.paymasterVerificationGasLimit ?? DEFAULT_PAYMASTER_VERIFICATION_GAS_LIMIT,
+  );
+  const postOpGasLimit = requireEntryPointGasValue(
+    "paymasterPostOpGasLimit",
+    gasLimits.paymasterPostOpGasLimit ?? DEFAULT_PAYMASTER_POSTOP_GAS_LIMIT,
+  );
 
   const paymasterAndData = concat([
     data.paymaster,
