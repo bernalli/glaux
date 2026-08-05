@@ -284,7 +284,9 @@ Reconciliation:
 - exit code `2` when the getters are made to disagree with storage — driven by a mock
   implementation that lies about `updateNonce`, which is the scenario the ordering exists for.
 
-The suite baseline is 180 passing, 2 skipped, and must not drop.
+The suite must not drop: the authority on its current size is a `forge test` run, and the
+CI job that gates every push, never a count written down here — it was 180 passing when
+this spec was approved and 215 by the time Phase 5 closed.
 
 ## Documents to update
 
