@@ -1,5 +1,46 @@
 # Deployments
 
+> **⚠️ THE ROUTER MOVED — 2026-08-05, rootless birth.** Birth no longer
+> authenticates a signature from an ephemeral birth key; the account proves it is
+> the recovered signer of its own delegation tuple, whose `r` commits to the birth
+> configuration (`docs/threat-model.md`, residual 1). That put an immutable
+> constant in `GlauxDelegate` — the EIP-7702 authorization preimage, which
+> contains the router's own address — so the router took a constructor and its
+> bytecode changed. **Its canonical address is now
+> `0x3ccF1cc0F702C084B31e691e057d8742ADF35790`** (build-artifact hash
+> `0x22250292…`), and every earlier section of this file, including the tables
+> under the 2026-08-04 redeploy, records the previous router
+> `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9`. The implementation did **not**
+> change: `GlauxAccount` stays at `0x21b5D576…`, code hash `0xb32d638e…`.
+>
+> Consequences, stated plainly:
+>
+> - the accounts born on Sepolia and Base Sepolia are delegated to the old router
+>   and keep working under it; they are the previous generation, not this one;
+> - **every birth blob of the old format is permanently unspendable** — it carries
+>   a `birthSig` field the router no longer reads, and it names a router that is no
+>   longer canonical;
+> - the pending public redeploy (still waiting on a funded relayer key) now covers
+>   the new router *and* the new blob format, not just a new implementation;
+> - every birth procedure written below this note describes the birth-key
+>   ceremony. It is a record of how it was done, not an instruction: there is no
+>   birth key to generate, hold, or destroy any more.
+>
+> The local two-chain proof was re-run end to end under the new format on
+> 2026-08-05 (`scripts/two_chain_proof.sh`, `ALL CHECKS PASSED`): one blob born on
+> two chain ids at the same address, `reconcile.py` `verdict: consistent (exit 0)`,
+> and the refusal path still refused on a chain with no P-256 verifier. Values from
+> that run: impl `0x21b5D576…` / `0xb32d638e…`, router `0x3ccF1cc0…`, verifier code
+> hash `0x861fcab3…`, born account `0x2bD420270bB107f5CC17FBa294ea9E2291F97a7d`.
+>
+> That last address is reproducible only from that exact blob, and this is a
+> property of the design rather than an accident of the run: the address is derived
+> from the birth digest, which covers `initData`, which carries the three
+> possession proofs. A P-256 proof is signed with a random nonce (the Secure
+> Enclave does the same), so crafting a second blob from the same three factors
+> yields a **different** address. Keep the blob — it is what names the account on
+> every chain it has not reached yet.
+
 > **⚠️ SUPERSEDED by the 2026-08-03 internal-review fixes (H-1 + L-1).** That review
 > (`docs/internal-audit-2026-08-03.md`) added two on-chain checks to
 > `GlauxAccount` — the birth-guard on `initializeAccount` (H-1) and the
