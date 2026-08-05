@@ -5,6 +5,7 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   encodePacked,
+  getAddress,
   keccak256,
   type Address,
   type Hex,
@@ -19,6 +20,8 @@ import { encodeUserOpSignature } from "../core/encoding.js";
 import type { Call, SlotSig } from "../core/types.js";
 import type { Signer } from "../signers/signer.js";
 import {
+  ChainIdMismatchError,
+  EntryPointMismatchError,
   ExecutionStateReadError,
   ExecutionNonceMismatchError,
   OperationExpiredError,
@@ -231,7 +234,10 @@ const CALL_GAS_BUFFER_DENOMINATOR = 2n;
 const CALL_GAS_BUFFER_FLAT = 50_000n;
 const ENTRYPOINT_GAS_VALUE_MAX = (1n << 120n) - 1n;
 
-function requireEntryPointGasValue(field: string, value: bigint): bigint {
+// Exported so the paymaster decoration (`../gas/erc7677.js`) can hold a
+// paymaster's own gas limits to the SAME EntryPoint ceiling as the account's
+// fields, before the quorum signs over the decorated operation.
+export function requireEntryPointGasValue(field: string, value: bigint): bigint {
   if (value < 0n || value > ENTRYPOINT_GAS_VALUE_MAX) {
     throw new UserOpGasValueOutOfRangeError(field, value, ENTRYPOINT_GAS_VALUE_MAX);
   }
@@ -511,13 +517,15 @@ export interface SignUserOpParams {
 }
 
 /**
- * Signs `op` for the 2-of-3 quorum in `signers`: computes `userOpHash`
- * exactly as EntryPoint v0.7 does (`computeUserOpHash`, using the caller-
- * supplied `entryPoint`/`chainId` rather than re-deriving them, so the digest
- * matches whichever EntryPoint the caller intends to submit through), then
- * `userOpDigest`/`encodeUserOpSignature` (`../core/digests.js`,
- * `../core/encoding.js`) produce the `abi.encode(validUntil, SlotSig[2])`
- * blob `GlauxAccount.validateUserOp` decodes.
+ * Signs `op` for the 2-of-3 quorum in `signers`. Before any signature exists it
+ * binds the operation to reality: `entryPoint` must be the canonical EntryPoint
+ * (the only address `GlauxAccount.validateUserOp` accepts), `chainId` must be the
+ * chain `client` is actually connected to, and the nonce is re-read from the
+ * EntryPoint rather than trusted from `op` — mirroring the direct path's own
+ * chain binding. It then computes `userOpHash` exactly as EntryPoint v0.7 does
+ * (`computeUserOpHash`) and `userOpDigest`/`encodeUserOpSignature`
+ * (`../core/digests.js`, `../core/encoding.js`) produce the
+ * `abi.encode(validUntil, SlotSig[2])` blob `GlauxAccount.validateUserOp` decodes.
  *
  * Like `signExecution` (`./direct.js`), slot indices are resolved from the
  * account's LIVE installed factor slots rather than assumed from signer
@@ -538,14 +546,18 @@ export interface SignUserOpParams {
  * an operation nobody would pay for is refused without spending a round trip.
  *
  * @throws {OperationExpiredError} if `op.validUntil === 0`.
+ * @throws {OperationAlreadyExpiredError} if the deadline is already at or behind the local clock.
  * @throws {ExecutionValidityWindowError} if the deadline exceeds the local ceiling.
- * @throws {ExecutionNonceMismatchError} if `expectedNonce` disagrees with the operation.
+ * @throws {EntryPointMismatchError} if `entryPoint` is not the canonical EntryPoint.
+ * @throws {ChainIdMismatchError} if `chainId` is not the chain `client` is connected to.
+ * @throws {ExecutionNonceMismatchError} if the EntryPoint's live nonce disagrees with
+ * `op.nonce`, or if an independently supplied `expectedNonce` disagrees with it.
  * @throws {UserOpCostExceedsCapError} if the operation could charge the account
  * more than `maxCostWei`.
  * @throws {MalformedPaymasterFieldError} if `paymasterAndData` cannot be priced.
  * @throws {FeeBaselineReadError} if no baseline was supplied and none can be read.
  * @throws {FeeExceedsBaselineError} if `maxFeePerGas` is beyond what the baseline justifies.
- * @throws {ExecutionStateReadError} if a factor slot cannot be read in a well-formed response.
+ * @throws {ExecutionStateReadError} if the EntryPoint nonce or a factor slot cannot be read in a well-formed response.
  * @throws {UnrecognizedSignerError} if a signer's key material matches none
  * of the account's three installed slots.
  * @throws {DuplicateExecutionSignerError} if both signers occupy one slot.
@@ -586,11 +598,38 @@ export async function signUserOp(params: SignUserOpParams): Promise<PackedUserOp
     throw new OperationExpiredError();
   }
   assertExecutionValidityWindow(op.validUntil, maxValidityWindowSeconds);
-  if (expectedNonce !== undefined && op.nonce !== expectedNonce) {
-    throw new ExecutionNonceMismatchError("erc4337", "caller expectation", expectedNonce, op.nonce);
+
+  // `maxCostWei` needs no chain state, so an operation nobody would pay for is
+  // refused before spending a round trip.
+  assertUserOpCost(op, maxCostWei);
+
+  // Bind the signature to the chain actually connected and to the canonical
+  // EntryPoint, the way the direct path binds its own chain id. `computeUserOpHash`
+  // folds `entryPoint`/`chainId` into the digest, so leaving them unchecked would
+  // let a caller — or a value passed through from a hostile RPC — sign for a chain
+  // or an EntryPoint other than the one the operation is submitted through. Only
+  // the canonical EntryPoint can ever call `validateUserOp`.
+  if (getAddress(entryPoint) !== getAddress(ENTRYPOINT)) {
+    throw new EntryPointMismatchError(ENTRYPOINT, entryPoint);
+  }
+  const connectedChainId = await readChainId(client);
+  if (chainId !== BigInt(connectedChainId)) {
+    throw new ChainIdMismatchError(Number(chainId), connectedChainId);
   }
 
-  assertUserOpCost(op, maxCostWei);
+  // Re-read the nonce from the EntryPoint rather than trusting the one the
+  // operation carries: `op.nonce` and `expectedNonce` are both caller-supplied, so
+  // comparing them proves nothing. The live value ties the signature to the
+  // account's current sequence; an independently sourced `expectedNonce` (from a
+  // second endpoint) then authenticates that value against a future-nonce lie.
+  const liveNonce = await readEntryPointNonce(client, op.sender);
+  if (op.nonce !== liveNonce) {
+    throw new ExecutionNonceMismatchError("erc4337", "entrypoint", liveNonce, op.nonce);
+  }
+  if (expectedNonce !== undefined && liveNonce !== expectedNonce) {
+    throw new ExecutionNonceMismatchError("erc4337", "caller expectation", expectedNonce, liveNonce);
+  }
+
   const baseline = feeBaseline ?? (await fetchFeeBaseline(client));
   assertFeeWithinBaseline(userOpMaxFeePerGas(op), baseline, feeSanityMultiple);
 

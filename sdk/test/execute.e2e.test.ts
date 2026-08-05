@@ -20,6 +20,7 @@ import {
   ExecutionSimulationError,
   ExecutionStateReadError,
   ExecutionValidityWindowError,
+  OperationAlreadyExpiredError,
   OperationExpiredError,
   UnrecognizedSignerError,
 } from "../src/errors.js";
@@ -47,6 +48,16 @@ const RELAYER_ADDRESS: Address = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
 
 const FRESH_RECIPIENT: Address = "0x000000000000000000000000000000000000f00d";
 const STUB_ACCOUNT: Address = "0x1111111111111111111111111111111111111111";
+
+/**
+ * A `validUntil` one hour ahead, inside the default local-clock ceiling. Used
+ * for the "don't care" deadline placeholders that merely have to survive the
+ * validity check `signExecution` now runs (rejecting `validUntil <= now`)
+ * before reaching the chain-id, nonce, slot, or quorum logic a given test is
+ * actually about — as opposed to a deliberately expired or beyond-ceiling value
+ * whose refusal a specific test asserts.
+ */
+const futureValidUntil = (): number => Math.floor(Date.now() / 1000) + 3600;
 
 function signingStubClient(
   paper: Signer,
@@ -182,7 +193,7 @@ describe("execute direct path fail-closed guards", () => {
         client,
         expectedChainId: 31337,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [signer, signer],
       }),
     ).rejects.toBeInstanceOf(ChainIdMismatchError);
@@ -265,7 +276,7 @@ describe("execute direct path fail-closed guards", () => {
         client: stub.client,
         expectedChainId: 31337,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [paper, cloud],
       }),
     ).rejects.toMatchObject({
@@ -287,7 +298,7 @@ describe("execute direct path fail-closed guards", () => {
         expectedChainId: 31337,
         expectedNonce: 0n,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [paper, cloud],
       }),
     ).rejects.toMatchObject({
@@ -332,7 +343,7 @@ describe("execute direct path fail-closed guards", () => {
         client: stub.client,
         expectedChainId: 31337,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [paper, cloud],
       }),
     ).rejects.toMatchObject({
@@ -349,7 +360,7 @@ describe("execute direct path fail-closed guards", () => {
         client: unborn.client,
         expectedChainId: 31337,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [paper, cloud],
       }),
     ).rejects.toMatchObject({
@@ -372,7 +383,7 @@ describe("execute direct path fail-closed guards", () => {
       client: stub.client,
       expectedChainId: 31337,
       calls,
-      validUntil: 1,
+      validUntil: futureValidUntil(),
       signers: [paper, cloud],
     });
 
@@ -389,7 +400,7 @@ describe("execute direct path fail-closed guards", () => {
         client: stub.client,
         expectedChainId: 31337,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [paper, cloud],
       }),
     ).rejects.toMatchObject({
@@ -419,7 +430,7 @@ describe("execute direct path fail-closed guards", () => {
         client: stub.client,
         expectedChainId: 31337,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [duplicateSigner, duplicateSigner],
       }),
     ).rejects.toMatchObject({
@@ -440,7 +451,7 @@ describe("execute direct path fail-closed guards", () => {
         client: stub.client,
         expectedChainId: 31337,
         calls,
-        validUntil: 1,
+        validUntil: futureValidUntil(),
         signers: [paper, uninstalled],
       }),
     ).rejects.toBeInstanceOf(UnrecognizedSignerError);
@@ -517,7 +528,7 @@ describe("execute e2e: direct executeWithSigs path", () => {
   );
 
   it(
-    "the contract reverts OperationExpired for a past validUntil, and the SDK surfaces the typed error with the real reason",
+    "an already-expired validUntil is refused by the SDK before a signature or relayer gas is spent",
     async () => {
       const { url } = await spawnAnvil();
       const { client, test } = clientsFor(url);
@@ -526,14 +537,59 @@ describe("execute e2e: direct executeWithSigs path", () => {
       const pastValidUntil = 1; // 1970-01-01T00:00:01Z: expired on every real chain.
       const calls = [{ to: FRESH_RECIPIENT, value: parseEther("0.01"), data: "0x" as Hex }];
 
+      // A deadline already at or behind the local clock is dead on arrival at
+      // the contract (executeWithSigs would revert `OperationExpired`). The SDK
+      // now refuses it CLIENT-SIDE — earlier and strictly stronger than that
+      // on-chain revert — so a quorum signature and relayer gas are never spent
+      // on a transaction guaranteed to revert. The refusal is the SDK's own
+      // OperationAlreadyExpiredError, raised against a real, born account before
+      // any nonce/slot read, and no operation is ever signed or submitted.
+      await expect(
+        signExecution({
+          account: born.account,
+          client,
+          expectedChainId: 31337,
+          calls,
+          validUntil: pastValidUntil,
+          signers: [born.paper, born.cloud],
+        }),
+      ).rejects.toBeInstanceOf(OperationAlreadyExpiredError);
+    },
+    60_000,
+  );
+
+  it(
+    "decodes the contract's own OperationExpired revert into ExecutionExpiredError when a once-valid op is submitted past its deadline",
+    async () => {
+      const { url } = await spawnAnvil();
+      const { client, test } = clientsFor(url);
+      const born = await bornAndFundedAccount(url, client, test, "1");
+
+      // Sign with a deadline comfortably in the future so every client-side
+      // check passes and a real quorum signature is produced — this is NOT the
+      // client-side refusal path (that one never signs). `validUntil` sits well
+      // inside the default one-hour ceiling.
+      const validUntil = Math.floor(Date.now() / 1000) + 1800;
+      const calls = [{ to: FRESH_RECIPIENT, value: parseEther("0.01"), data: "0x" as Hex }];
       const signed = await signExecution({
         account: born.account,
         client,
         expectedChainId: 31337,
         calls,
-        validUntil: pastValidUntil,
+        validUntil,
         signers: [born.paper, born.cloud],
       });
+
+      // Advance the CHAIN's block timestamp past the signed deadline and mine so
+      // the new timestamp is in effect. `submitExecution` has no client-side
+      // expiry check, so its pre-flight simulation of `executeWithSigs` hits the
+      // contract's own `block.timestamp > validUntil` guard and reverts
+      // `OperationExpired(uint48 validUntil, uint256 blockTimestamp)` — the exact
+      // production path a relayer takes for an op signed while valid but
+      // broadcast after its window closed.
+      const chainTimestampPastDeadline = validUntil + 3600;
+      await test.setNextBlockTimestamp({ timestamp: BigInt(chainTimestampPastDeadline) });
+      await test.mine({ blocks: 1 });
 
       let thrown: unknown;
       try {
@@ -542,13 +598,13 @@ describe("execute e2e: direct executeWithSigs path", () => {
         thrown = error;
       }
 
+      // The real decoded revert args, not a placeholder: `validUntil` round-trips
+      // to the value we signed and `blockTimestamp` is a bigint strictly past it.
       expect(thrown).toBeInstanceOf(ExecutionExpiredError);
-      const error = thrown as ExecutionExpiredError;
-      // The genuine revert reason, not merely "something threw": the exact
-      // `validUntil` the contract rejected travels back from the decoded
-      // `OperationExpired(uint48,uint256)` custom error.
-      expect(error.validUntil).toBe(pastValidUntil);
-      expect(error.blockTimestamp).toBeGreaterThan(BigInt(pastValidUntil));
+      const expired = thrown as ExecutionExpiredError;
+      expect(expired.validUntil).toBe(validUntil);
+      expect(typeof expired.blockTimestamp).toBe("bigint");
+      expect(expired.blockTimestamp).toBeGreaterThan(BigInt(validUntil));
     },
     60_000,
   );

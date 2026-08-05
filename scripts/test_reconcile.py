@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import requests
 from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
 from eth_utils import to_checksum_address
@@ -26,6 +27,7 @@ from reconcile import (
     ChainState,
     FactorDataDirtyPadding,
     FactorDataTooLong,
+    ReconciliationReadError,
     compare,
     data_slot,
     decode_bytes,
@@ -34,10 +36,9 @@ from reconcile import (
     inspect_chain,
     type_slot,
 )
+from web3.exceptions import ContractLogicError
 
-FIXTURE = (
-    Path(__file__).resolve().parent.parent / "test" / "fixtures" / "storage_parity.json"
-)
+FIXTURE = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "storage_parity.json"
 
 
 @pytest.fixture(scope="module")
@@ -58,12 +59,8 @@ def storage(fx: dict):
 def test_the_slot_constants_match_the_contract() -> None:
     # keccak256("glaux.account.v1.storage") / keccak256("glaux.account.v1.implementation"),
     # pinned as literals so a typo in the seed strings cannot pass unnoticed.
-    assert (
-        BASE_SLOT == 0xC645EF19799BCCE32B2C21E3256A200E9914FA1C588F704BE7391B93BE01AE7F
-    )
-    assert (
-        IMPL_SLOT == 0xECC57C70703AE87295636D5BF51AB33D95AD479D00483A780FA66C4613E2F3B8
-    )
+    assert BASE_SLOT == 0xC645EF19799BCCE32B2C21E3256A200E9914FA1C588F704BE7391B93BE01AE7F
+    assert IMPL_SLOT == 0xECC57C70703AE87295636D5BF51AB33D95AD479D00483A780FA66C4613E2F3B8
 
 
 def test_base_slot_matches_the_fixture(fx: dict) -> None:
@@ -156,9 +153,7 @@ def test_planted_over_long_length_is_refused_before_any_payload_read() -> None:
     assert reads == [data_slot(0)]
 
 
-def test_the_cap_admits_sixty_four_bytes_and_refuses_sixty_five(
-    fx: dict, storage
-) -> None:
+def test_the_cap_admits_sixty_four_bytes_and_refuses_sixty_five(fx: dict, storage) -> None:
     # The committed fixture is ground truth from Solidity's real storage
     # layout. Do not replace it with a hand-written bytes encoder: that would
     # merely duplicate the decoder assumptions this boundary test must check.
@@ -275,25 +270,15 @@ def test_inspect_chain_orders_raw_anomaly_before_getter_comparison(fx: dict) -> 
     # These are the real compiler-fixture payloads. In particular, slot 1 must
     # stay non-empty and differ from the raw side's unreadable-data fallback;
     # otherwise this test stops exercising getter-note ordering.
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
 
-    state: ChainState = inspect_chain(
-        _FakeWeb3(storage, getter_slots), "sepolia", ACCOUNT
-    )
+    state: ChainState = inspect_chain(_FakeWeb3(storage, getter_slots), "sepolia", ACCOUNT)
 
-    anomaly_note = (
-        "slot 1: raw factor data length 160000 exceeds Glaux's "
-        f"{MAX_FACTOR_DATA_LENGTH}-byte maximum"
-    )
+    anomaly_note = f"slot 1: raw factor data length 160000 exceeds Glaux's {MAX_FACTOR_DATA_LENGTH}-byte maximum"
     getter_note = f"slot 1: raw {(2, '0x')} vs getter {(2, getter_slots[1].hex())}"
     assert anomaly_note in state.getter_mismatches
     assert getter_note in state.getter_mismatches
-    assert state.getter_mismatches.index(anomaly_note) < state.getter_mismatches.index(
-        getter_note
-    )
+    assert state.getter_mismatches.index(anomaly_note) < state.getter_mismatches.index(getter_note)
     assert state.slots[0] == (
         1,
         fx["expected"]["slots"][0]["data"],
@@ -310,10 +295,7 @@ def test_dirty_implementation_address_padding_is_exit_two(fx: dict) -> None:
     storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)
     storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
 
     state = inspect_chain(
         _DirtyImplementationWeb3(storage, getter_slots),
@@ -337,18 +319,13 @@ def test_foreign_code_does_not_downgrade_an_unreadable_chain(fx: dict) -> None:
     storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)
     storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
     unreadable = inspect_chain(
         _DirtyImplementationWeb3(storage, getter_slots),
         "dirty-implementation-padding",
         ACCOUNT,
     )
-    foreign = inspect_chain(
-        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
-    )
+    foreign = inspect_chain(_AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT)
 
     assert compare([unreadable], None) == 2
     assert compare([unreadable, foreign], None) == 2
@@ -364,10 +341,7 @@ def test_dirty_get_slot_trailing_padding_is_exit_two(fx: dict) -> None:
     # raw in perfect agreement and reach exit 0: only strict decoding can move
     # this state to 2, which is what the assertion below is proving.
     storage[data_slot(0)] = int("aabb" + "00" * 29 + "04", 16)
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
     getter_slots[0] = bytes.fromhex("aabb")
 
     state = inspect_chain(
@@ -393,10 +367,7 @@ def test_clean_get_slot_padding_is_exit_zero(fx: dict) -> None:
     storage[IMPL_SLOT] = int(IMPL, 16)
     storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
     storage[data_slot(0)] = int("aabb" + "00" * 29 + "04", 16)
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
     getter_slots[0] = bytes.fromhex("aabb")
 
     state = inspect_chain(_FakeWeb3(storage, getter_slots), "clean-padding", ACCOUNT)
@@ -434,18 +405,13 @@ def _healthy_state(fx: dict, name: str) -> ChainState:
     storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)
     storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
     return inspect_chain(_FakeWeb3(storage, getter_slots), name, ACCOUNT)
 
 
 def test_foreign_code_beside_an_active_glaux_chain_is_exit_one(fx: dict) -> None:
     healthy = _healthy_state(fx, "glaux")
-    foreign = inspect_chain(
-        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
-    )
+    foreign = inspect_chain(_AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT)
 
     assert compare([healthy], None) == 0
     assert foreign.active is False
@@ -462,9 +428,7 @@ def test_a_lone_foreign_code_chain_is_exit_one() -> None:
     address is wrong, or it was never this account. Nothing else needs to be
     observed for that to be worth stopping on.
     """
-    foreign = inspect_chain(
-        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
-    )
+    foreign = inspect_chain(_AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT)
 
     assert foreign.active is False
     # Parity invariant: Python exit 1 here, TypeScript `divergent` in the sibling test.
@@ -489,9 +453,7 @@ def test_a_foreign_code_chain_diverges_even_when_a_router_is_expected() -> None:
     `any(s.router != want for s in active)` iterates an empty list. Exit 1 comes
     from the foreign clause alone; this pins that passing `--router` does not
     somehow soften it."""
-    foreign = inspect_chain(
-        _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
-    )
+    foreign = inspect_chain(_AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT)
 
     assert compare([foreign], ROUTER) == 1
 
@@ -515,9 +477,7 @@ def test_impossible_short_form_lengths_are_refused(marker: int, length: int) -> 
         decode_bytes(lambda _slot: marker, data_slot(0))
 
     assert excinfo.value.length == length
-    assert str(excinfo.value) == (
-        f"raw factor data short-form length {length} exceeds Solidity's 31-byte maximum"
-    )
+    assert str(excinfo.value) == (f"raw factor data short-form length {length} exceeds Solidity's 31-byte maximum")
 
 
 def test_largest_legal_short_form_still_decodes_all_thirty_one_bytes() -> None:
@@ -527,9 +487,7 @@ def test_largest_legal_short_form_still_decodes_all_thirty_one_bytes() -> None:
         "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f3e",
         16,
     )
-    expected = bytes.fromhex(
-        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-    )
+    expected = bytes.fromhex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 
     assert decode_bytes(lambda _slot: word, data_slot(0)) == expected
 
@@ -537,16 +495,11 @@ def test_largest_legal_short_form_still_decodes_all_thirty_one_bytes() -> None:
 def test_impossible_short_form_drives_python_parity_verdict_to_exit_two(
     fx: dict,
 ) -> None:
-    storage = {
-        int(entry["slot"], 16): int(entry["value"], 16) for entry in fx["entries"]
-    }
+    storage = {int(entry["slot"], 16): int(entry["value"], 16) for entry in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)
     storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
     storage[data_slot(0)] = 0x40  # even marker 2*32: impossible Solidity short form
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
 
     state = inspect_chain(_FakeWeb3(storage, getter_slots), "parity", ACCOUNT)
 
@@ -554,19 +507,14 @@ def test_impossible_short_form_drives_python_parity_verdict_to_exit_two(
     # TypeScript `unreadable` in the sibling reconcile test.
     assert compare([state], None) == 2
     assert state.getter_mismatches[0] == (
-        "slot 0: raw factor data short-form length 32 exceeds Solidity's "
-        "31-byte maximum"
+        "slot 0: raw factor data short-form length 32 exceeds Solidity's 31-byte maximum"
     )
 
 
 def test_short_form_dirty_padding_is_refused_but_its_zeroed_twin_decodes() -> None:
     payload = bytes.fromhex("aabb")
-    dirty_word = int.from_bytes(
-        payload + b"\x7f" + b"\x00" * 28 + bytes([2 * len(payload)]), "big"
-    )
-    clean_word = int.from_bytes(
-        payload + b"\x00" * 29 + bytes([2 * len(payload)]), "big"
-    )
+    dirty_word = int.from_bytes(payload + b"\x7f" + b"\x00" * 28 + bytes([2 * len(payload)]), "big")
+    clean_word = int.from_bytes(payload + b"\x00" * 29 + bytes([2 * len(payload)]), "big")
 
     # solc 0.8.28 zeroes short-form padding even on overwrites, so the junk
     # byte is impossible compiler-written state. Index 31 is the marker and is
@@ -575,9 +523,7 @@ def test_short_form_dirty_padding_is_refused_but_its_zeroed_twin_decodes() -> No
         decode_bytes(lambda _slot: dirty_word, data_slot(0))
 
     assert excinfo.value.length == len(payload)
-    assert str(excinfo.value) == (
-        "raw factor data short-form padding is non-zero past the declared length 2"
-    )
+    assert str(excinfo.value) == ("raw factor data short-form padding is non-zero past the declared length 2")
     assert decode_bytes(lambda _slot: clean_word, data_slot(0)) == payload
 
 
@@ -588,9 +534,7 @@ def test_empty_short_form_with_a_non_zero_high_byte_is_refused() -> None:
         decode_bytes(lambda _slot: dirty_empty_word, data_slot(0))
 
     assert excinfo.value.length == 0
-    assert str(excinfo.value) == (
-        "raw factor data short-form padding is non-zero past the declared length 0"
-    )
+    assert str(excinfo.value) == ("raw factor data short-form padding is non-zero past the declared length 0")
 
 
 def test_untouched_all_zero_word_still_decodes_to_empty() -> None:
@@ -604,9 +548,7 @@ def test_junk_in_the_last_padding_byte_is_refused() -> None:
     # their junk right after the payload, so only junk parked here can tell the
     # two windows apart.
     payload = bytes.fromhex("aabb")
-    word = int.from_bytes(
-        payload + b"\x00" * 28 + b"\x7f" + bytes([2 * len(payload)]), "big"
-    )
+    word = int.from_bytes(payload + b"\x00" * 28 + b"\x7f" + bytes([2 * len(payload)]), "big")
 
     with pytest.raises(FactorDataDirtyPadding) as excinfo:
         decode_bytes(lambda _slot: word, data_slot(0))
@@ -617,18 +559,11 @@ def test_junk_in_the_last_padding_byte_is_refused() -> None:
 def test_dirty_short_form_padding_drives_python_parity_verdict_to_exit_two(
     fx: dict,
 ) -> None:
-    storage = {
-        int(entry["slot"], 16): int(entry["value"], 16) for entry in fx["entries"]
-    }
+    storage = {int(entry["slot"], 16): int(entry["value"], 16) for entry in fx["entries"]}
     storage[IMPL_SLOT] = int(IMPL, 16)
     storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
-    storage[data_slot(0)] = int(
-        "aabb7f0000000000000000000000000000000000000000000000000000000004", 16
-    )
-    getter_slots = {
-        i: bytes.fromhex(slot["data"].removeprefix("0x"))
-        for i, slot in enumerate(fx["expected"]["slots"])
-    }
+    storage[data_slot(0)] = int("aabb7f0000000000000000000000000000000000000000000000000000000004", 16)
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
 
     state = inspect_chain(_FakeWeb3(storage, getter_slots), "dirty-padding", ACCOUNT)
 
@@ -636,6 +571,145 @@ def test_dirty_short_form_padding_drives_python_parity_verdict_to_exit_two(
     # TypeScript `unreadable` in the sibling reconcile test.
     assert compare([state], None) == 2
     assert state.getter_mismatches[0] == (
-        "slot 0: raw factor data short-form padding is non-zero past the "
-        "declared length 2"
+        "slot 0: raw factor data short-form padding is non-zero past the declared length 2"
     )
+
+
+# --- A transport failure is unknown state, not the exit-2 verdict ----------
+#
+# The getter block once wrapped its eth_calls in a bare `except Exception` and
+# folded ANY failure -- a dropped connection, a timeout, DNS -- into the same
+# "getter call failed" finding that drives exit 2 ("the implementation
+# misreports its own state"). A transport failure never executed on-chain, so
+# it is not evidence the implementation lies. reconcile.ts already keeps the
+# two apart (its `ReconciliationReadError`); these tests pin the Python side to
+# the same distinction: a transport error raises `ReconciliationReadError`, a
+# genuine revert stays a finding.
+
+
+def _readable_chain(fx: dict) -> tuple[dict[int, int], dict[int, bytes]]:
+    """Raw storage + getter slots for a chain that reads cleanly (exit 0)."""
+    storage = {int(e["slot"], 16): int(e["value"], 16) for e in fx["entries"]}
+    storage[IMPL_SLOT] = int(IMPL, 16)
+    storage[header_slot()] = 1 | (7 << 8) | (3 << 72)
+    getter_slots = {i: bytes.fromhex(slot["data"].removeprefix("0x")) for i, slot in enumerate(fx["expected"]["slots"])}
+    return storage, getter_slots
+
+
+class _TransportFailureEth(_FakeEth):
+    """Raw storage reads cleanly, but the getter eth_call fails at the transport
+    layer -- the JSON-RPC request never executed on-chain."""
+
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes], error: Exception) -> None:
+        super().__init__(storage, slots)
+        self._error = error
+
+    def call(self, tx: dict[str, Any]) -> bytes:
+        raise self._error
+
+
+class _TransportFailureWeb3:
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes], error: Exception) -> None:
+        self.eth = _TransportFailureEth(storage, slots, error)
+
+
+class _RevertingGetterEth(_FakeEth):
+    """A getter that the node DID execute and that reverted: a real finding."""
+
+    def call(self, tx: dict[str, Any]) -> bytes:
+        raise ContractLogicError("execution reverted")
+
+
+class _RevertingGetterWeb3:
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes]) -> None:
+        self.eth = _RevertingGetterEth(storage, slots)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        requests.exceptions.ConnectionError("connection refused"),
+        requests.exceptions.Timeout("read timed out"),
+        ConnectionError("connection reset by peer"),
+        TimeoutError("operation timed out"),
+    ],
+)
+def test_a_transport_failure_is_not_the_exit_two_verdict(fx: dict, error: Exception) -> None:
+    storage, getter_slots = _readable_chain(fx)
+
+    with pytest.raises(ReconciliationReadError) as excinfo:
+        inspect_chain(_TransportFailureWeb3(storage, getter_slots, error), "sepolia", ACCOUNT)
+
+    # A transport error surfaces as its own outcome (mirror of reconcile.ts's
+    # ReconciliationReadError), NEVER as an exit-2 "the implementation lies"
+    # verdict about state that was never read.
+    assert excinfo.value.chain == "sepolia"
+    assert excinfo.value.target == "getter call"
+    assert excinfo.value.__cause__ is error
+
+
+def test_a_getter_that_reverts_stays_an_exit_two_finding(fx: dict) -> None:
+    # The twin that keeps the transport test honest: a getter the node DID run
+    # and that reverted is the implementation failing to answer for its own
+    # state -- still a finding (exit 2), not a transport error.
+    storage, getter_slots = _readable_chain(fx)
+
+    state = inspect_chain(_RevertingGetterWeb3(storage, getter_slots), "reverting", ACCOUNT)
+
+    assert compare([state], None) == 2
+    assert len(state.getter_mismatches) == 1
+    assert state.getter_mismatches[0].startswith("getter call failed:")
+
+
+class _RawTransportFailureEth(_FakeEth):
+    """A chosen RAW read (eth_getCode / eth_getStorageAt) fails at the transport
+    layer, before any getter eth_call runs. The raw phase is the first contact
+    with the endpoint, so it is the most likely place a transport failure lands;
+    before the fix it escaped unhandled (process exit 1, "chains diverge")."""
+
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes], error: Exception, *, fail_on: str) -> None:
+        super().__init__(storage, slots)
+        self._error = error
+        self._fail_on = fail_on
+
+    def get_code(self, address: str) -> bytes:
+        if self._fail_on == "account_code" and address == ACCOUNT:
+            raise self._error
+        if self._fail_on == "impl_code" and address != ACCOUNT:
+            raise self._error
+        return super().get_code(address)
+
+    def get_storage_at(self, address: str, position: int) -> bytes:
+        if self._fail_on == "storage":
+            raise self._error
+        return super().get_storage_at(address, position)
+
+
+class _RawTransportFailureWeb3:
+    def __init__(self, storage: dict[int, int], slots: dict[int, bytes], error: Exception, *, fail_on: str) -> None:
+        self.eth = _RawTransportFailureEth(storage, slots, error, fail_on=fail_on)
+
+
+@pytest.mark.parametrize(
+    ("fail_on", "target"),
+    [
+        ("account_code", "account code"),
+        ("storage", "storage word"),
+        ("impl_code", "implementation code"),
+    ],
+)
+def test_a_raw_read_transport_failure_is_not_a_verdict(fx: dict, fail_on: str, target: str) -> None:
+    # Twin of the getter-phase transport test, for the RAW phase the fix newly
+    # covers: a dropped connection on eth_getCode/eth_getStorageAt is unknown
+    # state, surfaced as ReconciliationReadError with the target reconcile.ts
+    # classifies it under -- never an exit-2 "the implementation lies" verdict,
+    # and never an unhandled traceback.
+    storage, getter_slots = _readable_chain(fx)
+    error = requests.exceptions.ConnectionError("connection refused")
+
+    with pytest.raises(ReconciliationReadError) as excinfo:
+        inspect_chain(_RawTransportFailureWeb3(storage, getter_slots, error, fail_on=fail_on), "base", ACCOUNT)
+
+    assert excinfo.value.chain == "base"
+    assert excinfo.value.target == target
+    assert excinfo.value.__cause__ is error

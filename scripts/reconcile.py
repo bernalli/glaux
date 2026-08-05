@@ -20,7 +20,12 @@ Order per chain (docs/client-guidance.md, normative):
 5. The getters                    -> comparison only, never the source.
 
 Exit codes: 0 all chains consistent; 1 chains diverge; 2 raw storage and
-getters disagree on at least one chain (2 outranks 1).
+getters disagree on at least one chain (2 outranks 1); 3 a chain could not be
+read at all -- an RPC transport failure (dropped connection, timeout, DNS, a
+malformed JSON-RPC envelope) that never executed on-chain. State is unknown,
+deliberately NOT folded into a verdict: a transport failure is not evidence
+the implementation lies. This mirrors sdk/src/reconcile/reconcile.ts, whose
+``ReconciliationReadError`` keeps the same distinction.
 
 Usage:
     python3 scripts/reconcile.py --account 0x... \\
@@ -36,7 +41,9 @@ from typing import Any
 
 from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
+from eth_abi.exceptions import DecodingError
 from eth_utils import keccak, to_checksum_address
+from web3.exceptions import ContractLogicError
 
 BASE_SLOT: int = int.from_bytes(keccak(text="glaux.account.v1.storage"), "big")
 IMPL_SLOT: int = int.from_bytes(keccak(text="glaux.account.v1.implementation"), "big")
@@ -95,14 +102,10 @@ class FactorDataTooLong(MalformedFactorData):
     def __init__(self, length: int, *, short_form: bool = False) -> None:
         if short_form:
             message = (
-                f"raw factor data short-form length {length} exceeds Solidity's "
-                f"{SHORT_BYTES_MAX_LENGTH}-byte maximum"
+                f"raw factor data short-form length {length} exceeds Solidity's {SHORT_BYTES_MAX_LENGTH}-byte maximum"
             )
         else:
-            message = (
-                f"raw factor data length {length} exceeds Glaux's "
-                f"{MAX_FACTOR_DATA_LENGTH}-byte maximum"
-            )
+            message = f"raw factor data length {length} exceeds Glaux's {MAX_FACTOR_DATA_LENGTH}-byte maximum"
         super().__init__(message)
         self.length: int = length
 
@@ -111,11 +114,33 @@ class FactorDataDirtyPadding(MalformedFactorData):
     """A short-form factor slot has non-zero bytes after its payload."""
 
     def __init__(self, length: int) -> None:
-        super().__init__(
-            "raw factor data short-form padding is non-zero past the declared "
-            f"length {length}"
-        )
+        super().__init__(f"raw factor data short-form padding is non-zero past the declared length {length}")
         self.length: int = length
+
+
+class ReconciliationReadError(Exception):
+    """A getter call failed for a reason that is not itself an on-chain revert.
+
+    The getter block once folded a transport failure -- a dropped connection, a
+    timeout, DNS, a malformed JSON-RPC envelope -- into the same exit-2 "the
+    implementation misreports its own state" finding as a getter that genuinely
+    reverts or returns malformed data. A transport failure never executed
+    on-chain, so it is NOT evidence the implementation lies: chain state is
+    UNKNOWN, not reconciled, and reporting a security verdict from it would be
+    treating unread state as read. This is the Python counterpart of
+    ``sdk/src/errors.ts``'s ``ReconciliationReadError`` -- keeping the two ports
+    giving the SAME verdict on readable state while both refuse to invent one
+    from state nothing observed.
+    """
+
+    def __init__(self, chain: str, target: str) -> None:
+        super().__init__(
+            f'reconciliation on chain "{chain}" could not read {target}: the RPC '
+            "response was absent, malformed, or the transport failed. Chain state "
+            "is unknown, not reconciled."
+        )
+        self.chain: str = chain
+        self.target: str = target
 
 
 def decode_bytes(read: Reader, slot: int) -> bytes:
@@ -184,9 +209,28 @@ def _call_getter(w3: Any, account: str, data: bytes) -> bytes:
     return bytes(w3.eth.call({"to": account, "data": data}))
 
 
+def _raw_read(fn: Any, name: str, target: str) -> bytes:
+    """Run a raw storage/code RPC read, turning a transport failure into a
+    ``ReconciliationReadError`` instead of an unhandled traceback.
+
+    Raw reads (``eth_getCode``, ``eth_getStorageAt``) never run a contract call,
+    so they cannot revert: any failure here is the transport, not the account
+    misreporting itself. Left unwrapped, a dropped connection on the FIRST read
+    escaped as an unhandled exception (process exit 1, "chains diverge") -- the
+    exact misverdict residual 9 closes for the getter phase, merely moved from 2
+    to 1. ``sdk/src/reconcile/reconcile.ts`` classifies the same targets
+    ("account code", "storage word", "implementation code") as read errors; this
+    keeps the two ports in parity on unreadable state as well as on readable.
+    """
+    try:
+        return bytes(fn())
+    except Exception as exc:  # noqa: BLE001 -- a raw read never executes on-chain: any failure is transport, never a verdict
+        raise ReconciliationReadError(name, target) from exc
+
+
 def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
     """Steps 1-5 for one chain: raw reads first, getters as cross-check only."""
-    code = bytes(w3.eth.get_code(account))
+    code = _raw_read(lambda: w3.eth.get_code(account), name, "account code")
     if code == b"":
         return ChainState(name=name, active=False)
     if len(code) != 23 or not code.startswith(DESIGNATOR_PREFIX):
@@ -199,15 +243,11 @@ def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
     router = to_checksum_address(code[3:])
 
     def read(slot: int) -> int:
-        return int.from_bytes(bytes(w3.eth.get_storage_at(account, slot)), "big")
+        return int.from_bytes(_raw_read(lambda: w3.eth.get_storage_at(account, slot), name, "storage word"), "big")
 
-    impl_pointer = to_checksum_address(
-        (read(IMPL_SLOT) & (2**160 - 1)).to_bytes(20, "big")
-    )
-    impl_code = bytes(w3.eth.get_code(impl_pointer))
-    impl_codehash = (
-        "0x" + keccak(impl_code).hex() if impl_code else "no code at pointer"
-    )
+    impl_pointer = to_checksum_address((read(IMPL_SLOT) & (2**160 - 1)).to_bytes(20, "big"))
+    impl_code = _raw_read(lambda: w3.eth.get_code(impl_pointer), name, "implementation code")
+    impl_codehash = "0x" + keccak(impl_code).hex() if impl_code else "no code at pointer"
 
     initialized, update_nonce, exec_nonce = decode_header(read(header_slot()))
     mismatches: list[str] = []
@@ -232,22 +272,29 @@ def inspect_chain(w3: Any, name: str, account: str) -> ChainState:
         got = int.from_bytes(_call_getter(w3, account, SEL_EXEC_NONCE), "big")
         if got != exec_nonce:
             mismatches.append(f"execNonce: raw {exec_nonce} vs getter {got}")
-        got_impl = to_checksum_address(
-            abi_decode(["address"], _call_getter(w3, account, SEL_IMPLEMENTATION))[0]
-        )
+        got_impl = to_checksum_address(abi_decode(["address"], _call_getter(w3, account, SEL_IMPLEMENTATION))[0])
         if got_impl != impl_pointer:
-            mismatches.append(
-                f"implementation: raw {impl_pointer} vs getter {got_impl}"
-            )
+            mismatches.append(f"implementation: raw {impl_pointer} vs getter {got_impl}")
         for i in range(3):
             ret = _call_getter(w3, account, SEL_GET_SLOT + abi_encode(["uint8"], [i]))
             vt, data = abi_decode(["uint8", "bytes"], ret)
             if (vt, "0x" + bytes(data).hex()) != slots[i]:
-                mismatches.append(
-                    f"slot {i}: raw {slots[i]} vs getter {(vt, bytes(data).hex())}"
-                )
-    except Exception as exc:  # noqa: BLE001 -- a getter that reverts/errors is itself a finding
+                mismatches.append(f"slot {i}: raw {slots[i]} vs getter {(vt, bytes(data).hex())}")
+    except (ContractLogicError, DecodingError) as exc:
+        # A getter that reverts (ContractLogicError) or whose return data fails
+        # to ABI-decode (DecodingError) is the implementation failing to
+        # describe its own state on a chain that DID answer: itself a finding
+        # (exit 2), exactly as reconcile.ts folds an EVM revert or a malformed
+        # return into its "unreadable" verdict.
         mismatches.append(f"getter call failed: {exc}")
+    except Exception as exc:  # noqa: BLE001 -- transport failure: unknown state, never a verdict
+        # Any other failure issuing a getter call -- a dropped connection, a
+        # timeout, DNS, a malformed JSON-RPC envelope -- never executed
+        # on-chain, so it is NOT evidence the implementation lies. Folding it
+        # into ``mismatches`` would misreport exit 2 (a security verdict) about
+        # state nothing read; like reconcile.ts's ReconciliationReadError, the
+        # honest answer is that chain state is unknown.
+        raise ReconciliationReadError(name, "getter call") from exc
 
     return ChainState(
         name=name,
@@ -318,11 +365,7 @@ def compare(states: list[ChainState], expected_router: str | None) -> int:
 
 def _report(states: list[ChainState], verdict: int, as_json: bool) -> None:
     if as_json:
-        print(
-            json.dumps(
-                {"verdict": verdict, "chains": [s.__dict__ for s in states]}, indent=2
-            )
-        )
+        print(json.dumps({"verdict": verdict, "chains": [s.__dict__ for s in states]}, indent=2))
         return
     for s in states:
         print(f"== {s.name}")
@@ -338,9 +381,7 @@ def _report(states: list[ChainState], verdict: int, as_json: bool) -> None:
         for i, (vt, data) in enumerate(s.slots):
             print(f"   slot {i}: type {vt}  data {data}")
         if s.getter_mismatches:
-            print(
-                "   RAW-VS-GETTER MISMATCH (the implementation misreports its state):"
-            )
+            print("   RAW-VS-GETTER MISMATCH (the implementation misreports its state):")
             for m in s.getter_mismatches:
                 print(f"     - {m}")
     labels = {0: "consistent", 1: "CHAINS DIVERGE", 2: "RAW-VS-GETTER MISMATCH"}
@@ -349,9 +390,7 @@ def _report(states: list[ChainState], verdict: int, as_json: bool) -> None:
 
 def main() -> int:
     """CLI entry point."""
-    parser = argparse.ArgumentParser(
-        description="Read-first reconciliation of a Glaux account across chains."
-    )
+    parser = argparse.ArgumentParser(description="Read-first reconciliation of a Glaux account across chains.")
     parser.add_argument("--account", required=True, help="the Glaux account address")
     parser.add_argument(
         "--rpc",
@@ -360,9 +399,7 @@ def main() -> int:
         metavar="NAME=URL",
         help="chain to inspect, repeatable",
     )
-    parser.add_argument(
-        "--router", help="expected router address (else compared across chains)"
-    )
+    parser.add_argument("--router", help="expected router address (else compared across chains)")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args()
 
@@ -370,12 +407,19 @@ def main() -> int:
 
     account = to_checksum_address(args.account)
     states: list[ChainState] = []
-    for spec in args.rpc:
-        name, _, url = spec.partition("=")
-        if not url:
-            parser.error(f"--rpc wants NAME=URL, got {spec!r}")
-        w3 = Web3(Web3.HTTPProvider(url))
-        states.append(inspect_chain(w3, name, account))
+    try:
+        for spec in args.rpc:
+            name, _, url = spec.partition("=")
+            if not url:
+                parser.error(f"--rpc wants NAME=URL, got {spec!r}")
+            w3 = Web3(Web3.HTTPProvider(url))
+            states.append(inspect_chain(w3, name, account))
+    except ReconciliationReadError as exc:
+        # A transport failure is unknown state, not a verdict: exit 3, distinct
+        # from the 0/1/2 verdict codes, so a network blip is never mistaken for
+        # "the implementation misreports its own state" (exit 2).
+        print(f"reconciliation aborted: {exc}", file=sys.stderr)
+        return 3
 
     verdict = compare(states, args.router)
     _report(states, verdict, args.as_json)

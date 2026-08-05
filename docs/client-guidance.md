@@ -534,7 +534,9 @@ nonce and a slot set that do not exist in storage. Per chain:
    never resolved in favour of the getter.
 
 `scripts/reconcile.py` implements exactly this order (exit codes: 0
-consistent, 1 chains diverge, 2 raw-vs-getter mismatch — 2 outranks 1), and
+consistent, 1 chains diverge, 2 raw-vs-getter mismatch — 2 outranks 1; 3 a
+chain could not be read at all — an RPC transport failure is unknown state,
+never a security verdict), and
 its storage arithmetic is pinned against the compiler by
 `test/StorageParity.t.sol` and `scripts/test_reconcile.py` over a shared
 committed fixture.
@@ -595,7 +597,11 @@ The SDK applies three layers:
 
 1. It pins the nonce getter and a raw-storage read to the same block and requires
    agreement: the Glaux header word for direct execution, and EntryPoint v0.7's
-   `nonceSequenceNumber[account][0]` word for ERC-4337.
+   `nonceSequenceNumber[account][0]` word for ERC-4337. `signUserOp` re-reads this
+   live nonce again at signing time rather than trusting the nonce carried in the
+   operation it is handed, and binds the signature to the chain the client is
+   connected to and to the canonical EntryPoint — the same chain binding the direct
+   path performs.
 2. `signExecution`, `buildUserOp`, and `signUserOp` refuse by default when
    `validUntil` is more than one hour ahead of the client's local clock. A longer
    operation requires an explicit `maxValidityWindowSeconds` override at every

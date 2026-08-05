@@ -4,13 +4,18 @@ import { ENTRYPOINT } from "../src/core/constants.js";
 import { buildBirthBlob } from "../src/birth/blob.js";
 import { submitBirth } from "../src/birth/submit.js";
 import { buildUserOp, signUserOp, submitUserOpDirect, type PackedUserOperation } from "../src/execute/userop.js";
-import { PaymasterNotConfiguredError, PaymasterUnavailableError, SelfFundingUnavailableError } from "../src/errors.js";
+import {
+  PaymasterNotConfiguredError,
+  PaymasterUnavailableError,
+  SelfFundingUnavailableError,
+  UserOpGasValueOutOfRangeError,
+} from "../src/errors.js";
 import { LocalP256Signer } from "../src/signers/p256.js";
 import { LocalSecp256k1Signer } from "../src/signers/secp256k1.js";
 import { clientsFor, spawnAnvil } from "./helpers/anvil.js";
 import { deployCanonical, deployEntryPoint, deployP256Oracle } from "./helpers/deploy.js";
 import { MockHttpError, startMock7677Server, type Mock7677ServerHandle } from "./helpers/mock7677.js";
-import { Erc7677Client } from "../src/gas/erc7677.js";
+import { Erc7677Client, applyPaymasterData } from "../src/gas/erc7677.js";
 import { GasPolicy, type GasFallbackEvent } from "../src/gas/policy.js";
 import { computeUserOpMaxCost } from "../src/gas/feeGuard.js";
 
@@ -382,4 +387,42 @@ describe("GasPolicy: no silent fallbacks", () => {
     },
     60_000,
   );
+});
+
+describe("paymaster response hardening", () => {
+  const PAYMASTER: Address = "0x9999999999999999999999999999999999999999";
+
+  it("refuses a paymaster response larger than the read cap instead of buffering it whole", async () => {
+    // ~400 KB of hex in the response, well past the 128 KiB read cap. A hostile
+    // paymaster that streams an unbounded body would otherwise be pulled entirely
+    // into memory; the client must refuse it as unavailable.
+    const oversized = `0x${"ab".repeat(200 * 1024)}` as Hex;
+    const server = await mockServer({
+      getPaymasterStubData: () => ({ paymaster: PAYMASTER, paymasterData: oversized }),
+    });
+    const client = new Erc7677Client(server.url);
+    await expect(
+      client.getPaymasterStubData({ op: stubOp(), entryPoint: ENTRYPOINT, chainId: 31337n }),
+    ).rejects.toThrow(PaymasterUnavailableError);
+  });
+
+  it("refuses a paymaster gas limit past the EntryPoint's uint120 ceiling before the quorum signs", () => {
+    const overCeiling = 1n << 120n; // exactly one past the uint120 max
+    const finalData = { paymaster: PAYMASTER, paymasterData: "0x" as Hex };
+
+    expect(() =>
+      applyPaymasterData(stubOp(), finalData, { paymasterVerificationGasLimit: overCeiling }),
+    ).toThrow(UserOpGasValueOutOfRangeError);
+    expect(() =>
+      applyPaymasterData(stubOp(), finalData, { paymasterPostOpGasLimit: overCeiling }),
+    ).toThrow(UserOpGasValueOutOfRangeError);
+
+    // Non-vacuity: an in-range decoration still succeeds and lands the paymaster
+    // address at the head of `paymasterAndData`.
+    const decorated = applyPaymasterData(stubOp(), finalData, {
+      paymasterVerificationGasLimit: 150_000n,
+      paymasterPostOpGasLimit: 50_000n,
+    });
+    expect(decorated.paymasterAndData.toLowerCase().startsWith(PAYMASTER.toLowerCase())).toBe(true);
+  });
 });

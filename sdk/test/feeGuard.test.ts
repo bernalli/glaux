@@ -270,14 +270,28 @@ describe("signUserOp enforcement", () => {
     let calls = 0;
     let feeHistoryCalls = 0;
     const client = {
+      // signUserOp now re-reads the connected chain id and the live EntryPoint
+      // nonce before signing. This stub answers both coherently — chain 31337
+      // and a live nonce of 0, matching every `signable()` op's own nonce — so a
+      // healthy operation reaches the fee assertions under test rather than
+      // failing earlier on a chain-id or nonce mismatch.
+      getChainId: async () => {
+        calls += 1;
+        return 31337;
+      },
       getBlockNumber: async () => {
         calls += 1;
         return 123n;
       },
-      readContract: async ({ args }: { args?: readonly number[] }) => {
+      readContract: async ({ functionName, args }: { functionName: string; args?: readonly number[] }) => {
         calls += 1;
+        if (functionName === "getNonce") return 0n;
         const signer = installedSlots[args![0]!]!;
         return [signer.verifierType, signer.keyData()];
+      },
+      getStorageAt: async () => {
+        calls += 1;
+        return `0x${"00".repeat(32)}` as Hex;
       },
       getFeeHistory: async () => {
         calls += 1;

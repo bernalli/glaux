@@ -19,8 +19,11 @@ import {
   type PackedUserOperation,
 } from "../src/execute/userop.js";
 import {
+  ChainIdMismatchError,
+  EntryPointMismatchError,
   ExecutionNonceMismatchError,
   ExecutionValidityWindowError,
+  OperationAlreadyExpiredError,
   OperationExpiredError,
   UserOpEventNotFoundError,
   UserOpExecutionFailedError,
@@ -114,6 +117,16 @@ function decodeUserOpSignature(signature: Hex): { validUntil: number; sigs: [Slo
  * behaviour is covered in `feeGuard.test.ts`.
  */
 const STUB_FEE_BASELINE = { baseFeePerGas: 1_000_000_000n, medianPriorityFeePerGas: 1_000_000_000n };
+
+/**
+ * A `validUntil` comfortably in the future — one hour ahead, inside the default
+ * local-clock ceiling. Used wherever a test needs a deadline that merely has to
+ * be VALID (a "don't care" placeholder that must still survive the local-clock
+ * validity checks `buildUserOp`/`signUserOp` now run before doing anything
+ * else), as opposed to a deliberately expired or beyond-ceiling value a
+ * specific test is asserting the refusal of.
+ */
+const futureValidUntil = (): number => Math.floor(Date.now() / 1000) + 3600;
 
 function stubUserOp(nonce: bigint, validUntil: number): PackedUserOperation {
   return {
@@ -226,12 +239,19 @@ describe("userop build/sign fail-closed guards", () => {
     const device = new LocalP256Signer(DEVICE_PK);
     const cloud = new LocalSecp256k1Signer(CLOUD_PK);
     const slots = [paper, device, cloud];
+    // signUserOp now re-reads the live EntryPoint nonce and the connected chain
+    // id before signing, so the stub answers those coherently: chain 31337, a
+    // live nonce of 0 (matching the op's own nonce), a raw storage word equal to
+    // that nonce, and the factor slots for the getSlot reads.
     const client = {
+      getChainId: async () => 31337,
       getBlockNumber: async () => 123n,
-      readContract: async ({ args }: { args?: readonly number[] }) => {
+      readContract: async ({ functionName, args }: { functionName: string; args?: readonly number[] }) => {
+        if (functionName === "getNonce") return 0n;
         const signer = slots[args![0]!]!;
         return [signer.verifierType, signer.keyData()];
       },
+      getStorageAt: async () => `0x${"00".repeat(32)}` as Hex,
     } as unknown as PublicClient;
     const validUntil = Math.floor(Date.now() / 1000) + DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS * 2;
 
@@ -294,33 +314,157 @@ describe("userop build/sign fail-closed guards", () => {
     expect(requestsIssued).toBe(0);
   });
 
-  it("checks an independent expectedNonce again at UserOperation signing time", async () => {
+  it("refuses an already-expired UserOperation deadline before any RPC call", async () => {
     let requestsIssued = 0;
     const client = {
       getBlockNumber: async () => {
         requestsIssued += 1;
         return 123n;
       },
+      getChainId: async () => {
+        requestsIssued += 1;
+        return 31337;
+      },
+      readContract: async () => {
+        requestsIssued += 1;
+        return 0n;
+      },
+      getStorageAt: async () => {
+        requestsIssued += 1;
+        return `0x${"00".repeat(32)}` as Hex;
+      },
+    } as unknown as PublicClient;
+
+    // A deadline already at or behind the local clock (1 == 1970) is dead on
+    // arrival at the contract, so signUserOp refuses it up front — before the
+    // chain-id, nonce, or slot reads it would otherwise issue — spending neither
+    // a quorum signature nor a round trip on it.
+    await expect(
+      signUserOp({
+        op: stubUserOp(0n, 1),
+        entryPoint: ENTRYPOINT,
+        chainId: 31337n,
+        client,
+        maxCostWei: computeUserOpMaxCost(stubUserOp(0n, 1)),
+        signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
+      }),
+    ).rejects.toBeInstanceOf(OperationAlreadyExpiredError);
+    expect(requestsIssued).toBe(0);
+  });
+
+  it("refuses to sign for a non-canonical EntryPoint before a signature exists", async () => {
+    // Only the canonical EntryPoint can ever call the account's validateUserOp,
+    // so a signature folded over any other EntryPoint is one the account can
+    // never use. The stub throws if signing ever reaches a slot read, proving the
+    // refusal precedes the signature rather than merely happening to error later.
+    const client = {
+      getChainId: async () => 31337,
+      getBlockNumber: async () => 123n,
+      readContract: async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getNonce") return 0n;
+        throw new Error("unexpected slot read: signing must be refused before slot reads");
+      },
+      getStorageAt: async () => `0x${"00".repeat(32)}` as Hex,
     } as unknown as PublicClient;
 
     await expect(
       signUserOp({
-        op: stubUserOp(1n, 1),
-        entryPoint: ENTRYPOINT,
+        op: stubUserOp(0n, futureValidUntil()),
+        entryPoint: "0x000000000000000000000000000000000000dEaD",
         chainId: 31337n,
         client,
-        expectedNonce: 0n,
-        maxCostWei: computeUserOpMaxCost(stubUserOp(1n, 1)),
+        maxCostWei: computeUserOpMaxCost(stubUserOp(0n, futureValidUntil())),
+        feeBaseline: STUB_FEE_BASELINE,
+        signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
+      }),
+    ).rejects.toBeInstanceOf(EntryPointMismatchError);
+  });
+
+  it("refuses to sign for a chainId other than the chain the client is on", async () => {
+    // The signature is folded over chainId through getUserOpHash; signUserOp
+    // binds it to the chain the client is actually connected to, as the direct
+    // path binds its own chain id. A caller claiming a different chain is refused.
+    const client = {
+      getChainId: async () => 31337,
+      getBlockNumber: async () => 123n,
+      readContract: async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getNonce") return 0n;
+        throw new Error("unexpected slot read: signing must be refused before slot reads");
+      },
+      getStorageAt: async () => `0x${"00".repeat(32)}` as Hex,
+    } as unknown as PublicClient;
+
+    await expect(
+      signUserOp({
+        op: stubUserOp(0n, futureValidUntil()),
+        entryPoint: ENTRYPOINT,
+        chainId: 1n, // caller claims mainnet; the client answers 31337
+        client,
+        maxCostWei: computeUserOpMaxCost(stubUserOp(0n, futureValidUntil())),
+        feeBaseline: STUB_FEE_BASELINE,
+        signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
+      }),
+    ).rejects.toBeInstanceOf(ChainIdMismatchError);
+  });
+
+  it("authenticates op.nonce and an independent expectedNonce against the live EntryPoint nonce at signing time", async () => {
+    // A stub whose live EntryPoint nonce is 0: it answers the chain-id read and
+    // the pinned-block getNonce/raw-storage pair signUserOp now re-reads before
+    // it will produce any signature. The op's own nonce is never trusted over
+    // this freshly re-read live value, and an independently sourced
+    // expectedNonce is authenticated against it too.
+    const liveNonceZeroClient = {
+      getChainId: async () => 31337,
+      getBlockNumber: async () => 123n,
+      readContract: async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getNonce") return 0n;
+        throw new Error("unexpected slot read: signing must be refused before slot reads");
+      },
+      getStorageAt: async () => `0x${"00".repeat(32)}` as Hex,
+    } as unknown as PublicClient;
+
+    // (i) op.nonce agrees with the live nonce (0), but an independently sourced
+    // expectedNonce (1) does not: the caller's own view is checked against the
+    // live EntryPoint value and the disagreement is refused as "caller expectation".
+    await expect(
+      signUserOp({
+        op: stubUserOp(0n, futureValidUntil()),
+        entryPoint: ENTRYPOINT,
+        chainId: 31337n,
+        client: liveNonceZeroClient,
+        expectedNonce: 1n,
+        maxCostWei: computeUserOpMaxCost(stubUserOp(0n, futureValidUntil())),
+        feeBaseline: STUB_FEE_BASELINE,
         signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
       }),
     ).rejects.toMatchObject({
       name: "ExecutionNonceMismatchError",
       path: "erc4337",
       source: "caller expectation",
+      expected: 1n,
+      actual: 0n,
+    } satisfies Partial<ExecutionNonceMismatchError>);
+
+    // (ii) op.nonce (1) disagrees with the live EntryPoint nonce (0): the nonce
+    // the operation carries is never trusted over the re-read live value, so the
+    // disagreement is refused as "entrypoint".
+    await expect(
+      signUserOp({
+        op: stubUserOp(1n, futureValidUntil()),
+        entryPoint: ENTRYPOINT,
+        chainId: 31337n,
+        client: liveNonceZeroClient,
+        maxCostWei: computeUserOpMaxCost(stubUserOp(1n, futureValidUntil())),
+        feeBaseline: STUB_FEE_BASELINE,
+        signers: [new LocalSecp256k1Signer(PAPER_PK), new LocalSecp256k1Signer(CLOUD_PK)],
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionNonceMismatchError",
+      path: "erc4337",
+      source: "entrypoint",
       expected: 0n,
       actual: 1n,
     } satisfies Partial<ExecutionNonceMismatchError>);
-    expect(requestsIssued).toBe(0);
   });
 
   it("rejects an EntryPoint future-nonce getter lie that disagrees with the same-block raw mapping", async () => {
@@ -361,7 +505,7 @@ describe("userop build/sign fail-closed guards", () => {
         account: STUB_ACCOUNT,
         client: stubClient,
         calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
-        validUntil: 1,
+        validUntil: futureValidUntil(),
       }),
     ).rejects.toMatchObject({
       name: "ExecutionNonceMismatchError",
@@ -389,7 +533,7 @@ describe("userop build/sign fail-closed guards", () => {
         client: stubClient,
         expectedNonce: 0n,
         calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
-        validUntil: 1,
+        validUntil: futureValidUntil(),
       }),
     ).rejects.toMatchObject({
       name: "ExecutionNonceMismatchError",
@@ -408,6 +552,7 @@ describe("userop build/sign fail-closed guards", () => {
     const slotReadBlocks: bigint[] = [];
     const snapshotCacheTimes: number[] = [];
     const stubClient = {
+      getChainId: async () => 31337,
       getBlockNumber: async ({ cacheTime }: { cacheTime?: number } = {}) => {
         snapshotCacheTimes.push(cacheTime!);
         return 123n;
@@ -437,7 +582,7 @@ describe("userop build/sign fail-closed guards", () => {
       account: STUB_ACCOUNT,
       client: stubClient,
       calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
-      validUntil: 1,
+      validUntil: futureValidUntil(),
     });
 
     await signUserOp({
@@ -454,7 +599,11 @@ describe("userop build/sign fail-closed guards", () => {
     });
 
     expect(slotReadBlocks).toEqual([123n, 123n, 123n]);
-    expect(snapshotCacheTimes).toEqual([0, 0]);
+    // Three uncached snapshot reads, each with cacheTime 0: buildUserOp's live
+    // nonce read, signUserOp's own re-read of that live nonce, and signUserOp's
+    // fresh factor-slot snapshot. Every one must bypass viem's block-number
+    // cache — a cached height could predate a just-observed birth.
+    expect(snapshotCacheTimes).toEqual([0, 0, 0]);
   });
 
   it("refuses a buffered EntryPoint gas field above uint120 before ABI encoding", async () => {
@@ -473,7 +622,7 @@ describe("userop build/sign fail-closed guards", () => {
         account: STUB_ACCOUNT,
         client: stubClient,
         calls: [{ to: FRESH_RECIPIENT, value: 0n, data: "0x" }],
-        validUntil: 1,
+        validUntil: futureValidUntil(),
       }),
     ).rejects.toBeInstanceOf(UserOpGasValueOutOfRangeError);
   });
@@ -670,7 +819,7 @@ describe("userop e2e: self-funded ERC-4337 path against a real EntryPoint v0.7",
   );
 
   it(
-    "an expired validUntil is genuinely signed and submitted, and the EntryPoint's own AA22 rejects it",
+    "an already-expired validUntil is refused by the SDK before a signature or relayer gas is spent",
     async () => {
       const { url } = await spawnAnvil();
       const { client, test } = clientsFor(url);
@@ -679,31 +828,38 @@ describe("userop e2e: self-funded ERC-4337 path against a real EntryPoint v0.7",
       const pastValidUntil = 1; // 1970-01-01T00:00:01Z: expired on every real chain.
       const calls = [{ to: FRESH_RECIPIENT, value: parseEther("0.01"), data: "0x" as Hex }];
 
-      const op = await buildUserOp({ account: born.account, client, calls, validUntil: pastValidUntil });
-      const chainId = BigInt(await client.getChainId());
-      const signed = await signUserOp({
-        op,
-        entryPoint: ENTRYPOINT,
-        chainId,
+      // An operation whose deadline is already at or behind the local clock is
+      // dead on arrival at the EntryPoint (it would be rejected with "AA22
+      // expired or not due"). The SDK now refuses it CLIENT-SIDE — earlier and
+      // strictly stronger than that on-chain check — so a quorum signature and
+      // relayer gas are never spent on a transaction guaranteed to revert. The
+      // build choke point refuses to produce the operation at all against a
+      // real, etched EntryPoint and born account.
+      await expect(
+        buildUserOp({ account: born.account, client, calls, validUntil: pastValidUntil }),
+      ).rejects.toBeInstanceOf(OperationAlreadyExpiredError);
+
+      // The signing choke point refuses it too: an operation that reached
+      // signUserOp with an already-expired deadline (however it was built) is
+      // rejected before any signature over it can exist. Build a valid op first,
+      // then downgrade its deadline to the expired value handed to signUserOp.
+      const validOp = await buildUserOp({
+        account: born.account,
         client,
-        maxCostWei: computeUserOpMaxCost(op),
-        signers: [born.paper, born.cloud],
+        calls,
+        validUntil: Math.floor(Date.now() / 1000) + 3600,
       });
-
-      let thrown: unknown;
-      try {
-        await submitUserOpDirect(client, RELAYER_PK, BENEFICIARY, signed);
-      } catch (error) {
-        thrown = error;
-      }
-
-      expect(thrown).toBeInstanceOf(UserOpFailedError);
-      const error = thrown as UserOpFailedError;
-      // The genuine EntryPoint diagnostic, not merely "something threw": a
-      // validly-signed but time-expired operation is rejected with the
-      // EntryPoint's own "AA22 expired or not due", distinct from "AA24
-      // signature error" (a bad/tampered quorum) asserted in the sibling test.
-      expect(error.reason).toBe("AA22 expired or not due");
+      const chainId = BigInt(await client.getChainId());
+      await expect(
+        signUserOp({
+          op: { ...validOp, validUntil: pastValidUntil },
+          entryPoint: ENTRYPOINT,
+          chainId,
+          client,
+          maxCostWei: computeUserOpMaxCost(validOp),
+          signers: [born.paper, born.cloud],
+        }),
+      ).rejects.toBeInstanceOf(OperationAlreadyExpiredError);
     },
     60_000,
   );

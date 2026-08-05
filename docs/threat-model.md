@@ -780,7 +780,10 @@ Three of the residuals above will not be fixed. They were reviewed one by one on
 2026-08-05 and accepted as properties of the design, in writing, so that nobody
 later reads them as work still owed. The distinction that matters: residual 1
 and the fee ceiling of residual 19 were *defects* and were closed; these three
-are what the design is, and closing them would mean designing something else.
+are what the design is, and closing them would mean designing something else. A
+fourth item below — A2, pinning the EntryPoint code hash — is not a design
+property but a hardening that was considered and declined on a
+cost-versus-threat basis.
 
 **Residual 2 — two compromised factors is full control.** This is the definition
 of a 2-of-3 threshold, not a gap in it. A contract that could tell a legitimate
@@ -807,6 +810,19 @@ optional in `client-guidance.md`: confirm a birth and source an `expectedNonce`
 from a second, independently operated endpoint, and note that the guards which
 do not depend on any endpoint — the absolute `maxCostWei` cap, the local clock
 bounding `validUntil` — keep holding against a fully hostile one.
+
+**A2 — the EntryPoint code hash is not pinned.** Verifying `EXTCODEHASH` of the
+EntryPoint on every ERC-4337 operation was considered and declined. The only
+threat it addresses is a chain whose EntryPoint, at the canonical address, has
+been replaced with hostile code — but a chain manipulated to that depth already
+controls `EXTCODEHASH` itself and the execution, so the check would verify a
+value the attacker supplies. Pinning would cost gas on every 4337 operation,
+forever, on an immutable contract, and — because the pinned hash would enter the
+signed code hash and the CREATE2 address — force a redeploy that invalidates
+every unspent blob. The account already refuses any caller other than the
+immutable EntryPoint it was deployed against; the marginal defense does not
+justify a permanent cost against a threat model in which, at that depth, nothing
+holds. Accepted.
 
 ## Formerly out of scope, shipped in Phase 2
 
