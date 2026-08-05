@@ -270,15 +270,22 @@ def compare(states: list[ChainState], expected_router: str | None) -> int:
     pointer and its live code hash, and the router.
 
     A chain with NO code at the account is excluded from the comparison: the
-    account is simply not born there yet, which is legitimate. A chain whose
-    account carries FOREIGN code is not excluded -- it has been delegated
-    somewhere that is not this router, and dropping it would answer
-    "consistent" for an account that is a Glaux account on one chain and
-    something else entirely on another. Foreign code at the account address is
-    a finding on its own terms, with nothing needed to contradict it: reaching
-    that state at all means something re-delegated the account, and a lone
-    observation of it is exactly the case an operator must not read as a clean
-    bill of health."""
+    account is simply not born there yet, which is legitimate.
+
+    FOREIGN code is different, and it is narrower than it sounds: a
+    re-delegation does not land here, because every EIP-7702 delegation --
+    to this router or to anything else -- presents as the 23-byte designator
+    and is read as an ACTIVE chain whose router is that target. What reaches
+    the foreign branch is a plain contract sitting at the account address:
+    the wrong address, or an address that was never this account. That is
+    never a state to average away, so it diverges with nothing needed to
+    contradict it.
+
+    Note what this does NOT catch on its own: a single chain re-delegated to a
+    hostile router is an active chain, and with one chain and no
+    ``expected_router`` there is nothing to compare it against. Single-chain
+    reconciliation is only meaningful with ``--router``; catching a
+    re-delegation otherwise needs a second chain to disagree with."""
     if not states:
         raise ValueError("reconciliation requires at least one observed chain")
     exit_code = 0

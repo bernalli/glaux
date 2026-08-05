@@ -180,7 +180,20 @@ def main() -> None:
         action="store_true",
         help="print only the challenge, for signing by an external device",
     )
-    args = parser.parse_args()
+    # Not `parse_args`: its "unrecognized arguments: --key 0x..." message prints
+    # the VALUE to stderr, and the value most likely to turn up here is a private
+    # key typed against the removed `--key` / `--p256-key` flags. Report the flag
+    # names only, so a mistake does not persist the key in a terminal or a log.
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        flags = sorted(
+            {token.split("=", 1)[0] for token in unknown if token.startswith("-")}
+        )
+        named = " ".join(flags) if flags else "(positional arguments)"
+        sys.exit(
+            f"unrecognized argument(s): {named} — the factor key is read from "
+            f"{FACTOR_KEY_ENV} and is never accepted on the command line"
+        )
 
     # Read once, demanded only where it is actually needed: a P-256 factor's
     # challenge is derived from its PUBLIC coordinates, so --digest-only asks

@@ -594,9 +594,9 @@ describe("reconcile", () => {
 
   it("reports divergent for a lone chain delegated to foreign code, with nothing to contradict it", async () => {
     // An operator reconciling a single chain reads "consistent" as all clean.
-    // Foreign code at the account address is the opposite: the account was
-    // re-delegated, which under a destroyed birth key is the worst state the
-    // model has. Nothing else needs observing for that to be true.
+    // A plain contract at the account address is not clean: the address is
+    // wrong, or it was never this account. Nothing else needs observing for
+    // that to be worth stopping on.
     const result = await reconcile(
       [{ name: "delegated-elsewhere", client: clientWithAccountCode("0x60806040") }],
       CANDIDATE_ACCOUNT,
@@ -607,7 +607,10 @@ describe("reconcile", () => {
     expect(result.verdict).toBe("divergent");
   });
 
-  it("reports divergent for a --router expectation against a chain whose code is foreign", async () => {
+  // The expectedRouter clause is inert here: a foreign chain is never active, so
+  // `active.some(...)` iterates nothing. Divergence comes from the foreign clause
+  // alone — this pins that passing a router does not soften it.
+  it("reports divergent for a chain whose code is foreign even when a router is expected", async () => {
     const result = await reconcile([{ name: "delegated-elsewhere", client: clientWithAccountCode("0x60806040") }], CANDIDATE_ACCOUNT, {
       router: CODELESS_ROUTER,
     });

@@ -104,9 +104,12 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     being replayable on every chain, which is Glaux birth's core invariant.
     ``nonce == 0`` for the same reason: EIP-7702 validates the tuple's nonce
     against the authority's CURRENT account nonce, and a birth key never sends
-    a transaction of its own, so every chain sees it at 0 forever. A tuple
-    signed for any other nonce applies, at best, on the single chain that
-    happens to match -- and elsewhere the delegation is silently skipped.
+    a transaction of its own, so every chain the blob has not reached yet sees
+    it at 0. Applying the tuple bumps that nonce to 1, which is what makes the
+    blob single-use per chain while still replayable everywhere it has not
+    landed. A tuple signed for any other nonce applies, at best, on the single
+    chain that happens to match -- and elsewhere the delegation is silently
+    skipped.
     """
     authorization = blob["authorization"]
     account = to_checksum_address(blob["account"])

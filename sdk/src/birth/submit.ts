@@ -100,11 +100,14 @@ async function assertCanonicalBlob(blob: BirthBlob): Promise<void> {
   // EIP-7702 validates the tuple's nonce against the authority's CURRENT
   // account nonce, so only nonce 0 is universally replayable: a birth key is
   // generated for one blob and never sends a transaction of its own, which
-  // means every chain sees it at nonce 0 forever. A tuple signed for any other
-  // nonce is broadcastable, at best, on the single chain that happens to match
-  // — the opposite of the chain-agnostic blob this whole design rests on, and
-  // silently so, since the delegation would simply be skipped where it does
-  // not match. `../birth/blob.ts` writes 0; an imported blob must be checked.
+  // means every chain it has not reached yet sees it at nonce 0. Applying the
+  // tuple bumps that authority's nonce to 1, which is exactly what makes the
+  // blob single-use per chain while still replayable on every chain it has not
+  // reached. A tuple signed for any other nonce is broadcastable, at best, on
+  // the single chain that happens to match — the opposite of the chain-agnostic
+  // blob this whole design rests on, and silently so, since the delegation is
+  // simply skipped where it does not match. `./blob.ts` writes 0; an imported
+  // blob must be checked.
   if (blob.authorization.nonce !== 0) {
     throw new InvalidBirthBlobError("authorization nonce");
   }

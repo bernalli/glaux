@@ -429,10 +429,9 @@ def test_a_lone_foreign_code_chain_is_exit_one() -> None:
     """One observation of foreign code, with nothing to contradict it, still diverges.
 
     An operator who reconciles a single chain and gets exit 0 reads it as "all
-    clean". Foreign code at the account address is the opposite of clean: it
-    means the account was re-delegated, which under a destroyed birth key is the
-    worst state the model has. Nothing else needs to be observed for that to be
-    true.
+    clean". A plain contract sitting at the account address is not clean: the
+    address is wrong, or it was never this account. Nothing else needs to be
+    observed for that to be worth stopping on.
     """
     foreign = inspect_chain(
         _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
@@ -456,7 +455,11 @@ def test_a_lone_chain_with_no_code_is_still_only_not_yet_active() -> None:
     assert compare([empty], None) == 0
 
 
-def test_router_mismatch_on_a_foreign_code_chain_is_exit_one() -> None:
+def test_a_foreign_code_chain_diverges_even_when_a_router_is_expected() -> None:
+    """The `--router` clause is inert here — a foreign chain is never active, so
+    `any(s.router != want for s in active)` iterates an empty list. Exit 1 comes
+    from the foreign clause alone; this pins that passing `--router` does not
+    somehow soften it."""
     foreign = inspect_chain(
         _AccountCodeWeb3(bytes.fromhex("60806040")), "delegated-elsewhere", ACCOUNT
     )

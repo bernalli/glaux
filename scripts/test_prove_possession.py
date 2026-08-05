@@ -133,7 +133,12 @@ def test_a_key_on_the_command_line_is_refused_by_the_parser(
     with pytest.raises(SystemExit) as exit_info:
         main()
 
-    assert exit_info.value.code == 2  # argparse usage error
+    # The flag NAME may be reported; the value must not be — argparse's own
+    # "unrecognized arguments" message would print the key straight to stderr.
+    message = str(exit_info.value)
+    assert "0xdeadbeef" not in message
+    assert "--key" in message
+    assert FACTOR_KEY_ENV in message
 
 
 def test_digest_only_needs_no_key_at_all(

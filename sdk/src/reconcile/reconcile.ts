@@ -512,13 +512,21 @@ export type ReconcileVerdict = "consistent" | "divergent" | "unreadable";
  * tool's `exit_code < 2` guards.
  *
  * A chain with NO code at the account is excluded from the comparison: the
- * account is simply not born there yet, which is legitimate. A chain whose
- * account carries FOREIGN code is not excluded -- it has been delegated
- * somewhere that is not this router, and dropping it would answer
- * `"consistent"` for an account that is a Glaux account on one chain and
- * something else entirely on another. It diverges as soon as there is
- * anything to contradict: an active Glaux chain to disagree with, or an
- * `expectedRouter` it cannot possibly satisfy.
+ * account is simply not born there yet, which is legitimate.
+ *
+ * FOREIGN code is different, and narrower than it sounds: a re-delegation does
+ * not land here, because every EIP-7702 delegation — to this router or to
+ * anything else — presents as the 23-byte designator and is read as an ACTIVE
+ * chain whose router is that target. What reaches the foreign branch is a plain
+ * contract sitting at the account address: the wrong address, or an address that
+ * was never this account. That is never a state to average away, so it diverges
+ * with nothing needed to contradict it.
+ *
+ * Note what this does NOT catch on its own: a single chain re-delegated to a
+ * hostile router is an active chain, and with one chain and no `expectedRouter`
+ * there is nothing to compare it against. Single-chain reconciliation is only
+ * meaningful with an `expectedRouter`; catching a re-delegation otherwise needs
+ * a second chain to disagree with.
  */
 export function compareChainStates(states: readonly ChainState[], expectedRouter?: Address): ReconcileVerdict {
   if (states.length === 0) {
@@ -539,9 +547,8 @@ export function compareChainStates(states: readonly ChainState[], expectedRouter
     }
   }
 
-  // Foreign code at the account address needs nothing to contradict it: reaching
-  // that state means something re-delegated the account, so a lone observation of
-  // it must not read as a clean bill of health either.
+  // A plain contract at the account address (never a delegation designator —
+  // those read as active) needs nothing to contradict it.
   if (verdict !== "unreadable" && foreign.length > 0) {
     verdict = "divergent";
   }
