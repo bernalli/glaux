@@ -192,17 +192,25 @@ CAND=$($PY -c "import json;print(json.load(open('$WORK/blob2.json'))['account'])
 # The submitter refuses outright — non-zero exit, reason on stderr, nothing on
 # stdout — so the refusal is read from its exit code rather than from a result
 # it deliberately no longer prints.
+# The relayer's PENDING nonce is the only thing that distinguishes "never
+# broadcast" from "broadcast and not yet mined". Empty code at the candidate
+# address proves neither: a transaction sitting in the pool would show exactly
+# the same, and could still delegate the address later.
+RELAYER_ADDR=$(cast wallet address --private-key "$DEPLOYER_PK")
+NONCE_BEFORE=$(cast nonce "$RELAYER_ADDR" --block pending --rpc-url "$RPC_B")
 set +e
 $PY scripts/submit_birth.py --rpc "$RPC_B" --blob "$WORK/blob2.json"
 birth_rc=$?
 set -e
 [[ "$birth_rc" != "0" ]] || fail "birth SUCCEEDED without a verifier"
-# The refusal now happens BEFORE broadcasting: the node cannot price a birth
-# that would revert, and a guessed gas limit would send it anyway. That matters
-# more than the exit code, because EIP-7702 applies the authorization even when
+# The refusal happens BEFORE broadcasting: the node cannot price a birth that
+# would revert, and a guessed gas limit would send it anyway. That matters more
+# than the exit code, because EIP-7702 applies the authorization even when
 # `initialize` reverts — a broadcast here would leave this address delegated,
-# unborn and, being rootless, unreachable forever. So assert the address was
-# never touched at all.
+# unborn and, being rootless, unreachable forever.
+NONCE_AFTER=$(cast nonce "$RELAYER_ADDR" --block pending --rpc-url "$RPC_B")
+[[ "$NONCE_BEFORE" == "$NONCE_AFTER" ]] \
+  || fail "the relayer's pending nonce moved ($NONCE_BEFORE -> $NONCE_AFTER): a birth transaction WAS broadcast on the verifier-less chain"
 [[ "$(cast code "$CAND" --rpc-url "$RPC_B")" == "0x" ]] \
   || fail "candidate $CAND was delegated on the verifier-less chain: the refusal came too late"
 # And prove the refusal is about the missing verifier rather than about a blob
@@ -212,7 +220,7 @@ set -e
 $PY scripts/submit_birth.py --rpc "$RPC_A" --blob "$WORK/blob2.json" >/dev/null \
   || fail "the refusal candidate could not be born on the healthy chain either — the blob is at fault, not the verifier"
 [[ "$(cast code "$CAND" --rpc-url "$RPC_A")" != "0x" ]] || fail "candidate not delegated on chain A"
-echo "refused before broadcast (submitter exit $birth_rc), address untouched on the verifier-less chain, same blob born on the healthy one"
+echo "refused before broadcast (submitter exit $birth_rc, relayer pending nonce unmoved at $NONCE_AFTER), address untouched, same blob born on the healthy chain"
 # restore, for hygiene, in case the anvils outlive us
 cast rpc anvil_setCode 0x0000000000000000000000000000000000000100 "$VERIFIER_CODE" --rpc-url "$RPC_B" >/dev/null
 
