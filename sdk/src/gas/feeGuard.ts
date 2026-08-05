@@ -3,6 +3,8 @@ import type { PackedUserOperation } from "../execute/userop.js";
 import {
   FeeBaselineReadError,
   FeeExceedsBaselineError,
+  InvalidCostCapError,
+  MalformedPackedWordError,
   MalformedPaymasterFieldError,
   UserOpCostExceedsCapError,
 } from "../errors.js";
@@ -73,24 +75,39 @@ export async function fetchFeeBaseline(client: PublicClient): Promise<FeeBaselin
   }
 
   const { baseFeePerGas, reward } = (history ?? {}) as { baseFeePerGas?: unknown; reward?: unknown };
-  if (!Array.isArray(baseFeePerGas) || baseFeePerGas.length === 0 || !baseFeePerGas.every(isNonNegativeBigInt)) {
+  if (!Array.isArray(baseFeePerGas) || !baseFeePerGas.every(isNonNegativeBigInt)) {
     throw new FeeBaselineReadError("baseFeePerGas");
   }
-  if (!Array.isArray(reward) || reward.length === 0) {
+  if (!Array.isArray(reward)) {
     throw new FeeBaselineReadError("reward");
+  }
+
+  // Shape, not merely presence. `eth_feeHistory` over N blocks returns N reward
+  // rows and N+1 base fees — the extra one being the pending block's, which is
+  // the only entry this baseline wants. A response that does not hold that
+  // relation is not a fee history this code can read: taking its last base fee
+  // would silently use a MINED block's fee as the next block's, understating
+  // the lane, which is the direction a lying endpoint benefits from. Fewer
+  // blocks than requested is legitimate (a young chain, a pruning node); an
+  // inconsistent shape is not.
+  const blockCount = reward.length;
+  if (blockCount === 0 || blockCount > BASELINE_BLOCK_COUNT) {
+    throw new FeeBaselineReadError("reward");
+  }
+  if (baseFeePerGas.length !== blockCount + 1) {
+    throw new FeeBaselineReadError("baseFeePerGas");
   }
 
   const perBlockTips: bigint[] = [];
   for (const blockRewards of reward) {
-    if (!Array.isArray(blockRewards) || !isNonNegativeBigInt(blockRewards[0])) {
+    // Exactly one percentile was requested, so exactly one is expected back.
+    if (!Array.isArray(blockRewards) || blockRewards.length !== 1 || !isNonNegativeBigInt(blockRewards[0])) {
       throw new FeeBaselineReadError("reward");
     }
     perBlockTips.push(blockRewards[0]);
   }
 
   return {
-    // `eth_feeHistory` returns `blockCount + 1` base fees: the extra trailing
-    // entry is the pending block's, which is what this operation will pay.
     baseFeePerGas: baseFeePerGas[baseFeePerGas.length - 1]!,
     medianPriorityFeePerGas: medianOf(perBlockTips),
   };
@@ -121,14 +138,25 @@ export function assertFeeWithinBaseline(
   if (maxFeePerGas > allowed) throw new FeeExceedsBaselineError(maxFeePerGas, allowed);
 }
 
+/**
+ * Requires a packed word to be the full 32 bytes before it is read as a number.
+ * See {@link MalformedPackedWordError} for why a short word is not merely
+ * unusual but ambiguous.
+ */
+function requirePackedWord(field: string, word: Hex): Hex {
+  const length = size(word);
+  if (length !== 32) throw new MalformedPackedWordError(field, length);
+  return word;
+}
+
 /** The `maxFeePerGas` packed into an operation's `gasFees` word. */
 export function userOpMaxFeePerGas(op: PackedUserOperation): bigint {
-  return unpackGasFees(op.gasFees).maxFeePerGas;
+  return unpackGasFees(requirePackedWord("gasFees", op.gasFees)).maxFeePerGas;
 }
 
 /**
- * The paymaster's own two gas limits, which the account still underwrites in
- * the EntryPoint's required prefund.
+ * The paymaster's own two gas limits, which the EntryPoint's required prefund
+ * covers alongside the account's.
  *
  * @throws {MalformedPaymasterFieldError} if the field is non-empty but cannot
  * carry the v0.7 header — pricing an unparsable paymaster field as free would
@@ -142,26 +170,44 @@ function paymasterGas(paymasterAndData: Hex): bigint {
 }
 
 /**
- * The most an operation's signature can cost its account: ERC-4337 v0.7's own
- * required-prefund formula (`EntryPoint._getRequiredPrefund`), every gas
- * dimension priced at `maxFeePerGas`.
+ * The maximum native-gas prefund an operation authorizes: ERC-4337 v0.7's own
+ * `EntryPoint._getRequiredPrefund`, every gas dimension priced at
+ * `maxFeePerGas`.
  *
- * This is deliberately the worst case and not the expected cost. A signature
- * does not authorize what the operation will probably use — it authorizes what
- * the EntryPoint may charge, and unspent gas comes back only after the fact.
- * The cap has to bound the authorization, not the estimate.
+ * Deliberately the worst case, not the expected cost. A signature does not
+ * authorize what the operation will probably use — it authorizes what the
+ * EntryPoint may collect, and the unspent remainder returns only afterwards.
+ *
+ * Who pays it depends on the operation: with no paymaster the EntryPoint takes
+ * it from the ACCOUNT's deposit or native balance; with a paymaster set it
+ * comes from the PAYMASTER's deposit instead. Both are worth bounding — a
+ * sponsored operation is still one the quorum authorized, and a paymaster with
+ * a zero address in an otherwise well-formed field puts the whole amount back
+ * on the account — but this bounds the authorization, not necessarily a debit
+ * to the account.
  */
 export function computeUserOpMaxCost(op: PackedUserOperation): bigint {
-  const { verificationGasLimit, callGasLimit } = unpackAccountGasLimits(op.accountGasLimits);
+  const { verificationGasLimit, callGasLimit } = unpackAccountGasLimits(
+    requirePackedWord("accountGasLimits", op.accountGasLimits),
+  );
   const totalGas = verificationGasLimit + callGasLimit + op.preVerificationGas + paymasterGas(op.paymasterAndData);
   return totalGas * userOpMaxFeePerGas(op);
 }
 
 /**
- * @throws {UserOpCostExceedsCapError} if the operation could charge the
- * account more than `maxCostWei`.
+ * @throws {InvalidCostCapError} if `maxCostWei` is not a non-negative bigint.
+ * The type system marks it required, which stops nothing at runtime: a
+ * JavaScript caller that omits it hands over `undefined`, and
+ * `cost > undefined` is `false` — the comparison quietly succeeds and the
+ * operation is signed with no bound at all. The one parameter whose whole
+ * purpose is to be mandatory cannot be left to the compiler.
+ * @throws {UserOpCostExceedsCapError} if the operation authorizes more than
+ * `maxCostWei`.
  */
 export function assertUserOpCost(op: PackedUserOperation, maxCostWei: bigint): void {
+  if (typeof maxCostWei !== "bigint" || maxCostWei < 0n) {
+    throw new InvalidCostCapError(maxCostWei);
+  }
   const cost = computeUserOpMaxCost(op);
   if (cost > maxCostWei) throw new UserOpCostExceedsCapError(cost, maxCostWei);
 }

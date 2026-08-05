@@ -19,12 +19,12 @@ const RELAYER = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2f
 
 const BLOB: BirthBlob = {
   account: ACCOUNT,
-  router: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
+  router: "0x3ccF1cc0F702C084B31e691e057d8742ADF35790",
   implementation: "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d",
   expectedCodeHash: IMPL_CODE_HASH,
   authorization: {
     chainId: 0,
-    address: "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9",
+    address: "0x3ccF1cc0F702C084B31e691e057d8742ADF35790",
     nonce: 0,
     yParity: 0,
     r: "0xd85ba67a8ce9cd387b44acf700176415ced15a38159594775e25cbcbfb46a0be",

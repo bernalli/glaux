@@ -10,7 +10,7 @@ import {
 } from "../src/core/constants.js";
 
 it("matches every canonical Glaux constant", () => {
-  expect(ROUTER).toBe("0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9");
+  expect(ROUTER).toBe("0x3ccF1cc0F702C084B31e691e057d8742ADF35790");
   expect(IMPL).toBe("0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d");
   expect(CREATE2_DEPLOYER).toBe("0x4e59b44847b379578588920cA78FbF26c0B4956C");
   expect(ENTRYPOINT).toBe("0x0000000071727De22E5E9d8BAf0edAc6f37da032");

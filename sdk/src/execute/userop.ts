@@ -500,7 +500,7 @@ export interface SignUserOpParams {
    * useful, but it lets one endpoint both propose the fee and vouch for it.
    */
   readonly feeBaseline?: FeeBaseline;
-  /** How far above the baseline lane a fee may sit; defaults to {@link DEFAULT_FEE_SANITY_MULTIPLE}. */
+  /** How far above the baseline lane a fee may sit; defaults to `DEFAULT_FEE_SANITY_MULTIPLE` (`../gas/feeGuard.js`). */
   readonly feeSanityMultiple?: bigint;
   /** Optional independently obtained nonce, checked before live slot reads. */
   readonly expectedNonce?: bigint;
@@ -552,7 +552,7 @@ export interface SignUserOpParams {
  */
 export async function signUserOp(params: SignUserOpParams): Promise<PackedUserOperation> {
   const {
-    op,
+    op: suppliedOp,
     entryPoint,
     chainId,
     client,
@@ -563,6 +563,25 @@ export async function signUserOp(params: SignUserOpParams): Promise<PackedUserOp
     feeBaseline,
     feeSanityMultiple,
   } = params;
+  // Everything from here on reads THIS copy, never the caller's object. The
+  // guards below are separated from the hashing by two awaits, and the argument
+  // stays reachable and mutable throughout them: checking a cost on an object
+  // someone else can still edit, then hashing that same object, bounds nothing.
+  // A snapshot makes the values that were checked and the values that get
+  // signed the same values by construction.
+  const op: PackedUserOperation = {
+    sender: suppliedOp.sender,
+    nonce: suppliedOp.nonce,
+    initCode: suppliedOp.initCode,
+    callData: suppliedOp.callData,
+    accountGasLimits: suppliedOp.accountGasLimits,
+    preVerificationGas: suppliedOp.preVerificationGas,
+    gasFees: suppliedOp.gasFees,
+    paymasterAndData: suppliedOp.paymasterAndData,
+    signature: suppliedOp.signature,
+    validUntil: suppliedOp.validUntil,
+  };
+
   if (op.validUntil === 0) {
     throw new OperationExpiredError();
   }

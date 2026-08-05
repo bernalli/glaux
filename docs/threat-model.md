@@ -665,10 +665,13 @@ funding the address — the same rule as `expectedNonce`, applied one step earli
 
 Every gas and fee field of a user operation was proposed by an endpoint and
 signed as given. That is not a quotation the account can shop around: the
-signature authorizes the EntryPoint to charge it up to `(verificationGasLimit +
-callGasLimit + preVerificationGas + the paymaster's two limits) * maxFeePerGas`,
-so an endpoint that inflated any factor of that product was inflating what the
-quorum agreed to pay, and the unspent remainder only returns after the fact.
+signature authorizes the EntryPoint to collect a prefund of
+`(verificationGasLimit + callGasLimit + preVerificationGas + the paymaster's two
+limits) * maxFeePerGas`, so an endpoint that inflated any factor of that product
+was inflating what the quorum agreed to, and the unspent remainder only returns
+after the fact. The prefund is taken from the account when the operation is
+self-funded and from the paymaster's deposit when it is sponsored; the cap
+bounds the authorization in both cases.
 
 `signUserOp` now refuses two things before any factor signs. A mandatory
 `maxCostWei` bounds that whole product — no default, because a default is a

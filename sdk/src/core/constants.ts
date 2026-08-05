@@ -1,7 +1,7 @@
 import { concat, keccak256, stringToBytes, type Address, type Hex } from "viem";
 
 /** Immutable half of the Glaux EIP-7702 delegation: the router target. */
-export const ROUTER: Address = "0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9";
+export const ROUTER: Address = "0x3ccF1cc0F702C084B31e691e057d8742ADF35790";
 
 /** Post-audit implementation address behind the router. */
 export const IMPL: Address = "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d";

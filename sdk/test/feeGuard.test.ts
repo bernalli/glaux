@@ -12,6 +12,8 @@ import {
 import {
   FeeBaselineReadError,
   FeeExceedsBaselineError,
+  InvalidCostCapError,
+  MalformedPackedWordError,
   MalformedPaymasterFieldError,
   UserOpCostExceedsCapError,
 } from "../src/errors.js";
@@ -84,11 +86,39 @@ function paymasterField(verificationGas: bigint, postOpGas: bigint, data: Hex = 
 
 describe("fetchFeeBaseline", () => {
   it("takes the next block's base fee and the median of the per-block median tips", async () => {
-    // `eth_feeHistory` appends the pending block's base fee, so the LAST entry
-    // is what the next block will charge — not the average of the window.
-    const baseline = await fetchFeeBaseline(feeHistoryClient([10n, 12n, 14n], [[2n], [6n], [4n]]));
+    // A real `eth_feeHistory` over N blocks returns N reward rows and N+1 base
+    // fees: the extra trailing one is the pending block's, which is what this
+    // operation will actually pay. Three blocks, therefore four base fees.
+    const baseline = await fetchFeeBaseline(feeHistoryClient([9n, 10n, 12n, 14n], [[2n], [6n], [4n]]));
 
     expect(baseline).toEqual({ baseFeePerGas: 14n, medianPriorityFeePerGas: 4n });
+  });
+
+  it("accepts a short window, which a young or pruning node may legitimately return", async () => {
+    const baseline = await fetchFeeBaseline(feeHistoryClient([10n, 11n], [[3n]]));
+
+    expect(baseline).toEqual({ baseFeePerGas: 11n, medianPriorityFeePerGas: 3n });
+  });
+
+  it("refuses a response whose base-fee and reward lengths do not correspond", async () => {
+    // The relation is the only thing that identifies the trailing entry as the
+    // NEXT block's fee. Without it, a response one entry short would have this
+    // code read a mined block's base fee as the pending one — understating the
+    // lane, which is the direction a lying endpoint wants.
+    await expect(fetchFeeBaseline(feeHistoryClient([10n], [[1n]]))).rejects.toBeInstanceOf(FeeBaselineReadError);
+    await expect(
+      fetchFeeBaseline(feeHistoryClient([10n, 11n, 12n], [[1n]])),
+    ).rejects.toBeInstanceOf(FeeBaselineReadError);
+    await expect(
+      fetchFeeBaseline(feeHistoryClient([9n, 10n, 11n], [[1n], [2n]])),
+    ).resolves.toEqual({ baseFeePerGas: 11n, medianPriorityFeePerGas: 1n });
+  });
+
+  it("refuses a reward row that does not carry exactly the one requested percentile", async () => {
+    await expect(fetchFeeBaseline(feeHistoryClient([10n, 11n], [[]]))).rejects.toBeInstanceOf(FeeBaselineReadError);
+    await expect(
+      fetchFeeBaseline(feeHistoryClient([10n, 11n], [[1n, 2n]])),
+    ).rejects.toBeInstanceOf(FeeBaselineReadError);
   });
 
   it("refuses an empty, malformed or unavailable fee history rather than guessing a baseline", async () => {
@@ -96,9 +126,13 @@ describe("fetchFeeBaseline", () => {
     // whatever the endpoint proposes, which is the hole this guard closes.
     await expect(fetchFeeBaseline(feeHistoryClient([], [[1n]]))).rejects.toBeInstanceOf(FeeBaselineReadError);
     await expect(fetchFeeBaseline(feeHistoryClient([10n], []))).rejects.toBeInstanceOf(FeeBaselineReadError);
-    await expect(fetchFeeBaseline(feeHistoryClient(["0x0a"], [[1n]]))).rejects.toBeInstanceOf(FeeBaselineReadError);
-    await expect(fetchFeeBaseline(feeHistoryClient([10n], [["0x01"]]))).rejects.toBeInstanceOf(FeeBaselineReadError);
-    await expect(fetchFeeBaseline(feeHistoryClient([-1n], [[1n]]))).rejects.toBeInstanceOf(FeeBaselineReadError);
+    await expect(fetchFeeBaseline(feeHistoryClient(["0x0a", "0x0b"], [[1n]]))).rejects.toBeInstanceOf(
+      FeeBaselineReadError,
+    );
+    await expect(fetchFeeBaseline(feeHistoryClient([10n, 11n], [["0x01"]]))).rejects.toBeInstanceOf(
+      FeeBaselineReadError,
+    );
+    await expect(fetchFeeBaseline(feeHistoryClient([-1n, 11n], [[1n]]))).rejects.toBeInstanceOf(FeeBaselineReadError);
     await expect(
       fetchFeeBaseline({
         getFeeHistory: async () => {
@@ -106,6 +140,22 @@ describe("fetchFeeBaseline", () => {
         },
       } as unknown as PublicClient),
     ).rejects.toBeInstanceOf(FeeBaselineReadError);
+  });
+
+  it("asks for the window and percentile it claims to average", async () => {
+    // A stub that ignores these arguments would let the implementation request
+    // anything at all — one block, the 99th percentile — while the tests kept
+    // asserting on values the stub invented.
+    let request: { blockCount?: number; rewardPercentiles?: number[] } = {};
+    await fetchFeeBaseline({
+      getFeeHistory: async (args: { blockCount: number; rewardPercentiles: number[] }) => {
+        request = args;
+        return { baseFeePerGas: [1n, 2n], gasUsedRatio: [], oldestBlock: 0n, reward: [[1n]] };
+      },
+    } as unknown as PublicClient);
+
+    expect(request.blockCount).toBe(5);
+    expect(request.rewardPercentiles).toEqual([50]);
   });
 });
 
@@ -158,6 +208,18 @@ describe("computeUserOpMaxCost", () => {
 
     expect(() => computeUserOpMaxCost(malformed)).toThrow(MalformedPaymasterFieldError);
   });
+
+  it("refuses a short packed word rather than reading it as a small number", () => {
+    // `hexToBigInt` reads a 31-byte word left-padded; ABI encoding reads
+    // `bytes32` right-padded. The same bytes would mean one fee here and 256
+    // times that on chain, so the ambiguity is refused instead of resolved.
+    const shortFees = opWith({ gasFees: `0x${"11".repeat(31)}` });
+    const shortLimits = opWith({ accountGasLimits: `0x${"22".repeat(31)}` });
+
+    expect(() => computeUserOpMaxCost(shortFees)).toThrow(MalformedPackedWordError);
+    expect(() => userOpMaxFeePerGas(shortFees)).toThrow(MalformedPackedWordError);
+    expect(() => computeUserOpMaxCost(shortLimits)).toThrow(MalformedPackedWordError);
+  });
 });
 
 describe("assertUserOpCost", () => {
@@ -182,6 +244,22 @@ describe("signUserOp enforcement", () => {
   const cloud = new LocalSecp256k1Signer(CLOUD_PK);
   const installedSlots = [paper, device, cloud];
   const HEALTHY_BASELINE = { baseFeePerGas: 10n * GWEI, medianPriorityFeePerGas: 1n * GWEI };
+
+  /**
+   * A factor that records whether it was ever asked to sign. Asserting on the
+   * rejection alone would stay green if the guards moved AFTER the signatures
+   * were produced — the one arrangement that would defeat their whole purpose,
+   * since a signature that exists has already left the process.
+   */
+  function watchedSigner(inner: LocalSecp256k1Signer): { signer: LocalSecp256k1Signer; signed: () => boolean } {
+    let signed = false;
+    const signer = Object.create(inner) as LocalSecp256k1Signer;
+    signer.sign = async (digest: Hex) => {
+      signed = true;
+      return inner.sign(digest);
+    };
+    return { signer, signed: () => signed };
+  }
 
   /** Answers the slot reads `signUserOp` performs, and counts every RPC touch. */
   function accountClient(feeHistory?: { baseFeePerGas: bigint[]; reward: bigint[][] }): {
@@ -218,6 +296,8 @@ describe("signUserOp enforcement", () => {
   it("refuses a cost above the caller's cap without touching the network or a signer", async () => {
     const { client, calls } = accountClient();
     const op = signable();
+    const watchedPaper = watchedSigner(paper);
+    const watchedCloud = watchedSigner(cloud);
 
     await expect(
       signUserOp({
@@ -227,13 +307,86 @@ describe("signUserOp enforcement", () => {
         client,
         maxCostWei: computeUserOpMaxCost(op) - 1n,
         feeBaseline: HEALTHY_BASELINE,
-        signers: [paper, cloud],
+        signers: [watchedPaper.signer, watchedCloud.signer],
       }),
     ).rejects.toBeInstanceOf(UserOpCostExceedsCapError);
 
     // The cap needs no chain state, so a doomed operation costs nothing to
-    // refuse — and, more importantly, nothing was signed.
+    // refuse — and, decisively, no factor was ever asked to sign.
     expect(calls()).toBe(0);
+    expect(watchedPaper.signed()).toBe(false);
+    expect(watchedCloud.signed()).toBe(false);
+  });
+
+  it("refuses a cap that is absent or not a bigint, which the type system cannot enforce at runtime", async () => {
+    // A JavaScript consumer of the published package omits the argument and
+    // gets `undefined`; `cost > undefined` is `false`, so without an explicit
+    // check the operation would be signed with no bound at all.
+    const { client } = accountClient();
+    const op = signable();
+    const watched = watchedSigner(paper);
+    const invalidCaps = [undefined, null, 0, 1e18, Number.NaN, Infinity, "1000", {}];
+
+    for (const cap of invalidCaps) {
+      await expect(
+        signUserOp({
+          op,
+          entryPoint: ENTRYPOINT,
+          chainId: 31337n,
+          client,
+          maxCostWei: cap as unknown as bigint,
+          feeBaseline: HEALTHY_BASELINE,
+          signers: [watched.signer, cloud],
+        }),
+      ).rejects.toBeInstanceOf(InvalidCostCapError);
+    }
+    expect(watched.signed()).toBe(false);
+
+    // A cap of zero wei IS valid — it refuses every non-free operation, which
+    // is a coherent thing for a caller to ask for.
+    await expect(
+      signUserOp({
+        op,
+        entryPoint: ENTRYPOINT,
+        chainId: 31337n,
+        client,
+        maxCostWei: 0n,
+        feeBaseline: HEALTHY_BASELINE,
+        signers: [paper, cloud],
+      }),
+    ).rejects.toBeInstanceOf(UserOpCostExceedsCapError);
+  });
+
+  /**
+   * The checks and the hashing are separated by two awaits, and the caller
+   * keeps a reference to the object throughout. Validating a cost on an object
+   * someone else can still edit, then signing that same object, bounds nothing.
+   */
+  it("signs the operation it checked, not the caller's object as it stands later", async () => {
+    // A healthy baseline, so the only thing that could refuse this operation is
+    // the cap — and the fee history read is the await the mutation slips into.
+    const { client } = accountClient({ baseFeePerGas: [100n * GWEI, 100n * GWEI], reward: [[10n * GWEI]] });
+    const op = { ...signable() };
+    const cheapFees = op.gasFees;
+    const cap = computeUserOpMaxCost(op);
+
+    const signing = signUserOp({
+      op,
+      entryPoint: ENTRYPOINT,
+      chainId: 31337n,
+      client,
+      maxCostWei: cap,
+      // No baseline supplied, so the guard awaits `getFeeHistory` — the window
+      // in which the caller's object can change under it.
+      signers: [paper, cloud],
+    });
+    // Mutate while that await is outstanding: a hundredfold fee increase.
+    (op as { gasFees: Hex }).gasFees = encodePacked(["uint128", "uint128"], [1n * GWEI, 3_000n * GWEI]);
+
+    const signed = await signing;
+
+    expect(signed.gasFees).toBe(cheapFees);
+    expect(computeUserOpMaxCost(signed)).toBeLessThanOrEqual(cap);
   });
 
   it("refuses a fee beyond the sanity multiple of the baseline it was given", async () => {

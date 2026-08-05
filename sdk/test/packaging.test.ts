@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,15 +61,34 @@ describe("published package", () => {
    * it — otherwise a publish can ship whatever stale build happens to be on the
    * publisher's disk, or none at all.
    */
-  it("ships dist/ in the tarball and rebuilds it on pack", () => {
-    const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as {
-      files?: unknown;
-      scripts?: Record<string, unknown>;
-    };
+  it(
+    "ships dist/ in the tarball and rebuilds it on pack",
+    () => {
+      const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as {
+        files?: unknown;
+        scripts?: Record<string, unknown>;
+      };
+      expect(manifest.scripts?.prepack).toBe("npm run build");
 
-    expect(manifest.files).toContain("dist");
-    expect(manifest.scripts?.prepack).toBe("npm run build");
-  });
+      // Asserting the manifest fields alone would pass with `dist` empty, or
+      // re-excluded by an `.npmignore` in a subdirectory, or ignored for any
+      // reason npm decides on. Ask npm what it would actually ship.
+      const listing = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+        cwd: PACKAGE_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const packed = (JSON.parse(listing) as [{ files: { path: string }[] }])[0].files.map((f) => f.path);
+
+      // The eligibility module specifically: it is the one the README makes a
+      // mandatory gate, and the one whose fixture import made this class of
+      // defect visible in the first place.
+      expect(packed).toContain("dist/eligibility/probes.js");
+      expect(packed).toContain("dist/eligibility/probes.d.ts");
+      expect(packed.filter((path) => path.startsWith("dist/")).length).toBeGreaterThan(20);
+    },
+    60_000,
+  );
 
   /**
    * The price of inlining the P-256 probe vector into `src/`: the contract

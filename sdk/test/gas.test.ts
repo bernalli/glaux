@@ -370,6 +370,9 @@ describe("GasPolicy: no silent fallbacks", () => {
         entryPoint: ENTRYPOINT,
         chainId,
         client,
+        // Deliberately tautological: this suite's subject is not the fee guard,
+        // so the cap is set to the operation's own worst case to keep it out of
+        // the way. Never do this in a client — see docs/client-guidance.md.
         maxCostWei: computeUserOpMaxCost(plan.op),
         signers: [born.paper, born.cloud],
       });

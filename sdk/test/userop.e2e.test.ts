@@ -241,6 +241,9 @@ describe("userop build/sign fail-closed guards", () => {
       chainId: 31337n,
       client,
       maxValidityWindowSeconds: DEFAULT_EXECUTION_VALIDITY_WINDOW_SECONDS * 4,
+      // Deliberately tautological: this suite's subject is not the fee guard,
+      // so the cap is set to the operation's own worst case to keep it out of
+      // the way. Never do this in a client — see docs/client-guidance.md.
       maxCostWei: computeUserOpMaxCost(stubUserOp(0n, validUntil)),
       feeBaseline: STUB_FEE_BASELINE,
       signers: [paper, cloud],
