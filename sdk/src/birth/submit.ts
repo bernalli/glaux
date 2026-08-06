@@ -114,11 +114,12 @@ async function assertCanonicalBlob(blob: BirthBlob): Promise<void> {
   // every chain it has not reached yet sees it at nonce 0. Applying the
   // tuple bumps that authority's nonce to 1, which is exactly what makes the
   // blob single-use per chain while still replayable on every chain it has not
-  // reached. A tuple signed for any other nonce is broadcastable, at best, on
-  // the single chain that happens to match — the opposite of the chain-agnostic
-  // blob this whole design rests on, and silently so, since the delegation is
-  // simply skipped where it does not match. `./blob.ts` writes 0; an imported
-  // blob must be checked.
+  // reached. `./blob.ts` cannot produce any other nonce, so this check exists
+  // for an IMPORTED blob, whose tuple an ordinary key could have signed for
+  // nonce N: that one is broadcastable, at best, on the single chain where
+  // that key sits at N — the opposite of the chain-agnostic blob this whole
+  // design rests on, and silently so, since the delegation is simply skipped
+  // where it does not match.
   if (blob.authorization.nonce !== 0) {
     throw new InvalidBirthBlobError("authorization nonce");
   }
@@ -214,7 +215,7 @@ async function assertBirthReadback(client: PublicClient, blob: BirthBlob): Promi
  * Builds, signs, sends, and confirms the single EIP-7702 type-4 transaction
  * that births `blob.account` — port of `scripts/submit_birth.py:submit_birth`.
  * Runs `preflightFreshAccount` first (against the canonical router this SDK
- * always signs for), so a caller never has to remember to call it separately.
+ * always builds for), so a caller never has to remember to call it separately.
  *
  * `relayer` (a private key) only pays gas: submission is permissionless, and
  * the blob needs no key from whoever carries it. A chain that has applied the

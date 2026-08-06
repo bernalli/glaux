@@ -145,8 +145,10 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     secp256k1 holds, it cannot originate a transaction of its own and every
     chain the blob has not reached yet sees it at 0. Applying the tuple bumps that nonce to 1, which is what makes the
     blob single-use per chain while still replayable everywhere it has not
-    landed. A tuple signed for any other nonce applies, at best, on the single
-    chain that happens to match -- and elsewhere the delegation is silently
+    landed. This tooling cannot produce a tuple naming any other nonce; the
+    check is for an IMPORTED blob, whose tuple an ordinary key could have
+    signed for nonce N. Such a tuple applies, at best, on the single chain
+    where that key sits at N -- and elsewhere the delegation is silently
     skipped.
     """
     authorization = blob["authorization"]
