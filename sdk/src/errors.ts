@@ -117,9 +117,10 @@ export class InvalidP256PrivateKeyError extends Error {
  * must come from a deployment the caller has verified, never assumed from a
  * local build artifact. Reading an empty account's code and hashing it would
  * silently produce `keccak256("")` rather than fail: a value that can never
- * match a real `implementation.codehash`, so a blob signed against it would
- * be permanently unusable — and, because a birth blob cannot be revoked or
- * resigned, that failure must happen here, not after the birth key is gone.
+ * match a real `implementation.codehash`, so a blob built against it would be
+ * permanently unusable — and a birth blob cannot be revoked or rebuilt into
+ * the same account, because the account address is derived from the very
+ * configuration a rebuild would change. The failure has to happen here.
  */
 export class ImplementationNotDeployedError extends Error {
   constructor(implementation: Address) {
@@ -146,7 +147,7 @@ export class ImplementationCompatibilityError extends Error {
   }
 }
 
-/** Thrown when a factor identifies an unsupported verifier before a birth key is generated. */
+/** Thrown when a factor identifies an unsupported verifier, before any blob is crafted. */
 export class InvalidBirthVerifierTypeError extends Error {
   readonly slotIndex: number;
 
@@ -203,9 +204,14 @@ export class BirthPossessionProofError extends Error {
   }
 }
 
-/** Thrown if an internally generated birth signature or authorization does not recover to its account. */
+/**
+ * Thrown if the crafted authorization does not recover to the account the blob
+ * names. Nothing signs a birth, so `"authorization"` is the only part there is
+ * to check — the union kept a `"birth signature"` member no caller could pass
+ * once births became rootless.
+ */
 export class BirthBlobSelfCheckError extends Error {
-  constructor(part: "birth signature" | "authorization") {
+  constructor(part: "authorization") {
     super(`generated ${part} does not recover to the birth account; refusing to emit an unrecoverable blob.`);
     this.name = "BirthBlobSelfCheckError";
   }
@@ -305,8 +311,8 @@ export class BirthPreflightError extends Error {
  * This is intentionally distinct from `BirthPreflightError`: the latter means
  * the account was read successfully and is unsafe to birth, whereas this
  * error means the account's safety is unknown. An unknown account must never
- * be treated as an empty EOA, because the one-shot birth key is already gone
- * by the time an erroneous preflight can be discovered.
+ * be treated as an empty EOA: the blob is one-shot per chain, and by the time
+ * an erroneous preflight is discovered the authorization has been applied.
  */
 export class BirthPreflightReadError extends Error {
   readonly account: Address;

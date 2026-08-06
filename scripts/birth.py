@@ -123,7 +123,7 @@ def build_init_digest(
     expected_code_hash: bytes,
     init_data: bytes,
 ) -> bytes:
-    """Compute the chain-agnostic init digest bound by the birth signature.
+    """Compute the chain-agnostic init digest the authorization is crafted against.
 
     EIP-191 version 0x00 with the ROUTER as validator, over
     `keccak256(abi.encode(INIT_DOMAIN, implementation, expectedCodeHash,

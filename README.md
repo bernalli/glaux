@@ -121,9 +121,9 @@ works; those runs are kept in
   execution, ERC-7677 gas sponsorship, chain-eligibility checks, and a port
   of the reconciliation tool that must agree with the Python one verdict for
   verdict.
-- **`scripts/`** — the Python tooling that signs what the contracts verify:
-  birth blob generation, possession proofs, permissionless submission, and
-  raw-first cross-chain reconciliation.
+- **`scripts/`** — the Python tooling around what the contracts verify: birth
+  blob generation, possession proofs (these are signed, by each factor's own
+  holder), permissionless submission, and raw-first cross-chain reconciliation.
 - **`test/`** — unit, property and invariant suites, plus parity fixtures
   that pin Solidity, Python and TypeScript to the same bytes.
 
