@@ -23,10 +23,11 @@
 >   still deployed, so such a blob would still be a valid birth *against that
 >   contract* on a chain it has not reached. It simply produces a
 >   previous-generation account, which is not what anyone should be creating now;
-> - the public redeploy this note used to leave pending was **done on 2026-08-06**
->   and covers the new router — see *Public testnet — canonical router deployed*
->   at the end of this file. The implementation was already at `0x21b5D576…` on both
->   chains and was not touched;
+> - the public redeploy this note used to leave pending was **done on 2026-08-06**,
+>   and the first account of this generation was born on both public testnets from
+>   one blob the same day — see *Public testnet — canonical router deployed* at the
+>   end of this file. The implementation was already at `0x21b5D576…` on both chains
+>   and was not touched;
 > - every birth procedure written below this note describes the birth-key
 >   ceremony. It is a record of how it was done, not an instruction: there is no
 >   birth key to generate, hold, or destroy any more.
@@ -686,3 +687,40 @@ endpoint skips, and the command is green having checked nothing.
 
 Signing was again from the encrypted keystore (`--account`), never from a key in
 the environment or on a command line.
+
+### Birth on the canonical router (2026-08-06)
+
+One blob, submitted unmodified to both chains, on the same day as the router
+deployment above. This is the first public account of the rootless generation:
+no birth key was created, and none had to be destroyed — the account address
+falls out of the factor configuration and the crafted authorization tuple.
+
+| | Sepolia (11155111) | Base Sepolia (84532) |
+|---|---|---|
+| birth tx (EIP-7702, type 4) | [`0x728a69d5…`](https://sepolia.etherscan.io/tx/0x728a69d5fa748d42a21afd9de5bc7a930dd4902bf868b08464b22a787eae2ebd) | [`0x2519eba9…`](https://sepolia.basescan.org/tx/0x2519eba9539c1dc26bd55404de09b41dad291c5865a9cacf137d71025bab98b5) |
+| birth gas | 375,598 | 375,598 |
+| block | 11,429,478 | 45,114,195 |
+| born account | [`0xF6C08eCe…`](https://sepolia.etherscan.io/address/0xF6C08eCe382A0007c93748693b6E900a21a6258a) | [`0xF6C08eCe…`](https://sepolia.basescan.org/address/0xF6C08eCe382A0007c93748693b6E900a21a6258a) |
+
+Both transactions carry an `authorizationList` whose single tuple has
+`chainId 0x0` and names `0x3ccF1cc0…`: the same signature-free tuple applied on
+two chains, which is the mechanism the whole design rests on. Gas is identical
+to the unit again, and lower than the previous generation's 376,704 — the
+rootless path authenticates by recovery rather than by verifying a birth
+signature.
+
+Read back from both chains afterwards, independently of the submitting process:
+
+- account code is `0xef01003ccf1cc0f702c084b31e691e057d8742adf35790`, the
+  delegation indicator for the canonical router;
+- `implementation()` returns `0x21b5D576…` and `updateNonce()` is `0`;
+- all three factor slots match byte for byte, paper and cloud as secp256k1
+  (type 1), device as the P-256 pair (type 2);
+- `scripts/reconcile.py` across both endpoints: **`verdict: consistent (exit 0)`**,
+  reading raw storage first and the getters only as a cross-check.
+
+The three factors are the publicly known test vectors, as in every public run
+before this one: **this account is controllable by anyone and must never hold
+value.** The blob is kept outside the repository — it is what names the account
+on every chain not yet reached, and the P-256 proofs were signed with a random
+nonce, so it cannot be recreated.
