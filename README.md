@@ -1,12 +1,38 @@
-# Glaux
+<p align="center">
+  <img src="docs/assets/glaux-wordmark.png" alt="GLAUX — one address · every chain" width="640">
+</p>
 
-*Glaux (γλαύξ) — the little owl the Athenians stamped on their silver
-tetradrachms to guard the coin.*
+<p align="center"><em>Glaux (γλαύξ) — the little owl the Athenians stamped on
+their silver tetradrachms to guard the coin.</em></p>
+
+<p align="center">
+  <a href="https://github.com/bernalli/glaux/actions/workflows/ci.yml"><img src="https://github.com/bernalli/glaux/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/solidity-0.8.28-363636?logo=solidity" alt="Solidity 0.8.28">
+  <img src="https://img.shields.io/badge/EIP--7702-smart_account-1f6feb" alt="EIP-7702 smart account">
+  <img src="https://img.shields.io/badge/status-unaudited-red" alt="Unaudited">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+</p>
 
 Minimal, crypto-agile **EIP-7702 smart account**: one address on every EVM
 chain by construction, 2-of-3 threshold security on the operational path, and
 a replaceable verification slot, so the factors that authorize an operation
 can adopt new signature schemes without migrating funds.
+
+## At a glance
+
+- **The account is an EOA** — same address on every EVM chain by construction:
+  no factories, no counterfactual deployments.
+- **2-of-3 threshold** on the operational path: a device P-256 factor (Secure
+  Enclave, via the native precompiles) plus two secp256k1 keys.
+- **Rootless birth** — no key is ever created for the account: the delegation
+  tuple is crafted rather than signed, and the account is the address it
+  recovers to.
+- **Crypto-agile** — verification lives in a replaceable slot: the designed
+  migration path to new signature schemes, post-quantum ones included, without
+  moving funds or changing address.
+- **Proven live** — one birth blob, submitted unmodified to two public
+  testnets, produced the same account at the same address for the same gas to
+  the unit.
 
 > ## ⚠️ Unaudited — do not use with real funds
 >
