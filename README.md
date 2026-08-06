@@ -34,8 +34,9 @@ take on it: the account **is** an EOA — same address on every chain, no
 factories, nothing counterfactual — delegated to an immutable router that
 enforces 2-of-3 verification over three independent factors (device P-256 /
 Secure Enclave via the native precompiles, plus two secp256k1 keys). One
-signed **birth blob** replays on any chain, whenever that chain is first
-touched; one signed rotation replays the same way. Verification lives in a
+**birth blob** replays on any chain, whenever that chain is first touched —
+nothing signs it, because a rootless birth has no key to sign with; one signed
+rotation replays the same way. Verification lives in a
 replaceable slot, so the factor layer can adopt new signature schemes without
 moving funds or changing address: today it verifies secp256k1 and P-256, and
 the slot is the designed migration path for schemes that become verifiable
@@ -64,24 +65,28 @@ the project has decided to accept rather than fix.
 
 ## The cross-chain proof
 
-The claim the design rests on — one signature, every chain, same account —
-is demonstrated on public networks, not argued. One birth blob was submitted
+The claim the design rests on — one blob, every chain, same account — is
+demonstrated on public networks, not argued. One birth blob was submitted
 unmodified to two independent testnets. It produced **the same account, with the
 same three factors, at the same address, for the same gas to the unit**:
 
 | | Sepolia (11155111) | Base Sepolia (84532) |
 |---|---|---|
-| deploy tx | [`0x56aa174c…`](https://sepolia.etherscan.io/tx/0x56aa174cd4b82ff711e99c089a6fc20b5fd6480f5294f3784a704f4b32c7ba8f) | [`0x66e493db…`](https://sepolia.basescan.org/tx/0x66e493db4bdc1a20a407fb9d3e94a05be44829762859a6c51b93188684bdf446) |
-| deploy gas | 3,110,996 | 3,110,996 |
-| birth tx (EIP-7702, type 4) | [`0xabd85aa8…`](https://sepolia.etherscan.io/tx/0xabd85aa8f17ff25e714fbbb77f2f3d922b4b2f17a60a02646644e9eaab3ffcb5) | [`0xf7b1d79a…`](https://sepolia.basescan.org/tx/0xf7b1d79aa8ea4e7911733b351f743653fe6ccd6312db800921f8a19988280d55) |
-| birth gas | 376,704 | 376,704 |
-| born account | [`0x327b2D99…`](https://sepolia.etherscan.io/address/0x327b2D9932Cdf39Ebef54f897A81a8137dC0c126) | [`0x327b2D99…`](https://sepolia.basescan.org/address/0x327b2D9932Cdf39Ebef54f897A81a8137dC0c126) |
+| deploy tx | [`0xbdff134f…`](https://sepolia.etherscan.io/tx/0xbdff134f87d19f4a47ba048c581e527a5b0fb61a5684f3d2e1d99964c8af360c) | [`0x218f2543…`](https://sepolia.basescan.org/tx/0x218f254321d7df1c577daed581123038ea099d771f55ea668151379052d1b1e7) |
+| deploy gas | 561,297 | 561,297 |
+| birth tx (EIP-7702, type 4) | [`0x728a69d5…`](https://sepolia.etherscan.io/tx/0x728a69d5fa748d42a21afd9de5bc7a930dd4902bf868b08464b22a787eae2ebd) | [`0x2519eba9…`](https://sepolia.basescan.org/tx/0x2519eba9539c1dc26bd55404de09b41dad291c5865a9cacf137d71025bab98b5) |
+| birth gas | 375,598 | 375,598 |
+| born account | [`0xF6C08eCe…`](https://sepolia.etherscan.io/address/0xF6C08eCe382A0007c93748693b6E900a21a6258a) | [`0xF6C08eCe…`](https://sepolia.basescan.org/address/0xF6C08eCe382A0007c93748693b6E900a21a6258a) |
 
 | Artifact of that run | Value (identical on both chains) |
 |---|---|
 | `GlauxAccount` (implementation) | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` |
-| `GlauxDelegate` (router) | `0xB8270e4B9aaeA6933716409Bb648FB3Cda3CCbE9` |
+| `GlauxDelegate` (router) | `0x3ccF1cc0F702C084B31e691e057d8742ADF35790` |
 | implementation runtime code hash | `0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106` |
+
+The deploy line covers the router alone: the implementation was already on both
+chains at that address, so the deterministic deploy script created only what was
+missing.
 
 The mechanism is a `chainId 0` authorization tuple: EIP-7702 burns the
 authority's nonce only on the chain that applies it, so the same blob stays
@@ -89,19 +94,21 @@ valid on every chain not yet reached — nothing in it expires, and a third
 chain can still be reached with it today. Read back afterwards, the two
 chains are indistinguishable: same delegation indicator, same factor slots
 byte for byte, and the raw-first reconciliation tool reports
-`verdict: consistent` across both. The full run, including a live refusal on
-a chain that cannot verify P-256, is in
-[`docs/deployments.md`](docs/deployments.md).
+`verdict: consistent` across both. The full run is in
+[`docs/deployments.md`](docs/deployments.md), together with the two-chain proof
+run locally at every bytecode change — which additionally exercises a live
+refusal on a chain that cannot verify P-256, something no public testnet
+offers, since both verify it.
 
-**These accounts predate rootless birth.** Moving birth to a crafted
-authorization put the router's own address into an immutable constant, so the
-router's bytecode changed and its canonical address is now
-`0x3ccF1cc0F702C084B31e691e057d8742ADF35790`; the implementation above is
-unchanged. The run recorded here is the previous generation — the mechanism it
-demonstrates is the same one, and blobs of that format no longer birth an account
-on the canonical router.
-The end-to-end proof has been re-run in full under the new format on two local
-chains, and the public redeploy is pending.
+**This account was born rootless, and no key was ever created for it.** There is
+no birth key to hold or destroy: the authorization tuple is crafted rather than
+signed — its `r` commits to the factor configuration — and the account is simply
+the address that tuple recovers to. Nobody can birth it into a different
+configuration, which is the property the earlier ephemeral birth key had to be
+trusted to give up. An earlier generation of accounts, born under the previous
+router `0xB8270e4B…` before that change, is still delegated to it and still
+works; those runs are kept in
+[`docs/deployments.md`](docs/deployments.md) rather than rewritten.
 
 ## What is here
 
@@ -114,9 +121,9 @@ chains, and the public redeploy is pending.
   execution, ERC-7677 gas sponsorship, chain-eligibility checks, and a port
   of the reconciliation tool that must agree with the Python one verdict for
   verdict.
-- **`scripts/`** — the Python tooling that signs what the contracts verify:
-  birth blob generation, possession proofs, permissionless submission, and
-  raw-first cross-chain reconciliation.
+- **`scripts/`** — the Python tooling around what the contracts verify: birth
+  blob generation, possession proofs (these are signed, by each factor's own
+  holder), permissionless submission, and raw-first cross-chain reconciliation.
 - **`test/`** — unit, property and invariant suites, plus parity fixtures
   that pin Solidity, Python and TypeScript to the same bytes.
 

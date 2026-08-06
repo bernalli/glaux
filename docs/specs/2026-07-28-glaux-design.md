@@ -299,8 +299,8 @@ stays open.
 - **The 7702 multisig path is unfinished at the incumbent.** Safe's own
   documentation marks all three of its 7702 approaches experimental and **not
   audited**, and flags front-running during setup — the window between the
-  delegation landing and the account being configured, which Glaux closes with
-  the signed birth blob and the router's birth guard. See
+  delegation landing and the account being configured, which Glaux closes by
+  carrying both in one blob, plus the router's birth guard. See
   [Safe and EIP-7702](https://docs.safe.global/advanced/eip-7702/7702-safe).
 - **Signature-domain standards are converging on Glaux's concerns, not against
   them.** ERC-7739 (readable typed signatures, replay across accounts owned by

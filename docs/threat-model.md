@@ -426,7 +426,7 @@ the protocol everywhere, and probing it would close the one rescue that matters
 What remains is not a bug but a consequence, and clients must design for it:
 
 - **A chain without the verifier cannot host the account's chosen
-  configuration.** The same signed birth blob succeeds where the verifier
+  configuration.** The same birth blob succeeds where the verifier
   exists and reverts where it does not, so a chain reached later may hold no
   account at all rather than a degraded one. That is the intended trade — an
   account that cannot be born is recoverable, an account born inert is not —

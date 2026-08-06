@@ -15,16 +15,20 @@
 >
 > Consequences, stated plainly:
 >
-> - the accounts born on Sepolia and Base Sepolia are delegated to the old router
->   and keep working under it; they are the previous generation, not this one;
+> - the earlier accounts recorded below are delegated to the old router and keep
+>   working under it; they are the previous generation, not this one. The account
+>   born on 2026-08-06 is delegated to the canonical router instead;
 > - **every birth blob of the old format is unspendable on the canonical router** —
 >   it carries a `birthSig` field the new router does not read, and it names the old
 >   one. It is not void in an absolute sense: the previous router is immutable and
 >   still deployed, so such a blob would still be a valid birth *against that
 >   contract* on a chain it has not reached. It simply produces a
 >   previous-generation account, which is not what anyone should be creating now;
-> - the pending public redeploy (still waiting on a funded relayer key) now covers
->   the new router *and* the new blob format, not just a new implementation;
+> - the public redeploy this note used to leave pending was **done on 2026-08-06**,
+>   and the first account of this generation was born on both public testnets from
+>   one blob the same day — see *Public testnet — canonical router deployed* at the
+>   end of this file. The implementation was already at `0x21b5D576…` on both chains
+>   and was not touched;
 > - every birth procedure written below this note describes the birth-key
 >   ceremony. It is a record of how it was done, not an instruction: there is no
 >   birth key to generate, hold, or destroy any more.
@@ -628,3 +632,102 @@ search for private-key material under `cache/` after the deploy comes back empty
 
 The factor keys are again the **publicly known test vectors**. This account is
 controllable by anyone and must never hold anything.
+
+## Public testnet — canonical router deployed (2026-08-06)
+
+The rootless-birth router of 2026-08-05 reached the public testnets. This is the
+section the note at the top of this file points at: from here on, the canonical
+delegation target on Sepolia and Base Sepolia is
+`0x3ccF1cc0F702C084B31e691e057d8742ADF35790`, and the previous-generation router
+`0xB8270e4B…` stays deployed and immutable, still serving the accounts already
+born under it.
+
+Only the router was deployed. `GlauxAccount` was already at `0x21b5D576…` on both
+chains carrying the exact code hash the SDK pins, so `script/Deploy.s.sol` — which
+predicts both CREATE2 addresses and creates only what is missing — skipped it.
+
+| | Sepolia (11155111) | Base Sepolia (84532) |
+|---|---|---|
+| deploy tx | [`0xbdff134f…`](https://sepolia.etherscan.io/tx/0xbdff134f87d19f4a47ba048c581e527a5b0fb61a5684f3d2e1d99964c8af360c) | [`0x218f2543…`](https://sepolia.basescan.org/tx/0x218f254321d7df1c577daed581123038ea099d771f55ea668151379052d1b1e7) |
+| deploy gas | 561,297 | 561,297 |
+| `GlauxDelegate` | `0x3ccF1cc0F702C084B31e691e057d8742ADF35790` | same address |
+| runtime code hash | `0x0a696276aa368f55c148c2cf127b38da28c1f08658381a0d1e5f8cde71485209` | same hash |
+| `GlauxAccount` (impl) | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` (already deployed) | same |
+| impl runtime code hash | `0xb32d638e…` | same |
+
+Identical to the unit across two independent chains, as in every previous
+deployment: the same bytecode executing the same path costs the same everywhere.
+
+### What was checked, and why the artifact hash is not the check
+
+The router's runtime code hash on chain (`0x0a696276…`) does **not** equal the
+build artifact's `deployedBytecode` hash (`0x22250292…`, the value the note at the
+top of this file records). That is the rule stated under *Local two-chain
+end-to-end* — artifact hash to compare builds, deployed hash to compare chains —
+and it bites harder on this router than on the previous one: `GlauxDelegate` now
+carries two immutables, `SELF` and `AUTH_MSG_HASH`, both placeholders in the
+artifact and both written at construction. The two forms are 2,356 bytes each and
+differ in exactly 84 bytes: the three reference slots the artifact declares, at
+offsets 302, 564 and 871. Substituting the deployed values into the artifact
+makes it byte-for-byte equal to the live code.
+
+The checks that do bind the deployed contract to this source are these, all run
+against the live chains after the broadcast:
+
+- the CREATE2 address predicted locally from the compiled creation code is
+  `0x3ccF1cc0F702C084B31e691e057d8742ADF35790` — the address that now holds code;
+- `AUTH_MSG_HASH()` returns `0x0badc060e335d1833b30debbcb05b5761517bdaf43d4e966a441d511b57a5208`
+  on both chains, equal to `keccak256(0x05 ‖ rlp([0, ROUTER, 0]))` computed
+  independently from the router address — so the immutable that every rootless
+  birth proof recovers against was baked correctly, and identically, on both;
+- the runtime code hash matches between the two chains. This is a consistency
+  check, not the foundation: the router's address rests on CREATE2 over the
+  deployer, the salt and the **initcode** hash, and the account's address rests
+  on recovery from the authorization tuple. Equal runtime hashes derive neither,
+  but a mismatch would mean the two chains are running different code behind the
+  same address, which is worth failing on;
+- the implementation's code hash still equals the constant the SDK ships.
+
+Before spending anything, the P-256 fork probe was re-run against both endpoints
+with `GLAUX_REQUIRE_FORK_CHECKS=1` (2 passed): without that variable a missing
+endpoint skips, and the command is green having checked nothing.
+
+Signing was again from the encrypted keystore (`--account`), never from a key in
+the environment or on a command line.
+
+### Birth on the canonical router (2026-08-06)
+
+One blob, submitted unmodified to both chains, on the same day as the router
+deployment above. This is the first public account of the rootless generation:
+no birth key was created, and none had to be destroyed — the account address
+falls out of the factor configuration and the crafted authorization tuple.
+
+| | Sepolia (11155111) | Base Sepolia (84532) |
+|---|---|---|
+| birth tx (EIP-7702, type 4) | [`0x728a69d5…`](https://sepolia.etherscan.io/tx/0x728a69d5fa748d42a21afd9de5bc7a930dd4902bf868b08464b22a787eae2ebd) | [`0x2519eba9…`](https://sepolia.basescan.org/tx/0x2519eba9539c1dc26bd55404de09b41dad291c5865a9cacf137d71025bab98b5) |
+| birth gas | 375,598 | 375,598 |
+| block | 11,429,478 | 45,114,195 |
+| born account | [`0xF6C08eCe…`](https://sepolia.etherscan.io/address/0xF6C08eCe382A0007c93748693b6E900a21a6258a) | [`0xF6C08eCe…`](https://sepolia.basescan.org/address/0xF6C08eCe382A0007c93748693b6E900a21a6258a) |
+
+Both transactions carry an `authorizationList` whose single tuple has
+`chainId 0x0` and names `0x3ccF1cc0…`: the same signature-free tuple applied on
+two chains, which is the mechanism the whole design rests on. Gas is identical
+to the unit again, and lower than the previous generation's 376,704 — the
+rootless path authenticates by recovery rather than by verifying a birth
+signature.
+
+Read back from both chains afterwards, independently of the submitting process:
+
+- account code is `0xef01003ccf1cc0f702c084b31e691e057d8742adf35790`, the
+  delegation indicator for the canonical router;
+- `implementation()` returns `0x21b5D576…` and `updateNonce()` is `0`;
+- all three factor slots match byte for byte, paper and cloud as secp256k1
+  (type 1), device as the P-256 pair (type 2);
+- `scripts/reconcile.py` across both endpoints: **`verdict: consistent (exit 0)`**,
+  reading raw storage first and the getters only as a cross-check.
+
+The three factors are the publicly known test vectors, as in every public run
+before this one: **this account is controllable by anyone and must never hold
+value.** The blob is kept outside the repository — it is what names the account
+on every chain not yet reached, and the P-256 proofs were signed with a random
+nonce, so it cannot be recreated.
