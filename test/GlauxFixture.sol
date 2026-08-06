@@ -43,7 +43,7 @@ abstract contract GlauxFixture is Test {
      * @notice Constructs the EIP-7702 authorization that gives birth to an
      *         account nobody holds the key to, mirroring the SDK's own
      *         derivation.
-     * @dev The signature is built backwards: pick `r` as a hash committing to
+     * @dev The tuple is built backwards, and nothing signs it: pick `r` as a hash committing to
      *      the birth digest, tag `s` with the router's constant prefix, and let
      *      `ecrecover` reveal which address that pair is valid for. Roughly
      *      half of the candidate `r` values are not curve x-coordinates, so a

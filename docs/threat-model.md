@@ -92,8 +92,10 @@ paymaster: the `msg.sender != ENTRYPOINT` gate plus the two-signature check
 over `userOpHash`. *Guarantee:* paymaster misbehaviour can at worst deny
 sponsorship, never authorize an unsigned operation.
 
-**A compromised birth environment.** Holds the key that authorizes
-initialization — and, as the first residual explains, far more than that.
+**A compromised birth environment.** Chooses the configuration the account is
+crafted from — and therefore which factors it is born under. It holds no key:
+since 2026-08-05 there is none to hold, which is what the first residual
+records as closed by construction.
 
 **An attacker who supplies the delegation target.** Not a Glaux adversary at
 all, and the most common one in practice: the user is persuaded to sign an
@@ -145,8 +147,9 @@ signature be submitted under two indices, collapsing 2-of-3 to 1-of-1.
 
 **Birth and upgrade install code under identical rules**, both through
 `ImplementationCheck.isInstallable`: the implementation must have deployed
-code, its runtime code hash must equal the hash the signers bound into the
-digest, it must not be an EIP-7702 delegation designator, and it must answer
+code, its runtime code hash must equal the hash bound into the digest — by the
+crafted `r` at birth, by the quorum's signatures on an upgrade — it must not be
+an EIP-7702 delegation designator, and it must answer
 `glauxCompatibilityId()` with `GlauxStorage.COMPAT_ID` through a bounded
 32-byte output window. Birth additionally requires the implementation's own
 initializer to leave `initialized == true` before the pointer is written, so a
@@ -308,7 +311,8 @@ future chains unreachable.
 
 ### 5. A code hash binds bytecode, not behaviour
 
-The installed bytecode is provably byte-for-byte what the signers intended.
+The installed bytecode is provably byte-for-byte the one the operation named:
+committed by the crafted `r` at birth, signed by the quorum on an upgrade.
 What that bytecode *does* is not thereby fixed across chains.
 
 Note what is *not* a source of divergence, since it is easy to get backwards:
@@ -325,8 +329,8 @@ storage. The real sources are:
 - **an implementation that is itself a proxy**, where identical bytecode
   forwards to different logic per chain.
 
-Signers verifying `expectedCodeHash` are verifying "this exact bytecode", not
-"this exact behaviour". Client guidance requires reviewing storage-layout
+Whoever fixes `expectedCodeHash` — the operator crafting a birth, the quorum
+signing an upgrade — fixes "this exact bytecode", not "this exact behaviour". Client guidance requires reviewing storage-layout
 compatibility, external dependencies and the preservation of `applyUpdate`
 itself, none of which any on-chain check can see.
 
@@ -818,7 +822,7 @@ been replaced with hostile code — but a chain manipulated to that depth alread
 controls `EXTCODEHASH` itself and the execution, so the check would verify a
 value the attacker supplies. Pinning would cost gas on every 4337 operation,
 forever, on an immutable contract, and — because the pinned hash would enter the
-signed code hash and the CREATE2 address — force a redeploy that invalidates
+committed code hash and the CREATE2 address — force a redeploy that invalidates
 every unspent blob. The account already refuses any caller other than the
 immutable EntryPoint it was deployed against; the marginal defense does not
 justify a permanent cost against a threat model in which, at that depth, nothing

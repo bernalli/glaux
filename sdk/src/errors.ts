@@ -144,7 +144,7 @@ export class ImplementationCodeHashMismatchError extends Error {
 /** Thrown when the canonical implementation cannot prove its Glaux compatibility marker. */
 export class ImplementationCompatibilityError extends Error {
   constructor() {
-    super("canonical implementation did not return the Glaux compatibility marker; refusing to sign or submit a birth blob.");
+    super("canonical implementation did not return the Glaux compatibility marker; refusing to build or submit a birth blob.");
     this.name = "ImplementationCompatibilityError";
   }
 }

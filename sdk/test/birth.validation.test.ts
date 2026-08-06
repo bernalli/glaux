@@ -59,7 +59,7 @@ describe("buildBirthBlob local contract preconditions", () => {
     expect(signingRequested).toBe(false);
   });
 
-  it("rejects an unsupported verifier type before a birth key exists", async () => {
+  it("rejects an unsupported verifier type before anything is crafted", async () => {
     const [, device, cloud] = factors();
     const unsupported = {
       verifierType: 99,

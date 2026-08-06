@@ -34,7 +34,8 @@ export function registrationDigest(index: number, verifierType: VerifierType, ke
 }
 
 /**
- * The chain-agnostic digest the birth key signs. Argument layout ported from
+ * The chain-agnostic digest the birth authorization is crafted against — its
+ * `r` commits to this digest. Argument layout ported from
  * `scripts/birth.py:build_init_digest`: EIP-191 v0x00 with the ROUTER (not the
  * born account) as validator, over
  * `keccak256(abi.encode(INIT_DOMAIN, implementation, expectedCodeHash, keccak256(initData)))`.
@@ -136,8 +137,8 @@ export function userOpDigest(account: Address, userOpHash: Hex, validUntil: numb
  * `keccak256(abi.encode(MSG_DOMAIN, chainId, account, hash, validUntil))`.
  * Like `execDigest`, this binds `chainId`; `userOpDigest` instead binds the
  * EntryPoint-provided `userOpHash`, whose own construction is chain-specific.
- * `initDigest` is deliberately chain-agnostic so it can be signed before the
- * account exists.
+ * `initDigest` is deliberately chain-agnostic: the birth authorization is
+ * crafted against it before the account exists anywhere.
  *
  * @throws {OperationExpiredError} if `validUntil === 0`.
  */

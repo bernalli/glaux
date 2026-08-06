@@ -37,9 +37,7 @@ ROUTER_DESIGNATOR = bytes.fromhex("ef0100") + bytes.fromhex(ROUTER[2:])
 RELAYER_KEY = "0x" + "33" * 32
 CANONICAL_ROUTER = "0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
 CANONICAL_IMPLEMENTATION = "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d"
-CANONICAL_IMPL_CODE_HASH = (
-    "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
-)
+CANONICAL_IMPL_CODE_HASH = "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
 
 
 class _StubEth:
@@ -161,14 +159,20 @@ def test_chain_specific_authorization_is_rejected() -> None:
 
 
 def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
-    """Only nonce 0 makes a retained blob replayable on every chain.
+    """Only nonce 0 makes a retained blob replayable on every chain not yet reached.
 
     EIP-7702 checks the tuple's nonce against the authority's CURRENT account
-    nonce, and a birth key never sends a transaction of its own, so every chain
-    sees it at 0 forever. This tuple is signed FOR nonce 5 by the blob's own
-    account over the canonical router with chainId 0, so it recovers cleanly
-    and every other gate in `assert_blob_authorization` passes it: the nonce is
-    the only thing left to refuse it for.
+    nonce. Nobody holds a key for the crafted authority, so it can never send a
+    transaction of its own: every chain the blob has not reached sees nonce 0,
+    and a chain that HAS applied the tuple sees 1 and will not apply it again.
+    For THIS authority, then, a tuple naming any other nonce is usable nowhere;
+    for an ordinary key's tuple it would apply on whichever chains that key
+    currently sits at N, which is a subset and never all of them. Either way it
+    is not the chain-agnostic blob the design requires.
+
+    This test mutates the nonce field of an otherwise canonical blob. That is
+    enough for what it checks: the nonce gate runs before recovery, so it is
+    the gate that refuses this blob, and no re-crafting is needed to reach it.
     """
     blob = _rootless_blob()
     blob["authorization"]["nonce"] = 5
@@ -178,12 +182,7 @@ def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
 
 
 def test_python_canonical_constants_match_shared_parity_fixture() -> None:
-    fixture_path = (
-        Path(__file__).resolve().parent.parent
-        / "test"
-        / "fixtures"
-        / "sdk_parity.json"
-    )
+    fixture_path = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "sdk_parity.json"
     canonical = json.loads(fixture_path.read_text(encoding="utf-8"))["canonical"]
 
     assert submitter.CANONICAL_ROUTER == canonical["router"]
@@ -285,9 +284,7 @@ class _ExplodingEth:
     """Any RPC access at all is a test failure, not a stubbed answer."""
 
     def __getattr__(self, name: str) -> Any:
-        raise AssertionError(
-            f"submit_birth touched the chain (w3.eth.{name}) instead of refusing the blob"
-        )
+        raise AssertionError(f"submit_birth touched the chain (w3.eth.{name}) instead of refusing the blob")
 
 
 class _ExplodingWeb3:
@@ -295,13 +292,15 @@ class _ExplodingWeb3:
         self.eth = _ExplodingEth()
 
 
-def test_submit_birth_refuses_an_authorization_signed_by_another_key() -> None:
+def test_submit_birth_refuses_an_authorization_recovering_elsewhere() -> None:
     """The authorization gate must hold on the PUBLIC path, not only when called directly.
 
     `submit_birth` runs `assert_blob_authorization` ahead of the pre-birth
-    storage preflight and of any transaction building, so a blob whose
-    EIP-7702 tuple was signed by a key other than `blob["account"]` must be
-    refused without a single RPC call: the `_ExplodingWeb3` stub turns any
+    storage preflight and of any transaction building, so a blob whose EIP-7702
+    tuple recovers to an address other than the `blob["account"]` it declares
+    must be refused without a single RPC call. This fixture reaches that state
+    the cheap way, by rewriting the declared account rather than re-crafting
+    the tuple; the gate compares the two and cannot tell which side moved: the `_ExplodingWeb3` stub turns any
     read — `get_code`, `get_storage_at`, `chain_id`, the gas estimate — into a
     failure, which is what makes "nothing downstream was reached" an assertion
     rather than an assumption.
@@ -341,11 +340,7 @@ class _MinedEth:
         return b""
 
     def get_storage_at(self, _address: str, position: int) -> bytes:
-        if (
-            self._mined
-            and position == IMPL_SLOT
-            and self._installed_implementation is not None
-        ):
+        if self._mined and position == IMPL_SLOT and self._installed_implementation is not None:
             return bytes.fromhex("00" * 12 + self._installed_implementation[2:])
         return ZERO_WORD
 

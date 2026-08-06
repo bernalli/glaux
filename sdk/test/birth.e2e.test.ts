@@ -254,7 +254,11 @@ describe("birth e2e", () => {
     "does not report a reverted initialization as a successful birth",
     async () => {
       const { url } = await spawnAnvil();
-      const { client } = clientsFor(url);
+      const { client, test } = clientsFor(url);
+      // The P-256 verifier IS etched here, so the factors validate and the
+      // ONE thing left to make `initialize` revert is the insufficient gas
+      // below. A revert with two independent causes proves neither.
+      await test.setCode({ address: P256_VERIFIER, bytecode: loadP256OracleBytecode() });
       await deployCanonical(client, DEPLOYER_PK);
 
       const paper = new LocalSecp256k1Signer(PAPER_PK);
@@ -262,16 +266,23 @@ describe("birth e2e", () => {
       const cloud = new LocalSecp256k1Signer(CLOUD_PK);
       const blob = await buildBirthBlob({ factors: [paper, device, cloud], chainRpc: url });
 
-      // An invalid birth signature reverts before factor validation. Force a
-      // plausible estimate so the test reaches a mined reverted receipt,
-      // rather than stopping at the node's correct simulation failure.
+      // The blob is canonical and untampered: this is a birth that fails ON
+      // CHAIN, after the authorization has already been applied, not one the
+      // client could have refused. The forced estimate is well below a real
+      // birth (375,598 gas, measured on both public testnets), so the call
+      // runs out of gas and the receipt comes back reverted. Raising it to a
+      // sufficient value makes this test fail — that is how the mechanism was
+      // verified rather than asserted.
+      //
+      // An earlier revision forced the revert with a `birthSig: "0x00"` field.
+      // Rootless births have no such field, submission ignored it, and the
+      // revert was in fact coming from causes the comment never named.
       const clientWithForcedEstimate = Object.create(client) as PublicClient;
       clientWithForcedEstimate.estimateGas = async () => 300_000n;
-      const revertedBlob = { ...blob, birthSig: "0x00" as Hex };
 
       let thrown: unknown;
       try {
-        await submitBirth(clientWithForcedEstimate, DEPLOYER_PK, revertedBlob, 31337);
+        await submitBirth(clientWithForcedEstimate, DEPLOYER_PK, blob, 31337);
       } catch (error) {
         thrown = error;
       }

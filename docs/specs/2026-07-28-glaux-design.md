@@ -243,7 +243,7 @@ signer-side rules that follow from it.
    preventable only signer-side.
 6. **Cloud breach**: worth exactly 1 factor of 3.
 7. *(revised v0.2)* **A code hash binds bytecode, not behaviour.** Identical
-   bytecode at the signed hash may still be a proxy pointing elsewhere, or may
+   bytecode at the committed hash may still be a proxy pointing elsewhere, or may
    read storage a client did not review. The check makes cross-chain code
    identical; it does not make it correct.
 8. *(revised v0.2)* **Upgrades are irreversible in one direction**: once the
