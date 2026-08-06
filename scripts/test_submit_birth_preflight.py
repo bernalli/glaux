@@ -289,13 +289,15 @@ class _ExplodingWeb3:
         self.eth = _ExplodingEth()
 
 
-def test_submit_birth_refuses_an_authorization_signed_by_another_key() -> None:
+def test_submit_birth_refuses_an_authorization_recovering_elsewhere() -> None:
     """The authorization gate must hold on the PUBLIC path, not only when called directly.
 
     `submit_birth` runs `assert_blob_authorization` ahead of the pre-birth
-    storage preflight and of any transaction building, so a blob whose
-    EIP-7702 tuple was signed by a key other than `blob["account"]` must be
-    refused without a single RPC call: the `_ExplodingWeb3` stub turns any
+    storage preflight and of any transaction building, so a blob whose EIP-7702
+    tuple recovers to an address other than the `blob["account"]` it declares
+    must be refused without a single RPC call. This fixture reaches that state
+    the cheap way, by rewriting the declared account rather than re-crafting
+    the tuple; the gate compares the two and cannot tell which side moved: the `_ExplodingWeb3` stub turns any
     read — `get_code`, `get_storage_at`, `chain_id`, the gas estimate — into a
     failure, which is what makes "nothing downstream was reached" an assertion
     rather than an assumption.
