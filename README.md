@@ -34,8 +34,9 @@ take on it: the account **is** an EOA — same address on every chain, no
 factories, nothing counterfactual — delegated to an immutable router that
 enforces 2-of-3 verification over three independent factors (device P-256 /
 Secure Enclave via the native precompiles, plus two secp256k1 keys). One
-signed **birth blob** replays on any chain, whenever that chain is first
-touched; one signed rotation replays the same way. Verification lives in a
+**birth blob** replays on any chain, whenever that chain is first touched —
+nothing signs it, because a rootless birth has no key to sign with; one signed
+rotation replays the same way. Verification lives in a
 replaceable slot, so the factor layer can adopt new signature schemes without
 moving funds or changing address: today it verifies secp256k1 and P-256, and
 the slot is the designed migration path for schemes that become verifiable

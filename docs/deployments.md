@@ -15,8 +15,9 @@
 >
 > Consequences, stated plainly:
 >
-> - the accounts born on Sepolia and Base Sepolia are delegated to the old router
->   and keep working under it; they are the previous generation, not this one;
+> - the earlier accounts recorded below are delegated to the old router and keep
+>   working under it; they are the previous generation, not this one. The account
+>   born on 2026-08-06 is delegated to the canonical router instead;
 > - **every birth blob of the old format is unspendable on the canonical router** —
 >   it carries a `birthSig` field the new router does not read, and it names the old
 >   one. It is not void in an absolute sense: the previous router is immutable and
@@ -665,8 +666,10 @@ top of this file records). That is the rule stated under *Local two-chain
 end-to-end* — artifact hash to compare builds, deployed hash to compare chains —
 and it bites harder on this router than on the previous one: `GlauxDelegate` now
 carries two immutables, `SELF` and `AUTH_MSG_HASH`, both placeholders in the
-artifact and both written at construction. The two forms are 2,357 bytes each and
-differ only in those slots.
+artifact and both written at construction. The two forms are 2,356 bytes each and
+differ in exactly 84 bytes: the three reference slots the artifact declares, at
+offsets 302, 564 and 871. Substituting the deployed values into the artifact
+makes it byte-for-byte equal to the live code.
 
 The checks that do bind the deployed contract to this source are these, all run
 against the live chains after the broadcast:
@@ -677,8 +680,12 @@ against the live chains after the broadcast:
   on both chains, equal to `keccak256(0x05 ‖ rlp([0, ROUTER, 0]))` computed
   independently from the router address — so the immutable that every rootless
   birth proof recovers against was baked correctly, and identically, on both;
-- the runtime code hash matches between the two chains, which is what the
-  same-address-everywhere property actually rests on;
+- the runtime code hash matches between the two chains. This is a consistency
+  check, not the foundation: the router's address rests on CREATE2 over the
+  deployer, the salt and the **initcode** hash, and the account's address rests
+  on recovery from the authorization tuple. Equal runtime hashes derive neither,
+  but a mismatch would mean the two chains are running different code behind the
+  same address, which is worth failing on;
 - the implementation's code hash still equals the constant the SDK ships.
 
 Before spending anything, the P-256 fork probe was re-run against both endpoints
