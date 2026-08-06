@@ -165,7 +165,10 @@ def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
     nonce. Nobody holds a key for the crafted authority, so it can never send a
     transaction of its own: every chain the blob has not reached sees nonce 0,
     and a chain that HAS applied the tuple sees 1 and will not apply it again.
-    A tuple naming any other nonce is therefore unusable everywhere.
+    For THIS authority, then, a tuple naming any other nonce is usable nowhere;
+    for an ordinary key's tuple it would apply on whichever chains that key
+    currently sits at N, which is a subset and never all of them. Either way it
+    is not the chain-agnostic blob the design requires.
 
     This test mutates the nonce field of an otherwise canonical blob. That is
     enough for what it checks: the nonce gate runs before recovery, so it is

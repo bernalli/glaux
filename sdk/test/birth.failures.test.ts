@@ -162,11 +162,13 @@ it("rejects a chain-specific authorization before preflight", async () => {
 it("rejects an authorization whose nonce is not zero before preflight", async () => {
   // A retained birth blob is replayable on every chain not yet reached only
   // while its authorization names nonce 0: EIP-7702 checks the tuple's nonce
-  // against the authority's CURRENT account nonce, and a crafted authority can
-  // never send a transaction of its own, so its nonce is 0 wherever the blob
-  // has not landed and 1 wherever it has. A tuple naming N > 0 is usable
-  // nowhere. The canonical builder writes 0 (`src/birth/blob.ts`); an imported
-  // blob has to be checked.
+  // against the authority's CURRENT account nonce, and a crafted authority
+  // never transacts, so it sits at 0 wherever the blob has not landed. The
+  // fixture below is the imported-blob case this gate exists for: an ORDINARY
+  // key's tuple, signed for nonce 7, which would apply on whichever chains
+  // that key currently sits at 7 — a subset, never all — instead of the
+  // chain-agnostic blob the design rests on. The canonical builder writes 0
+  // (`src/birth/blob.ts`); an imported blob has to be checked.
   const signed = await signAuthorization({
     privateKey: RELAYER,
     address: BLOB.router,

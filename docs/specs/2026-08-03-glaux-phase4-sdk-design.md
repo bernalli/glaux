@@ -173,8 +173,9 @@ aderyn). Pinned toolchain, as everywhere else in the repo.
   fixture-generation forge script is test tooling, not contract surface.)
 - The SDK is the surface of the **second internal audit pass** (already a
   roadmap item): new code does not inherit the trust of reviewed code.
-- Client-guidance rules become executable: pre-birth preflight, ROUTER in the
-  signing step, raw-first reconciliation ordering, signature normalization.
+- Client-guidance rules become executable: pre-birth preflight, ROUTER as the
+  authorization tuple's target, raw-first reconciliation ordering, signature
+  normalization.
 - No secrets in the repo; provider keys via environment, and the relayer key is
   never read from or written to the working tree.
 

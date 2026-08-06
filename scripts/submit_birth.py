@@ -147,9 +147,9 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     blob single-use per chain while still replayable everywhere it has not
     landed. This tooling cannot produce a tuple naming any other nonce; the
     check is for an IMPORTED blob, whose tuple an ordinary key could have
-    signed for nonce N. Such a tuple applies, at best, on the single chain
-    where that key sits at N -- and elsewhere the delegation is silently
-    skipped.
+    signed for nonce N. Such a tuple applies only on the chains where that key
+    currently sits at N -- some subset, never all of them -- and elsewhere the
+    delegation is silently skipped.
     """
     authorization = blob["authorization"]
     account = to_checksum_address(blob["account"])
