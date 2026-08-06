@@ -118,9 +118,11 @@ export class InvalidP256PrivateKeyError extends Error {
  * local build artifact. Reading an empty account's code and hashing it would
  * silently produce `keccak256("")` rather than fail: a value that can never
  * match a real `implementation.codehash`, so a blob built against it would be
- * permanently unusable — and a birth blob cannot be revoked or rebuilt into
- * the same account, because the account address is derived from the very
- * configuration a rebuild would change. The failure has to happen here.
+ * permanently unusable. Rebuilding is not a free repair: the account address
+ * covers the configuration, so a blob corrected here names a DIFFERENT account
+ * (and with a random-nonce signer the original cannot be recreated at all —
+ * `docs/client-guidance.md`). The failure has to happen before anyone treats
+ * the first address as theirs.
  */
 export class ImplementationNotDeployedError extends Error {
   constructor(implementation: Address) {
@@ -311,8 +313,10 @@ export class BirthPreflightError extends Error {
  * This is intentionally distinct from `BirthPreflightError`: the latter means
  * the account was read successfully and is unsafe to birth, whereas this
  * error means the account's safety is unknown. An unknown account must never
- * be treated as an empty EOA: the blob is one-shot per chain, and by the time
- * an erroneous preflight is discovered the authorization has been applied.
+ * be treated as an empty EOA: `submitBirth` awaits this check before it builds
+ * a transaction, so raising here is what keeps the authorization unapplied —
+ * a caller that suppresses this failure and broadcasts anyway has spent the
+ * blob on that chain and cannot take it back.
  */
 export class BirthPreflightReadError extends Error {
   readonly account: Address;

@@ -109,9 +109,9 @@ async function assertCanonicalBlob(blob: BirthBlob): Promise<void> {
   }
   // EIP-7702 validates the tuple's nonce against the authority's CURRENT
   // account nonce, so only nonce 0 is universally replayable: the authority is
-  // a crafted address nobody holds a key for, so it can never send a
-  // transaction of its own, which means every chain it has not reached yet
-  // sees it at nonce 0. Applying the
+  // a crafted address for which no key was generated or is known, so — assuming
+  // secp256k1 holds — it cannot originate an ordinary EOA transaction, and
+  // every chain it has not reached yet sees it at nonce 0. Applying the
   // tuple bumps that authority's nonce to 1, which is exactly what makes the
   // blob single-use per chain while still replayable on every chain it has not
   // reached. A tuple signed for any other nonce is broadcastable, at best, on
