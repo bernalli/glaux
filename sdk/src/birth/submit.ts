@@ -217,8 +217,8 @@ async function assertBirthReadback(client: PublicClient, blob: BirthBlob): Promi
  * always signs for), so a caller never has to remember to call it separately.
  *
  * `relayer` (a private key) only pays gas: submission is permissionless, the
- * relayer never needs to hold the birth key, and the same blob can be
- * broadcast by anyone, on any chain, exactly once.
+ * blob authorizes itself and needs no key from whoever carries it, and it can
+ * be broadcast by anyone, on any chain, exactly once.
  *
  * Gas is estimated WITH the authorization list attached — see
  * `MIN_PLAUSIBLE_BIRTH_GAS`'s documentation for why an estimate taken

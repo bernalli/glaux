@@ -39,9 +39,7 @@ INITIALIZE_SELECTOR = keccak(text="initialize(address,bytes32,bytes,bytes32,uint
 # against Solidity-derived values in test/fixtures/sdk_parity.json.
 CANONICAL_ROUTER = "0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
 CANONICAL_IMPLEMENTATION = "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d"
-CANONICAL_IMPL_CODE_HASH = (
-    "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
-)
+CANONICAL_IMPL_CODE_HASH = "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
 
 # The namespaced slots GlauxStorage owns (same derivation as reconcile.py's BASE_SLOT /
 # IMPL_SLOT). A birth blob must only ever be broadcast to an address that has never been
@@ -73,9 +71,7 @@ class InvalidBirthBlobError(SystemExit):
 
     def __init__(self, field: str, reason: str) -> None:
         self.field = field
-        super().__init__(
-            f"InvalidBirthBlobError ({field}): refusing to submit: {reason}"
-        )
+        super().__init__(f"InvalidBirthBlobError ({field}): refusing to submit: {reason}")
 
 
 class BirthGasEstimationError(SystemExit):
@@ -141,9 +137,10 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     ``chainId == 0`` is equally mandatory: otherwise the retained blob stops
     being replayable on every chain, which is Glaux birth's core invariant.
     ``nonce == 0`` for the same reason: EIP-7702 validates the tuple's nonce
-    against the authority's CURRENT account nonce, and a birth key never sends
-    a transaction of its own, so every chain the blob has not reached yet sees
-    it at 0. Applying the tuple bumps that nonce to 1, which is what makes the
+    against the authority's CURRENT account nonce, and the crafted authority is
+    an address for which no key was generated or is known — so, assuming
+    secp256k1 holds, it cannot originate a transaction of its own and every
+    chain the blob has not reached yet sees it at 0. Applying the tuple bumps that nonce to 1, which is what makes the
     blob single-use per chain while still replayable everywhere it has not
     landed. A tuple signed for any other nonce applies, at best, on the single
     chain that happens to match -- and elsewhere the delegation is silently
@@ -155,30 +152,22 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
     target = to_checksum_address(authorization["address"])
     if router != to_checksum_address(CANONICAL_ROUTER):
         raise InvalidBirthBlobError("router", "birth blob router is not canonical")
-    if to_checksum_address(blob["implementation"]) != to_checksum_address(
-        CANONICAL_IMPLEMENTATION
-    ):
-        raise InvalidBirthBlobError(
-            "implementation", "birth blob implementation is not canonical"
-        )
+    if to_checksum_address(blob["implementation"]) != to_checksum_address(CANONICAL_IMPLEMENTATION):
+        raise InvalidBirthBlobError("implementation", "birth blob implementation is not canonical")
     if blob["expectedCodeHash"].lower() != CANONICAL_IMPL_CODE_HASH:
-        raise InvalidBirthBlobError(
-            "expectedCodeHash", "birth blob expectedCodeHash is not canonical"
-        )
+        raise InvalidBirthBlobError("expectedCodeHash", "birth blob expectedCodeHash is not canonical")
     if target != router:
         raise InvalidBirthBlobError(
-            "authorization target",
-            "refusing to submit: birth blob authorization target differs from its router"
+            "authorization target", "refusing to submit: birth blob authorization target differs from its router"
         )
     if authorization["chainId"] != 0:
         raise InvalidBirthBlobError(
             "authorization chainId",
-            "refusing to submit: birth blob authorization chainId must be 0 for cross-chain replay"
+            "refusing to submit: birth blob authorization chainId must be 0 for cross-chain replay",
         )
     if authorization["nonce"] != 0:
         raise InvalidBirthBlobError(
-            "authorization nonce",
-            "refusing to submit: birth blob authorization nonce must be 0 for cross-chain replay"
+            "authorization nonce", "refusing to submit: birth blob authorization nonce must be 0 for cross-chain replay"
         )
 
     try:
@@ -230,9 +219,7 @@ def assert_blob_authorization(blob: dict[str, Any]) -> None:
         )
 
 
-def preflight_fresh_account(
-    w3: Web3, account_address: str, router_address: str
-) -> None:
+def preflight_fresh_account(w3: Web3, account_address: str, router_address: str) -> None:
     """Abort before broadcasting if the target account is not a pristine EOA.
 
     An EIP-7702 re-delegation does not clear storage, so a birth blob must only be
@@ -244,9 +231,7 @@ def preflight_fresh_account(
     zero. See docs/client-guidance.md (Birth) and threat-model residual 17. Read-only;
     raises SystemExit on any violation.
     """
-    expected_designator = bytes.fromhex("ef0100") + to_bytes(
-        hexstr=to_checksum_address(router_address)
-    )
+    expected_designator = bytes.fromhex("ef0100") + to_bytes(hexstr=to_checksum_address(router_address))
     code = bytes(w3.eth.get_code(account_address))
     if len(code) != 0 and code != expected_designator:
         sys.exit(
@@ -267,11 +252,7 @@ def preflight_fresh_account(
         slot = STORAGE_SLOT + offset
         word = w3.eth.get_storage_at(account_address, slot)
         if int.from_bytes(word, "big") != 0:
-            kind = (
-                "storage header word"
-                if offset == 0
-                else f"FactorSlot word (STORAGE_SLOT+{offset})"
-            )
+            kind = "storage header word" if offset == 0 else f"FactorSlot word (STORAGE_SLOT+{offset})"
             sys.exit(
                 f"refusing to submit: {account_address} has a non-zero Glaux {kind} "
                 f"at slot {slot} — its storage was pre-planted (threat-model residual 17)."
@@ -328,9 +309,7 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
             }
         )
     except Exception as exc:  # any refusal to price is a refusal to broadcast
-        raise BirthGasEstimationError(
-            "the node would not price this birth with its authorization list"
-        ) from exc
+        raise BirthGasEstimationError("the node would not price this birth with its authorization list") from exc
     if not isinstance(estimate, int) or estimate < MIN_PLAUSIBLE_BIRTH_GAS:
         raise BirthGasEstimationError(
             f"estimate {estimate} is below the plausible floor "
@@ -374,9 +353,7 @@ def submit_birth(w3: Web3, relayer_key: str, blob: dict[str, Any]) -> dict[str, 
 def main() -> None:
     """Parse CLI args, submit the birth blob to `--rpc`, and print the receipt as JSON."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--rpc", required=True, help="JSON-RPC endpoint of the target chain"
-    )
+    parser.add_argument("--rpc", required=True, help="JSON-RPC endpoint of the target chain")
     parser.add_argument("--blob", required=True, help="path to a birth blob JSON file")
     args = parser.parse_args()
 

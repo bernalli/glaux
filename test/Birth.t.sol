@@ -344,9 +344,9 @@ contract BirthTest is GlauxFixture {
     }
 
     /// @notice Proves `expectedCodeHash` is cryptographically bound INTO the digest,
-    ///         not merely compared at runtime: the blob is signed over a wrong hash
+    ///         not merely compared at runtime: the blob is crafted over a wrong hash
     ///         and submitted with the right one. Without the field in the digest
-    ///         this would satisfy both the signature check and the hash comparison.
+    ///         this would satisfy both the recovery check and the hash comparison.
     function test_birth_rejectsSignatureBoundToADifferentCodeHash() public {
         bytes memory initData = abi.encode(_slots(), _proofs());
         (address bornAt, bytes32 salt, uint256 s) =
@@ -422,7 +422,7 @@ contract BirthTest is GlauxFixture {
         GlauxDelegate(payable(bornAt)).initialize(address(impl), wrongCodeHash, initData, salt, s);
     }
 
-    function test_birth_rejectsDifferentCompatibleCodeAtSignedHash() public {
+    function test_birth_rejectsDifferentCompatibleCodeAtCommittedHash() public {
         GlauxAccount otherImpl = new GlauxAccount(address(0xE47));
         bytes memory initData = abi.encode(_slots(), _proofs());
         bytes32 signedCodeHash = address(impl).codehash;
@@ -587,8 +587,9 @@ contract BirthTest is GlauxFixture {
     ///         Glaux from any wallet built on the ordinary ERC-1967 proxy pattern
     ///         arrives with that shared slot already occupied. Glaux must not read a
     ///         slot it does not own: doing so would make birth revert
-    ///         `AlreadyInitialized()` forever on that chain, with no birth key left
-    ///         to retry and the funds unreachable.
+    ///         `AlreadyInitialized()` forever on that chain, with no way to retry —
+    ///         the account address is fixed by the configuration — and the funds
+    ///         unreachable.
     function test_birth_succeedsDespiteAForeignErc1967Pointer() public {
         ForeignProxyLogic foreign = new ForeignProxyLogic();
         vm.store(
@@ -834,7 +835,7 @@ contract BirthTest is GlauxFixture {
     /// @notice Residual 17, second outcome: the prior delegate plants a FULL Glaux
     ///         `Layout` — `initialized = true`, `IMPL_SLOT` pointing at the real
     ///         implementation, and all three factor slots holding attacker-controlled
-    ///         secp256k1 addresses — before the EOA ever signs a Glaux birth blob. The
+    ///         secp256k1 addresses — before the EOA ever delegates to Glaux. The
     ///         account never goes through `initialize`, yet the moment it delegates to
     ///         the router it reads as a fully born Glaux account whose 2-of-3 quorum
     ///         the attacker alone satisfies, and can drain funds sent to it.

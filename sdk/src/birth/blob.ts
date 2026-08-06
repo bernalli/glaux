@@ -255,18 +255,19 @@ export interface BuildBirthBlobParams {
 }
 
 /**
- * Generates the ephemeral birth key, signs the EIP-7702 authorization tuple
- * (chain-agnostic: `chainId 0`, `nonce 0`, naming the canonical `ROUTER`) and
- * the chain-agnostic init digest, and returns the full birth blob — ported
- * from `scripts/birth.py:build_birth_blob`. JSON field names are identical to
+ * Crafts the EIP-7702 authorization tuple (chain-agnostic: `chainId 0`,
+ * `nonce 0`, naming the canonical `ROUTER`) against the chain-agnostic init
+ * digest, and returns the full birth blob — ported from
+ * `scripts/birth.py:build_birth_blob`. JSON field names are identical to
  * that function's return dict, so a blob built here is submittable by
  * `scripts/submit_birth.py` unchanged (see `sdk/test/birth.e2e.test.ts`'s
  * schema-parity test).
  *
- * The birth key exists only in this function's stack: it is generated, used
- * for exactly two signatures, and never returned or persisted. See
- * `docs/client-guidance.md`'s "A surviving birth key is a permanent master
- * key" for why that matters.
+ * No key is generated here and none is destroyed afterwards, because none ever
+ * exists: `r` is derived from the init digest, `s` carries the router's
+ * rootless tag, and the account is the address that pair recovers to. That is
+ * what closes the hazard `docs/threat-model.md` records as residual 1 — a
+ * surviving birth key would have been a permanent master key.
  *
  * `expectedCodeHash` is read LIVE from `chainRpc` (`keccak256` of `IMPL`'s
  * deployed bytecode), never assumed from a local build artifact — the same

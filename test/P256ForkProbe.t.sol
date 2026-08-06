@@ -36,7 +36,7 @@ import {SignatureVerify} from "../src/lib/SignatureVerify.sol";
 ///      then `input.settings.evmVersion` in `out/build-info/*.json` (2026-07-29:
 ///      `prague` under both invocations).
 ///      The addresses and the implementation code hash are therefore byte-identical
-///      with and without it, and nothing a birth blob signs moves.
+///      with and without it, and nothing a birth blob commits to moves.
 ///
 ///      That guarantee is tied to the pinned compiler. Should `src` ever move to
 ///      solc >= 0.8.29, `osaka` would reach the compiler for real and could change

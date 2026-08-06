@@ -16,7 +16,7 @@ import { deployCanonical } from "./helpers/deploy.js";
 
 /**
  * This suite is the SDK-driven counterpart to `scripts/two_chain_proof.sh`
- * (see steps 1-6 there): the same claim — one birth blob, signed once,
+ * (see steps 1-6 there): the same claim — one birth blob, crafted once,
  * produces the identical account with identical state on every EVM chain —
  * proven end-to-end through `sdk/src/birth/*` instead of the Python
  * tooling, on two independent local anvil chains with genuinely different

@@ -33,7 +33,7 @@ exit code rather than a verdict.
 | `test` | `forge fmt --check`, `forge build --sizes`, `forge test -vvv` |
 | `slither` | static analysis, `fail-on: high`; scoping lives in `slither.config.json` |
 | `aderyn` | the gate is the report PARSER, not the exit code — aderyn always exits 0 |
-| `python` | `ruff check scripts` + `pytest scripts` — the off-chain tooling signs the blobs the contracts verify, so it gets the same gate the Solidity does |
+| `python` | `ruff check scripts` + `pytest scripts` — the off-chain tooling builds the blobs the contracts verify, so it gets the same gate the Solidity does |
 | `node` | `npm run typecheck` + `npm test`; it builds a venv because of the cross-checks above |
 
 Slither is not expected to be installed locally; the triage of its findings is in
@@ -72,7 +72,7 @@ Slither is not expected to be installed locally; the triage of its findings is i
 
 - **`bytecode_hash = "none"` in foundry.toml is untouchable.** The bytecode must stay
   reproducible from the source alone: that value feeds both the canonical CREATE2 address and
-  the runtime code hash every birth blob signs. Changing it invalidates unspent blobs and can
+  the runtime code hash every birth blob commits to. Changing it invalidates unspent blobs and can
   make birth impossible on chains not yet reached.
 - The same applies to the other compilation settings (`evm_version = "prague"`,
   `optimizer_runs = 10000`): they participate in the bytecode and therefore in the canonical

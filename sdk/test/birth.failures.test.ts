@@ -164,8 +164,8 @@ it("rejects an authorization whose nonce is not zero before preflight", async ()
   // authorization names nonce 0: EIP-7702 checks the tuple's nonce against the
   // authority's CURRENT account nonce, so a tuple signed for nonce N > 0 is
   // valid on exactly the chains where the account has already sent N
-  // transactions -- which for a freshly generated birth key is nowhere at all,
-  // and for a reused key is one chain rather than all of them. The canonical
+  // transactions -- which for a crafted authority nobody holds a key for is
+  // nowhere at all, and for an ordinary EOA is one chain rather than all. The canonical
   // builder writes 0 (`src/birth/blob.ts`); an imported blob has to be checked.
   const signed = await signAuthorization({
     privateKey: RELAYER,

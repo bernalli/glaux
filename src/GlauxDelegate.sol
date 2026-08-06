@@ -92,7 +92,7 @@ contract GlauxDelegate {
         // Guards the window in which the untrusted initializer runs. The pointer is
         // only written after the delegatecall returns, so without this a re-entrant
         // `initialize` would still see an unset pointer and could splice two
-        // independently signed birth blobs — implementation from one, factor
+        // independently crafted birth blobs — implementation from one, factor
         // configuration from the other. The shipped implementation happens to prevent
         // that by setting `initialized` before returning, but that is a convention of
         // replaceable code and this contract is permanent.
@@ -139,7 +139,7 @@ contract GlauxDelegate {
             revert InvalidImplementation();
         }
 
-        // Delegatecall to a signed target is what a proxy IS. The function id is a
+        // Delegatecall to a committed target is what a proxy IS. The function id is a
         // hardcoded literal, not input; the target is bound by the birth proof
         // and by the code-hash and marker checks immediately above.
         // slither-disable-next-line controlled-delegatecall

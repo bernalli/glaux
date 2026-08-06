@@ -16,8 +16,8 @@ library ImplementationCheck {
     ///         `GlauxStorage.COMPAT_ID`.
     /// @dev Three properties this deliberately enforces:
     ///
-    ///      1. The code hash is bound because one signed blob replays on every
-    ///         chain, and the same ADDRESS does not hold the same CODE everywhere.
+    ///      1. The code hash is bound because one blob replays on every chain,
+    ///         and the same ADDRESS does not hold the same CODE everywhere.
     ///
     ///      2. EIP-7702 delegation designators are rejected. EIP-3541 forbids
     ///         deploying code that begins with 0xEF, so a leading 0xEF byte can

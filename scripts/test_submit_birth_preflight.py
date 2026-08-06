@@ -37,9 +37,7 @@ ROUTER_DESIGNATOR = bytes.fromhex("ef0100") + bytes.fromhex(ROUTER[2:])
 RELAYER_KEY = "0x" + "33" * 32
 CANONICAL_ROUTER = "0x3ccF1cc0F702C084B31e691e057d8742ADF35790"
 CANONICAL_IMPLEMENTATION = "0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d"
-CANONICAL_IMPL_CODE_HASH = (
-    "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
-)
+CANONICAL_IMPL_CODE_HASH = "0xb32d638ed9bd6329b5b2f27e9dcaa3a9fc65f396315f67eef276cd6f89ac9106"
 
 
 class _StubEth:
@@ -164,7 +162,7 @@ def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
     """Only nonce 0 makes a retained blob replayable on every chain.
 
     EIP-7702 checks the tuple's nonce against the authority's CURRENT account
-    nonce, and a birth key never sends a transaction of its own, so every chain
+    nonce, and nobody holds a key for the crafted authority, so every chain
     sees it at 0 forever. This tuple is signed FOR nonce 5 by the blob's own
     account over the canonical router with chainId 0, so it recovers cleanly
     and every other gate in `assert_blob_authorization` passes it: the nonce is
@@ -178,12 +176,7 @@ def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
 
 
 def test_python_canonical_constants_match_shared_parity_fixture() -> None:
-    fixture_path = (
-        Path(__file__).resolve().parent.parent
-        / "test"
-        / "fixtures"
-        / "sdk_parity.json"
-    )
+    fixture_path = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "sdk_parity.json"
     canonical = json.loads(fixture_path.read_text(encoding="utf-8"))["canonical"]
 
     assert submitter.CANONICAL_ROUTER == canonical["router"]
@@ -285,9 +278,7 @@ class _ExplodingEth:
     """Any RPC access at all is a test failure, not a stubbed answer."""
 
     def __getattr__(self, name: str) -> Any:
-        raise AssertionError(
-            f"submit_birth touched the chain (w3.eth.{name}) instead of refusing the blob"
-        )
+        raise AssertionError(f"submit_birth touched the chain (w3.eth.{name}) instead of refusing the blob")
 
 
 class _ExplodingWeb3:
@@ -341,11 +332,7 @@ class _MinedEth:
         return b""
 
     def get_storage_at(self, _address: str, position: int) -> bytes:
-        if (
-            self._mined
-            and position == IMPL_SLOT
-            and self._installed_implementation is not None
-        ):
+        if self._mined and position == IMPL_SLOT and self._installed_implementation is not None:
             return bytes.fromhex("00" * 12 + self._installed_implementation[2:])
         return ZERO_WORD
 
