@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/assets/glaux-wordmark.png" alt="GLAUX — one address · every chain" width="640">
-</p>
+<img src="docs/assets/glaux-wordmark.png" alt="GLAUX — one address · every chain">
 
 <p align="center"><em>Glaux (γλαύξ) — the little owl the Athenians stamped on
 their silver tetradrachms to guard the coin.</em></p>
