@@ -129,3 +129,9 @@ on-chain; the birth submitters' gas-floor guard refuses such a birth rather than
 bricking, so this is a liveness state, not a loss — and there are no real funds at
 this stage. Confirming the canonical router is deployed on every target chain is a
 prerequisite for publication.
+
+> **Resolved on 2026-08-06.** The canonical router is deployed on Sepolia and
+> Base Sepolia at `0x3ccF1cc0…`, and an account was born on both from a single
+> blob to demonstrate it — see *Public testnet — canonical router deployed* in
+> `docs/deployments.md`. The liveness gap this note describes is closed; the note
+> is kept because it records what the reviewers saw on the day.
