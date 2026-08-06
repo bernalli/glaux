@@ -23,8 +23,10 @@
 >   still deployed, so such a blob would still be a valid birth *against that
 >   contract* on a chain it has not reached. It simply produces a
 >   previous-generation account, which is not what anyone should be creating now;
-> - the pending public redeploy (still waiting on a funded relayer key) now covers
->   the new router *and* the new blob format, not just a new implementation;
+> - the public redeploy this note used to leave pending was **done on 2026-08-06**
+>   and covers the new router — see *Public testnet — canonical router deployed*
+>   at the end of this file. The implementation was already at `0x21b5D576…` on both
+>   chains and was not touched;
 > - every birth procedure written below this note describes the birth-key
 >   ceremony. It is a record of how it was done, not an instruction: there is no
 >   birth key to generate, hold, or destroy any more.
@@ -628,3 +630,59 @@ search for private-key material under `cache/` after the deploy comes back empty
 
 The factor keys are again the **publicly known test vectors**. This account is
 controllable by anyone and must never hold anything.
+
+## Public testnet — canonical router deployed (2026-08-06)
+
+The rootless-birth router of 2026-08-05 reached the public testnets. This is the
+section the note at the top of this file points at: from here on, the canonical
+delegation target on Sepolia and Base Sepolia is
+`0x3ccF1cc0F702C084B31e691e057d8742ADF35790`, and the previous-generation router
+`0xB8270e4B…` stays deployed and immutable, still serving the accounts already
+born under it.
+
+Only the router was deployed. `GlauxAccount` was already at `0x21b5D576…` on both
+chains carrying the exact code hash the SDK pins, so `script/Deploy.s.sol` — which
+predicts both CREATE2 addresses and creates only what is missing — skipped it.
+
+| | Sepolia (11155111) | Base Sepolia (84532) |
+|---|---|---|
+| deploy tx | [`0xbdff134f…`](https://sepolia.etherscan.io/tx/0xbdff134f87d19f4a47ba048c581e527a5b0fb61a5684f3d2e1d99964c8af360c) | [`0x218f2543…`](https://sepolia.basescan.org/tx/0x218f254321d7df1c577daed581123038ea099d771f55ea668151379052d1b1e7) |
+| deploy gas | 561,297 | 561,297 |
+| `GlauxDelegate` | `0x3ccF1cc0F702C084B31e691e057d8742ADF35790` | same address |
+| runtime code hash | `0x0a696276aa368f55c148c2cf127b38da28c1f08658381a0d1e5f8cde71485209` | same hash |
+| `GlauxAccount` (impl) | `0x21b5D576AB4188Ee06DD866b6Fd4a23085A73f5d` (already deployed) | same |
+| impl runtime code hash | `0xb32d638e…` | same |
+
+Identical to the unit across two independent chains, as in every previous
+deployment: the same bytecode executing the same path costs the same everywhere.
+
+### What was checked, and why the artifact hash is not the check
+
+The router's runtime code hash on chain (`0x0a696276…`) does **not** equal the
+build artifact's `deployedBytecode` hash (`0x22250292…`, the value the note at the
+top of this file records). That is the rule stated under *Local two-chain
+end-to-end* — artifact hash to compare builds, deployed hash to compare chains —
+and it bites harder on this router than on the previous one: `GlauxDelegate` now
+carries two immutables, `SELF` and `AUTH_MSG_HASH`, both placeholders in the
+artifact and both written at construction. The two forms are 2,357 bytes each and
+differ only in those slots.
+
+The checks that do bind the deployed contract to this source are these, all run
+against the live chains after the broadcast:
+
+- the CREATE2 address predicted locally from the compiled creation code is
+  `0x3ccF1cc0F702C084B31e691e057d8742ADF35790` — the address that now holds code;
+- `AUTH_MSG_HASH()` returns `0x0badc060e335d1833b30debbcb05b5761517bdaf43d4e966a441d511b57a5208`
+  on both chains, equal to `keccak256(0x05 ‖ rlp([0, ROUTER, 0]))` computed
+  independently from the router address — so the immutable that every rootless
+  birth proof recovers against was baked correctly, and identically, on both;
+- the runtime code hash matches between the two chains, which is what the
+  same-address-everywhere property actually rests on;
+- the implementation's code hash still equals the constant the SDK ships.
+
+Before spending anything, the P-256 fork probe was re-run against both endpoints
+with `GLAUX_REQUIRE_FORK_CHECKS=1` (2 passed): without that variable a missing
+endpoint skips, and the command is green having checked nothing.
+
+Signing was again from the encrypted keystore (`--account`), never from a key in
+the environment or on a command line.
