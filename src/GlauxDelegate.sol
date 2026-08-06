@@ -47,7 +47,8 @@ contract GlauxDelegate {
     uint8 private constant ROOTLESS_V = 27;
 
     /// @dev `keccak256(0x05 ‖ rlp([chainId 0, SELF, nonce 0]))`: the message an
-    ///      EIP-7702 authorization tuple naming this router is signed over.
+    ///      EIP-7702 authorization tuple naming this router recovers against —
+    ///      signed over, for an ordinary tuple; crafted against, for a birth.
     ///      Fixed at construction because the router's own address is inside
     ///      it. `0x05d78094` is the magic byte, the 23-byte list header, the
     ///      zero chain id and the 20-byte address prefix; the trailing `0x80`

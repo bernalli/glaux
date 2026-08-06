@@ -311,7 +311,8 @@ future chains unreachable.
 
 ### 5. A code hash binds bytecode, not behaviour
 
-The installed bytecode is provably byte-for-byte what the signers intended.
+The installed bytecode is provably byte-for-byte the one the operation named:
+committed by the crafted `r` at birth, signed by the quorum on an upgrade.
 What that bytecode *does* is not thereby fixed across chains.
 
 Note what is *not* a source of divergence, since it is easy to get backwards:
@@ -328,8 +329,8 @@ storage. The real sources are:
 - **an implementation that is itself a proxy**, where identical bytecode
   forwards to different logic per chain.
 
-Signers verifying `expectedCodeHash` are verifying "this exact bytecode", not
-"this exact behaviour". Client guidance requires reviewing storage-layout
+Whoever fixes `expectedCodeHash` — the operator crafting a birth, the quorum
+signing an upgrade — fixes "this exact bytecode", not "this exact behaviour". Client guidance requires reviewing storage-layout
 compatibility, external dependencies and the preservation of `applyUpdate`
 itself, none of which any on-chain check can see.
 
