@@ -1,12 +1,15 @@
 """Submit a Glaux account-birth blob to one chain.
 
 Reads a birth blob produced by `scripts/birth.py`, builds a single EIP-7702
-type-4 (set-code) transaction that carries the signed authorization tuple
+type-4 (set-code) transaction that carries the crafted authorization tuple
 (delegating the born account's code to `GlauxDelegate`) and, in the same
 transaction, calls `GlauxDelegate.initialize(implementation, expectedCodeHash,
 initData, salt, s)` on the now-delegated account. Submission is
-permissionless: the relayer only pays gas and never needs to hold the birth
-key, so the same blob can be broadcast by anyone, on any chain, exactly once.
+permissionless: the relayer only pays gas and holds no key the blob depends on,
+so the same blob can be broadcast by anyone, on any chain. A chain that has
+applied the authorization is done with it; a chain whose `initialize` reverted
+can be retried with the same blob once the cause is fixed (see
+`preflight_fresh_account`).
 
 The relayer private key is read from the `GLAUX_RELAYER_KEY` environment
 variable and is never accepted as a CLI flag or printed. Set the variable

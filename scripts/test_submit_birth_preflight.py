@@ -159,14 +159,17 @@ def test_chain_specific_authorization_is_rejected() -> None:
 
 
 def test_authorization_with_a_non_zero_nonce_is_rejected() -> None:
-    """Only nonce 0 makes a retained blob replayable on every chain.
+    """Only nonce 0 makes a retained blob replayable on every chain not yet reached.
 
     EIP-7702 checks the tuple's nonce against the authority's CURRENT account
-    nonce, and nobody holds a key for the crafted authority, so every chain
-    sees it at 0 forever. This tuple is signed FOR nonce 5 by the blob's own
-    account over the canonical router with chainId 0, so it recovers cleanly
-    and every other gate in `assert_blob_authorization` passes it: the nonce is
-    the only thing left to refuse it for.
+    nonce. Nobody holds a key for the crafted authority, so it can never send a
+    transaction of its own: every chain the blob has not reached sees nonce 0,
+    and a chain that HAS applied the tuple sees 1 and will not apply it again.
+    A tuple naming any other nonce is therefore unusable everywhere.
+
+    This test mutates the nonce field of an otherwise canonical blob. That is
+    enough for what it checks: the nonce gate runs before recovery, so it is
+    the gate that refuses this blob, and no re-crafting is needed to reach it.
     """
     blob = _rootless_blob()
     blob["authorization"]["nonce"] = 5

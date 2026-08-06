@@ -160,13 +160,13 @@ it("rejects a chain-specific authorization before preflight", async () => {
 });
 
 it("rejects an authorization whose nonce is not zero before preflight", async () => {
-  // A retained birth blob is replayable on every chain only while its
-  // authorization names nonce 0: EIP-7702 checks the tuple's nonce against the
-  // authority's CURRENT account nonce, so a tuple signed for nonce N > 0 is
-  // valid on exactly the chains where the account has already sent N
-  // transactions -- which for a crafted authority nobody holds a key for is
-  // nowhere at all, and for an ordinary EOA is one chain rather than all. The canonical
-  // builder writes 0 (`src/birth/blob.ts`); an imported blob has to be checked.
+  // A retained birth blob is replayable on every chain not yet reached only
+  // while its authorization names nonce 0: EIP-7702 checks the tuple's nonce
+  // against the authority's CURRENT account nonce, and a crafted authority can
+  // never send a transaction of its own, so its nonce is 0 wherever the blob
+  // has not landed and 1 wherever it has. A tuple naming N > 0 is usable
+  // nowhere. The canonical builder writes 0 (`src/birth/blob.ts`); an imported
+  // blob has to be checked.
   const signed = await signAuthorization({
     privateKey: RELAYER,
     address: BLOB.router,
@@ -183,9 +183,11 @@ it("rejects an authorization whose nonce is not zero before preflight", async ()
     r: signed.r,
     s: signed.s,
   };
-  // Everything else about this tuple is canonical -- the canonical router as
-  // target, chain id 0, and an authority that really is `blob.account` -- so
-  // the non-zero nonce is the only thing left to refuse it for.
+  // The tuple is well formed and recovers cleanly -- canonical router as
+  // target, chain id 0 -- so the nonce is what refuses it. It recovers to an
+  // ordinary key's address rather than to `BLOB.account`, and deliberately so:
+  // the nonce gate runs before the authority is compared to the blob's
+  // account, which is what this test pins.
   expect(await recoverAuthorizationAddress({ authorization })).toBe(ACCOUNT);
 
   let preflightRead = false;

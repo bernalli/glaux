@@ -137,8 +137,8 @@ export function userOpDigest(account: Address, userOpHash: Hex, validUntil: numb
  * `keccak256(abi.encode(MSG_DOMAIN, chainId, account, hash, validUntil))`.
  * Like `execDigest`, this binds `chainId`; `userOpDigest` instead binds the
  * EntryPoint-provided `userOpHash`, whose own construction is chain-specific.
- * `initDigest` is deliberately chain-agnostic so it can be signed before the
- * account exists.
+ * `initDigest` is deliberately chain-agnostic: the birth authorization is
+ * crafted against it before the account exists anywhere.
  *
  * @throws {OperationExpiredError} if `validUntil === 0`.
  */

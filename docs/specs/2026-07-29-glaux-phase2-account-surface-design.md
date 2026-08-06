@@ -229,12 +229,12 @@ asserts equality. Either side changing alone turns the fixture red.
 
 This requires a Python job in CI — `ruff` plus `pytest` over `scripts/` — which does not
 exist today: the off-chain tooling has never been in CI at all, in a repo where the Python
-side builds the blobs.
+side signs the blobs.
 
 ## Bytecode and deployment consequences
 
 Adding functions changes `GlauxAccount`'s bytecode, therefore its canonical CREATE2 address
-and the runtime code hash every birth blob commits to. The two-chain local proof is regenerated
+and the runtime code hash every birth blob signs. The two-chain local proof is regenerated
 from scratch and the tables in `docs/deployments.md` are rewritten, as on every previous
 contract change.
 

@@ -245,7 +245,7 @@ and they are the difference between a design argument and an observation.
   length in one of the six slot words and pass undetected. **Never migrate an
   EOA whose code is non-empty and is not this blob's own designator.**
   `scripts/submit_birth.py` performs this check before broadcasting.
-- **The authorization tuple names the ROUTER.** The address you sign into it is
+- **The authorization tuple names the ROUTER.** The address it carries is
   `GlauxDelegate`, never the implementation. Delegating straight to the
   implementation used to hand the account to anyone; the H-1 fix now makes that
   configuration fail-closed (`initializeAccount` reverts `NotDuringBirth`), but a
@@ -319,7 +319,7 @@ One blob now installs byte-identical logic everywhere, or fails cleanly.
 
 **Deploy before you submit.** `initialize` reverts with
 `InvalidImplementation()` when the implementation has no code on the target
-chain, when its code hash differs from the signed one, or when the marker
+chain, when its code hash differs from the one the blob commits to, or when the marker
 is missing. This fails safely — under EIP-7702 the authorization is applied
 before the transaction executes and is not undone by a revert, so the
 delegation designator is written and stays on the account, but no Glaux

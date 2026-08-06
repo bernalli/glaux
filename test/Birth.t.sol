@@ -347,7 +347,7 @@ contract BirthTest is GlauxFixture {
     ///         not merely compared at runtime: the blob is crafted over a wrong hash
     ///         and submitted with the right one. Without the field in the digest
     ///         this would satisfy both the recovery check and the hash comparison.
-    function test_birth_rejectsSignatureBoundToADifferentCodeHash() public {
+    function test_birth_rejectsBlobBoundToADifferentCodeHash() public {
         bytes memory initData = abi.encode(_slots(), _proofs());
         (address bornAt, bytes32 salt, uint256 s) =
             _craftRootlessBirth(address(impl), bytes32(uint256(0xBAD)), initData);
@@ -425,15 +425,15 @@ contract BirthTest is GlauxFixture {
     function test_birth_rejectsDifferentCompatibleCodeAtCommittedHash() public {
         GlauxAccount otherImpl = new GlauxAccount(address(0xE47));
         bytes memory initData = abi.encode(_slots(), _proofs());
-        bytes32 signedCodeHash = address(impl).codehash;
-        assertNotEq(address(otherImpl).codehash, signedCodeHash);
+        bytes32 committedCodeHash = address(impl).codehash;
+        assertNotEq(address(otherImpl).codehash, committedCodeHash);
         (address bornAt, bytes32 salt, uint256 s) =
-            _craftRootlessBirth(address(otherImpl), signedCodeHash, initData);
+            _craftRootlessBirth(address(otherImpl), committedCodeHash, initData);
         _attachDelegation(bornAt, address(router));
 
         vm.expectRevert(InvalidImplementation.selector);
         GlauxDelegate(payable(bornAt))
-            .initialize(address(otherImpl), signedCodeHash, initData, salt, s);
+            .initialize(address(otherImpl), committedCodeHash, initData, salt, s);
     }
 
     function test_birth_rejectsImplementationWithoutCompatibilityMarker() public {

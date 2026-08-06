@@ -40,8 +40,8 @@ import {SignatureVerify} from "../src/lib/SignatureVerify.sol";
 ///
 ///      That guarantee is tied to the pinned compiler. Should `src` ever move to
 ///      solc >= 0.8.29, `osaka` would reach the compiler for real and could change
-///      the emitted bytecode — which would move the CREATE2 addresses and the signed
-///      code hash. At that point this test needs its own compilation profile rather
+///      the emitted bytecode — which would move the CREATE2 addresses and the
+///      committed code hash. At that point this test needs its own compilation profile rather
 ///      than a global flag. `prague` stays the build target regardless: the deployed
 ///      bytecode must run on chains that have not forked to Osaka.
 ///

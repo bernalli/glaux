@@ -216,9 +216,11 @@ async function assertBirthReadback(client: PublicClient, blob: BirthBlob): Promi
  * Runs `preflightFreshAccount` first (against the canonical router this SDK
  * always signs for), so a caller never has to remember to call it separately.
  *
- * `relayer` (a private key) only pays gas: submission is permissionless, the
- * blob authorizes itself and needs no key from whoever carries it, and it can
- * be broadcast by anyone, on any chain, exactly once.
+ * `relayer` (a private key) only pays gas: submission is permissionless, and
+ * the blob needs no key from whoever carries it. A chain that has applied the
+ * authorization is done with it; a chain whose `initialize` reverted can be
+ * retried with the same blob once the cause is fixed — which is why
+ * `preflightFreshAccount` accepts the designator as well as empty code.
  *
  * Gas is estimated WITH the authorization list attached — see
  * `MIN_PLAUSIBLE_BIRTH_GAS`'s documentation for why an estimate taken
