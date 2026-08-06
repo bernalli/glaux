@@ -1,16 +1,18 @@
 """Generate a Glaux account-birth blob.
 
-Creates an ephemeral EOA (the "birth key"), signs the EIP-7702 authorization
-tuple (``chainId=0``, ``nonce=0``, ``address=<router>``) that delegates the
-EOA's code to the ``GlauxDelegate`` router, and signs the chain-agnostic init
-digest that binds the three initial factor slots (paper/device/cloud) to the
-account. The birth key exists only in process memory: it is generated,
-used to sign, and discarded when the process exits. It is never written to
-disk, logged, or printed.
+Births are rootless: **no key is created here, and none is destroyed
+afterwards, because none ever exists.** The chain-agnostic init digest binding
+the three factor slots (paper/device/cloud) is computed first, and then an
+EIP-7702 authorization tuple (``chainId=0``, ``nonce=0``, ``address=<router>``)
+is CRAFTED rather than signed: ``r`` is derived from the digest, ``s`` carries
+the ``ROOTLESS_S_PREFIX`` tag, and the account is whatever address that tuple
+recovers to. Nobody holds a key for it, so nobody can birth it into a different
+configuration — the property the ephemeral "birth key" of earlier versions had
+to be trusted to destroy.
 
-The resulting JSON blob (authorization tuple + init data + birth signature)
-is chain-agnostic by construction: it can be submitted, unmodified, to any
-chain where the same ``GlauxDelegate``/``GlauxAccount`` bytecode was deployed
+The resulting JSON blob (crafted authorization tuple + init data + salt) is
+chain-agnostic by construction: it can be submitted, unmodified, to any chain
+where the same ``GlauxDelegate``/``GlauxAccount`` bytecode was deployed
 deterministically via CREATE2, producing the same account address with the
 same configuration everywhere.
 
@@ -112,9 +114,7 @@ def eip191_v0(validator: str, struct_hash: bytes) -> bytes:
     so Glaux blobs keep replaying on every chain, while the prefix keeps a Glaux
     digest out of reach of raw-hash signing APIs.
     """
-    return keccak(
-        b"\x19\x00" + to_bytes(hexstr=to_checksum_address(validator)) + struct_hash
-    )
+    return keccak(b"\x19\x00" + to_bytes(hexstr=to_checksum_address(validator)) + struct_hash)
 
 
 def build_init_digest(
@@ -167,11 +167,7 @@ def authorization_message_hash(router: str) -> bytes:
     The RLP of that tuple is `0xd7 0x80 0x94 || address || 0x80`: a list header
     for 23 bytes, the zero chain id, the 20-byte address, and the zero nonce.
     """
-    return keccak(
-        bytes.fromhex("05d78094")
-        + to_bytes(hexstr=to_checksum_address(router))
-        + b"\x80"
-    )
+    return keccak(bytes.fromhex("05d78094") + to_bytes(hexstr=to_checksum_address(router)) + b"\x80")
 
 
 def craft_rootless_authorization(digest: bytes, router: str) -> RootlessProof:
@@ -288,20 +284,14 @@ def build_birth_blob(
 def main() -> None:
     """Parse CLI args, build the birth blob, and print it as JSON on stdout."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--router", required=True, help="deployed GlauxDelegate address"
-    )
-    parser.add_argument(
-        "--impl", required=True, help="deployed GlauxAccount implementation address"
-    )
+    parser.add_argument("--router", required=True, help="deployed GlauxDelegate address")
+    parser.add_argument("--impl", required=True, help="deployed GlauxAccount implementation address")
     parser.add_argument(
         "--expected-code-hash",
         required=True,
         help="32-byte runtime code hash of --impl (printed by script/Deploy.s.sol)",
     )
-    parser.add_argument(
-        "--paper", required=True, help="paper factor: secp256k1 address (slot 0)"
-    )
+    parser.add_argument("--paper", required=True, help="paper factor: secp256k1 address (slot 0)")
     parser.add_argument(
         "--device-qx",
         required=True,
@@ -314,9 +304,7 @@ def main() -> None:
         type=_hex_to_int,
         help="device factor: P-256 qy (slot 1)",
     )
-    parser.add_argument(
-        "--cloud", required=True, help="cloud factor: secp256k1 address (slot 2)"
-    )
+    parser.add_argument("--cloud", required=True, help="cloud factor: secp256k1 address (slot 2)")
     for flag, who, slot in (
         ("--paper-proof", "paper", 0),
         ("--device-proof", "device", 1),
