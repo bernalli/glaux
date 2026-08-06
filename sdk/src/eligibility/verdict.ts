@@ -28,8 +28,9 @@ export interface ChainEligibilityProbes {
  * The result of `checkChain`.
  *
  * Gate rule (spec §5): callers MUST consult this before ever displaying a
- * Glaux address as a receive address. Glaux's address is an EOA whose birth
- * key is destroyed once it is born; on a chain where it has NOT been born,
+ * Glaux address as a receive address. Glaux's address is an EOA nobody holds
+ * a key for — it is derived from the birth configuration, not from a keypair —
+ * so it can only ever act where it has been born. On a chain where it has NOT,
  * funds sent there arrive but are FROZEN until a birth happens on that same
  * chain — and birth is impossible on a chain that lacks EIP-7702 or the
  * P-256 precompile until that chain upgrades. `"ineligible"` names exactly
