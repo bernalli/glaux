@@ -24,6 +24,14 @@ scripts/requirements.txt`. Four tests in `sdk/test/reconcile.test.ts` spawn the 
 `scripts/reconcile.py` from `.venv/bin/python`, so without that venv they fail with a null
 exit code rather than a verdict.
 
+**Foundry is pinned to 1.7.1** on every development machine (`foundryup -i 1.7.1`). With
+1.8.1 `test_userOp_oversizedSignatureFailsValidationWithoutReverting` goes red because the
+gas consumed differs; the same commit is green (215/215) on 1.7.1. A failure that appears
+right after a toolchain change is compared against the previous toolchain before it is
+treated as a regression. For a default foundryup installation on Linux, `forge` lives
+in `~/.foundry/bin`. If that directory is missing from a non-interactive shell's
+`PATH`, invoke `~/.foundry/bin/forge` explicitly.
+
 ## CI
 
 `.github/workflows/ci.yml` runs five jobs:
