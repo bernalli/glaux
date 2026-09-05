@@ -6,6 +6,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - run: forge fmt --check
       - run: forge build --sizes
       - run: forge test -vvv
@@ -18,6 +20,8 @@ jobs:
       # only auto-installs Foundry when it finds a foundry.toml inside the
       # target directory, so a target of "src/" leaves forge missing entirely.
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       # Target the project root, not src/, so crytic-compile gets the real
       # Foundry project. Scoping to first-party code is slither.config.json's
       # job (filter_paths excludes lib/, test/ and script/) and the two targets
@@ -78,6 +82,8 @@ jobs:
       # vendored P256Verifier artifact from `out/`: both need Foundry on PATH
       # and a build done before `npm test` runs.
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - run: forge build
         working-directory: ${{ github.workspace }}
       # Four tests in `sdk/test/reconcile.test.ts` cross-check their verdict

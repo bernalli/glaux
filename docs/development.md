@@ -28,8 +28,9 @@ exit code rather than a verdict.
 1.8.1 `test_userOp_oversizedSignatureFailsValidationWithoutReverting` goes red because the
 gas consumed differs; the same commit is green (215/215) on 1.7.1. A failure that appears
 right after a toolchain change is compared against the previous toolchain before it is
-treated as a regression. On Linux `forge` lives in `~/.foundry/bin` and a non-interactive
-shell does not have it on `PATH`: call it by explicit path.
+treated as a regression. For a default foundryup installation on Linux, `forge` lives
+in `~/.foundry/bin`. If that directory is missing from a non-interactive shell's
+`PATH`, invoke `~/.foundry/bin/forge` explicitly.
 
 ## CI
 
