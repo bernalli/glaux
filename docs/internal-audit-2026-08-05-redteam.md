@@ -28,7 +28,7 @@ claims to reproduce. The residual fund-loss exposure is entirely **client-side**
 and already disclosed in `threat-model.md` / `client-guidance.md`.
 
 Because there were no positive claims, verification took the form of the
-orchestrator independently re-reading the load-bearing surfaces and confirming
+lead reviewer independently re-reading the load-bearing surfaces and confirming
 the reviewers' reasoning against the code: all five contracts, the ERC-4337 fee
 ceiling (`sdk/src/gas/feeGuard.ts`), the pinned canonical addresses
 (`sdk/src/core/constants.ts`) and the deployment record. Every anchor checked out.

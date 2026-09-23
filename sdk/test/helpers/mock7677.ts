@@ -65,7 +65,7 @@ async function readBody(req: IncomingMessage): Promise<string> {
 
 /**
  * A minimal in-process ERC-7677 paymaster-service mock on plain `node:http`
- * (no framework dependency, per the task brief). Binds an OS-assigned port
+ * (no framework dependency). Binds an OS-assigned port
  * (`listen(0, ...)`) so parallel test files never collide on a fixed one,
  * and every caller MUST close it in a `finally` — including on a failing
  * test — so a failure never leaks a listening process.

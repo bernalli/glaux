@@ -9,14 +9,10 @@ already put through the sieve.
 
 The four deployed sources (`src/GlauxDelegate.sol`, `src/GlauxAccount.sol`,
 `src/GlauxStorage.sol`, `src/lib/SignatureVerify.sol`,
-`src/lib/ImplementationCheck.sol`, ~960 LOC) were audited by two reviewers at
-maximum tier, **blind to each other**, on the same adversarial mandate:
+`src/lib/ImplementationCheck.sol`, ~960 LOC) underwent two independent review
+passes, labelled A and B below, with the same security scope.
 
-- **Reviewer A** — an independent code-review agent at its highest reasoning tier.
-- **Reviewer B** — a second agent, from a different vendor, read-only, also at
-  maximum tier.
-
-The mandate covered: 2-of-3 threshold bypass, signature malleability/reuse,
+The scope covered: 2-of-3 threshold bypass, signature malleability/reuse,
 cross-chain replay via nonce, storage/transient slot collisions,
 delegatecall/upgrade to a hostile target, reentrancy on shared paths, the
 ERC-4337 path (prefund, validationData packing, missing execNonce), birth-blob
@@ -38,7 +34,7 @@ as *router + implementation reached through the router*, and never modelled the
 adversarial EIP-7702 configuration where an EOA delegates **directly to the
 implementation**, bypassing the router. That is exactly H-1.
 
-The orchestrating reviewer then reproduced H-1 and H-2 independently by running the
+The lead reviewer then reproduced H-1 and H-2 independently by running the
 PoC tests against the real code in an isolated copy: **5 passed, 0 failed**,
 including `test_poc_directDelegationToImplementationIsSeizableByAnyone`, which
 drains the victim's full balance to the attacker. The repository was not

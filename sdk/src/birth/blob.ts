@@ -32,8 +32,8 @@ import {
 } from "../errors.js";
 import type { Signer } from "../signers/signer.js";
 
-// Task 6's public naming contract calls this helper `buildInitDigest`; retain
-// the pre-existing core name as well, with one implementation and no drift.
+// Export the public name `buildInitDigest` while retaining the core name,
+// with one implementation and no drift.
 export { initDigest as buildInitDigest } from "../core/digests.js";
 
 /**

@@ -220,9 +220,9 @@ async function waitForAltoReady(
  * storage-access, referenced-code, entity-role, reputation, or associated
  * stake enforcement. What it does still prove is EntryPoint simulation,
  * fee/gas ceilings, RPC and mempool transport, bundling, inclusion, and
- * receipt handling. Safe-mode coverage remains an open gap, not something
- * this task silently papers over: see `sdk/test/bundler.e2e.test.ts`'s
- * suite-level doc comment and Task 11's report.
+ * receipt handling. Safe-mode coverage remains an open gap:
+ * see `sdk/test/bundler.e2e.test.ts`'s suite-level doc comment and
+ * the bundler limitation documented in `sdk/README.md`.
  *
  * P-256 bundler compatibility note: Alto 0.0.20's safe tracer allowlists
  * only precompiles `0x01` through `0x09`. Glaux validates its P-256 factor

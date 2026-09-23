@@ -408,7 +408,7 @@ export function paymasterClientFromEnv(): Erc7677Client | null {
 // Generous, fixed defaults for a paymaster's own validation/postOp gas when a
 // response omits them — same "no bundler-grade estimator yet" rationale
 // `../execute/userop.js`'s own `VERIFICATION_GAS_LIMIT`/`PRE_VERIFICATION_GAS`
-// document (Task 11 owns a real calculator). A real provider is expected to
+// document. A real provider is expected to
 // supply its own values; these only cover a minimal/test paymaster that
 // doesn't bother to.
 const DEFAULT_PAYMASTER_VERIFICATION_GAS_LIMIT = 150_000n;

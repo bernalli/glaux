@@ -76,9 +76,8 @@ describe("sponsored e2e: ERC-7677 → VerifyingPaymaster → EntryPoint, mirrori
       // wallet, must cover every wei of gas.
       const { observer, counter } = await deploySponsorshipFixtures(client, DEPLOYER_PK, account);
 
-      // Owner AND verifyingSigner are the SAME test key (the task brief's
-      // "owner = a test key" / "the mock server signs paymasterData with the
-      // owner key"): `BasePaymaster`'s owner is fixed to the deployer at
+      // Owner AND verifyingSigner are the SAME test key:
+      // `BasePaymaster`'s owner is fixed to the deployer at
       // construction, and `VerifyingPaymaster` takes `verifyingSigner`
       // separately, so reusing one key for both is a deliberate
       // simplification, not an accident of the contract's own design.
