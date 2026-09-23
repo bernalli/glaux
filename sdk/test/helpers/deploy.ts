@@ -267,8 +267,7 @@ export interface DeployedVerifyingPaymaster {
  * `deployerPrivateKey`, whose address becomes both the contract's `Ownable`
  * owner (`BasePaymaster`'s constructor: `Ownable(msg.sender)`) and, when the
  * caller passes the same address as `verifyingSigner`, the key the mock
- * ERC-7677 provider signs `paymasterData` with — the task brief's "owner = a
- * test key" / "the mock server signs paymasterData with the owner key".
+ * ERC-7677 provider signs `paymasterData` with.
  * Not CREATE2: unlike `deployCanonical`, this test paymaster has no
  * cross-chain-identical-address requirement.
  */

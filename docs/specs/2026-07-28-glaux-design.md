@@ -267,9 +267,6 @@ signer-side rules that follow from it.
 - **Quality bar**: property-based + invariant tests from day 1; Slither in
   CI; Halmos/formal verification as a pre-audit milestone; audits sought
   through ecosystem grants (public track-record strategy).
-- Repository private until the work is presentable; born-public discipline
-  active from day 1 (no internal infrastructure references, no AI co-author
-  trailers).
 
 ## 9. Standardization path
 

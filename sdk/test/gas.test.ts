@@ -336,7 +336,7 @@ describe("GasPolicy: no silent fallbacks", () => {
 
   it(
     "an HTTP 500 from a CONFIGURED provider emits {from: sponsored, to: selfFunded, cause: PaymasterUnavailableError} " +
-      "and the operation still completes via the self-funded ERC-4337 path (Task 9 harness)",
+      "and the operation still completes via the self-funded ERC-4337 path",
     async () => {
       const { url } = await spawnAnvil();
       const { client, test } = clientsFor(url);

@@ -168,7 +168,7 @@ need by subpath.
 | `reconcile/reconcile.ts` | Cross-chain reconciliation: raw storage first, the account's own getters only as a cross-check — the TypeScript port of `scripts/reconcile.py`, same verdict semantics. |
 | `errors.ts` | Typed errors for the SDK's operational failure modes; invalid caller-supplied constructor arguments may instead throw a standard JavaScript error (for example, `RangeError` for an invalid ERC-7677 timeout). |
 
-## The bundler limitation (Alto 0.0.20, discovered in Task 11)
+## The bundler limitation (Alto 0.0.20)
 
 Glaux's primary signer is P-256, verified on-chain via a `STATICCALL` to
 `0x100`. [`@pimlico/alto`](https://github.com/pimlicolabs/alto) 0.0.20's

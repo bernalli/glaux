@@ -14,15 +14,10 @@ something the chain would reject.
 
 The whole client surface (18 TypeScript files, ~3600 LOC across
 `sdk/src/{core,signers,birth,execute,gas,eligibility,reconcile}`, plus
-`scripts/reconcile.py` as the parity reference) was audited by two reviewers,
-**blind to each other**, on the same adversarial mandate:
+`scripts/reconcile.py` as the parity reference) underwent two independent review
+passes, labelled A and B below, with the same security scope.
 
-- **Reviewer A** — read the code in three separate passes, one per subsystem, at
-  its highest reasoning tier.
-- **Reviewer B** — a reviewer from a different vendor, read-only, taking the
-  entire surface in a single pass.
-
-The mandate named four adversaries rather than a list of bug classes: a hostile
+The scope included four adversaries: a hostile
 or compromised RPC endpoint that answers every read; a hostile ERC-7677 paymaster
 provider; a hostile prior delegate leaving pre-poisoned account state
 (threat-model residual 17); and a counterparty supplying slot indices, key

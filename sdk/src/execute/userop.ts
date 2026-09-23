@@ -219,10 +219,10 @@ export interface BuildUserOpParams {
 // Matches `EntryPoint4337.t.sol`'s own `_packedOp` budget for Glaux's
 // two-ecrecover-plus-self-fund verification path: generous enough that a
 // real `validateUserOp` call never runs out of gas, without pretending to be
-// a tight, bundler-grade estimate (Task 11 owns that).
+// a tight, bundler-grade estimate.
 const VERIFICATION_GAS_LIMIT = 600_000n;
-// Fixed until Task 11's bundler adds a real calldata-cost/overhead
-// calculator; this path has no bundler yet, only a direct test submission.
+// Fixed calldata-cost/overhead allowance for direct test submission;
+// this path does not use a bundler.
 const PRE_VERIFICATION_GAS = 100_000n;
 // Same headroom heuristic `./direct.js`'s `submitExecution` already uses for
 // its own gas estimate: 50% margin plus a flat buffer, not a tight bound —
@@ -672,9 +672,8 @@ function toUserOpError(revertError: ContractFunctionRevertedError, outer: BaseEr
 
 /**
  * Submits a signed `PackedUserOperation` straight to the canonical EntryPoint's
- * `handleOps` — the "no bundler yet" test path this task ships (a real
- * bundler, and its own submission function, arrive in Task 11). `relayer` is
- * a private key that only fronts the `handleOps` transaction's OWN L1 gas and
+ * `handleOps`, bypassing a bundler. `relayer` is a private key that only
+ * fronts the `handleOps` transaction's OWN L1 gas and
  * receives `beneficiary`'s compensation; unlike the direct path
  * (`./direct.js`'s `submitExecution`), the ACCOUNT itself pays for its
  * operation's cost via `validateUserOp`'s self-funding transfer, not the

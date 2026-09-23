@@ -17,5 +17,3 @@ __pycache__/
 # committed in docs/static-analysis.md, the raw report is a build artifact.
 report.json
 aderyn-report.json
-
-scratchpad/
