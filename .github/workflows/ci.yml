@@ -43,10 +43,15 @@ jobs:
                   ["forge", "flatten", relative],
                   cwd=root, text=True, capture_output=True, check=True,
               )
-              units = {
-                  (root / name).resolve(strict=True)
-                  for name in re.findall(r"^// (.+\.sol)\s*$", result.stdout, re.MULTILINE)
-              }
+              units = set()
+              for name in re.findall(r"^// (.+?)\s*$", result.stdout, re.MULTILINE):
+                  candidate = root / name
+                  try:
+                      if not candidate.is_file():
+                          continue
+                  except OSError:
+                      continue
+                  units.add(candidate.resolve(strict=True))
               if source.resolve(strict=True) not in units:
                   fail(f"missing source marker in forge flatten output: {relative}")
               for unit in units:
