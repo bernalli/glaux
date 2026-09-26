@@ -7,6 +7,7 @@ import {GlauxAccount} from "../src/GlauxAccount.sol";
 import {GlauxStorage, Call, FactorSlot, SlotSig} from "../src/GlauxStorage.sol";
 import {SignatureVerify} from "../src/lib/SignatureVerify.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
+import {IAccount} from "account-abstraction/interfaces/IAccount.sol";
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 
 /// @notice Pins the digest/encoding vectors the TypeScript SDK asserts itself against
@@ -374,7 +375,7 @@ contract SdkParityTest is GlauxFixture {
         op.sender = account;
         op.signature = v.encodedUserOpSignature;
         vm.prank(address(ep));
-        uint256 validationData = GlauxAccount(payable(account)).validateUserOp(op, USEROP_HASH, 0);
+        uint256 validationData = IAccount(account).validateUserOp(op, USEROP_HASH, 0);
         assertEq(validationData, uint256(VALID_UNTIL) << 160, "user operation accepted");
     }
 

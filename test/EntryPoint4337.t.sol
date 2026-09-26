@@ -14,6 +14,7 @@ import {
     CallFailed
 } from "../src/GlauxStorage.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
+import {IAccount} from "account-abstraction/interfaces/IAccount.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 import {TestPaymasterAcceptAll} from "account-abstraction/test/TestPaymasterAcceptAll.sol";
 import {Vm, VmSafe} from "forge-std/Vm.sol";
@@ -128,7 +129,7 @@ contract EntryPoint4337Test is GlauxFixture {
         bytes32 opHash = ep.getUserOpHash(op);
         op.signature = _userOpSignature(opHash, FAR_FUTURE);
         vm.expectRevert(NotEntryPoint.selector);
-        GlauxAccount(payable(account)).validateUserOp(op, opHash, 0);
+        IAccount(account).validateUserOp(op, opHash, 0);
     }
 
     function _assertUserOpSignatureFailsValidation(bytes memory signature) internal {
@@ -139,7 +140,7 @@ contract EntryPoint4337Test is GlauxFixture {
         bytes32 opHash = ep.getUserOpHash(op);
 
         vm.prank(address(ep));
-        uint256 validationData = GlauxAccount(payable(account)).validateUserOp(op, opHash, 0);
+        uint256 validationData = IAccount(account).validateUserOp(op, opHash, 0);
         assertEq(validationData, 1);
     }
 
@@ -187,7 +188,7 @@ contract EntryPoint4337Test is GlauxFixture {
 
         vm.prank(address(ep));
         (bool ok, bytes memory result) = address(impl).call{gas: 600_000}(
-            abi.encodeCall(GlauxAccount.validateUserOp, (op, opHash, 0))
+            abi.encodeCall(IAccount.validateUserOp, (op, opHash, 0))
         );
         assertTrue(ok);
         assertEq(abi.decode(result, (uint256)), 1);
