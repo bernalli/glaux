@@ -5,15 +5,55 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: src imports no GPL dependency
-        run: |
-          if grep -rnE 'account-abstraction/' src/; then
-            echo "::error::src/ must not import account-abstraction (GPL-3.0): it is a test-only dependency"
-            exit 1
-          fi
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.7.1
+      - name: src imports no account-abstraction dependency
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def fail(message):
+              raise SystemExit(f"::error::{message}")
+
+          def walk_error(error):
+              fail(str(error))
+
+          root = Path.cwd().resolve()
+          source_dir = root / "src"
+          forbidden = (root / "lib/account-abstraction").resolve(strict=True)
+          if not source_dir.is_dir() or source_dir.is_symlink():
+              fail("src/ must be a real directory")
+          sources = []
+          for directory, dirs, files in os.walk(source_dir, onerror=walk_error):
+              for name in dirs + files:
+                  path = Path(directory) / name
+                  if path.is_symlink():
+                      fail(f"symlink under src/: {path}")
+              sources.extend(Path(directory) / name for name in files if name.endswith(".sol"))
+          if not sources:
+              fail("no Solidity sources under src/")
+          for source in sorted(sources):
+              relative = source.relative_to(root).as_posix()
+              result = subprocess.run(
+                  ["forge", "flatten", relative],
+                  cwd=root, text=True, capture_output=True, check=True,
+              )
+              units = {
+                  (root / name).resolve(strict=True)
+                  for name in re.findall(r"^// (.+\.sol)\s*$", result.stdout, re.MULTILINE)
+              }
+              if source.resolve(strict=True) not in units:
+                  fail(f"missing source marker in forge flatten output: {relative}")
+              for unit in units:
+                  if unit == forbidden or forbidden in unit.parents:
+                      fail(f"{relative} depends on {unit.relative_to(root)}")
+          print(f"Checked {len(sources)} Solidity sources and their resolved imports")
+          PY
       - run: forge fmt --check
       - run: forge build --sizes
       - run: forge test -vvv
