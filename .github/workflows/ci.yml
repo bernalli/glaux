@@ -5,6 +5,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - name: src imports no GPL dependency
+        run: |
+          if grep -rnE 'account-abstraction/' src/; then
+            echo "::error::src/ must not import account-abstraction (GPL-3.0): it is a test-only dependency"
+            exit 1
+          fi
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.7.1

@@ -30,7 +30,7 @@ import {
 } from "./GlauxStorage.sol";
 import {SignatureVerify} from "./lib/SignatureVerify.sol";
 import {ImplementationCheck} from "./lib/ImplementationCheck.sol";
-import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
+import {PackedUserOperation} from "./interfaces/PackedUserOperation.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";

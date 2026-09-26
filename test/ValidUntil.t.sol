@@ -6,6 +6,7 @@ import {Counter} from "./Execute.t.sol";
 import {GlauxAccount} from "../src/GlauxAccount.sol";
 import {GlauxStorage, SlotSig, Call, OperationExpired} from "../src/GlauxStorage.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
+import {IAccount} from "account-abstraction/interfaces/IAccount.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
 
 /// @notice Submission is permissionless by design: whoever holds a signed operation
@@ -208,7 +209,7 @@ contract ValidUntilTest is GlauxFixture {
         op.signature = _userOpSignature(opHash, validUntil);
 
         vm.prank(address(ep));
-        uint256 validationData = GlauxAccount(payable(account)).validateUserOp(op, opHash, 0);
+        uint256 validationData = IAccount(account).validateUserOp(op, opHash, 0);
 
         assertEq(validationData, uint256(validUntil) << 160);
         assertEq(uint160(validationData), 0); // authorizer: success
